@@ -2,8 +2,8 @@
 // the renderer (every entry-point link). Keep this UI-free — no icons, no JSX — so both processes
 // can import it and any screen reuses the same values.
 
-const GITHUB_OWNER = 'aipoch'
-const GITHUB_REPO = 'open-science'
+const GITHUB_OWNER = 'coGenius-git'
+const GITHUB_REPO = 'EconoMind'
 const GITHUB_REPO_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}`
 
 export const APP = {
@@ -13,7 +13,7 @@ export const APP = {
   githubOwner: GITHUB_OWNER,
   links: {
     website: 'http://www.genius666.xyz/',
-    docs: 'https://www.aipoch.com/docs/',
+    docs: `${GITHUB_REPO_URL}/blob/main/docs/README.md`,
     githubReleases: `${GITHUB_REPO_URL}/releases`,
     githubIssues: `${GITHUB_REPO_URL}/issues`,
     githubFeedback: `${GITHUB_REPO_URL}/issues/new?template=feature_request.yml`,

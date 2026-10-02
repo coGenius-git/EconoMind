@@ -1,88 +1,51 @@
-# EconoMind 部署指南（Web 模式）
+# EconoMind 源码运行指南
 
-EconoMind（经管智研工作台，AI-powered Economics & Management Research Assistant）
-是面向经济学、管理学、金融学、会计学与公共政策研究者的 AI 辅助研究工作台，
-在保留原项目（Open Science）核心架构（Agent 工作流、项目管理、文件系统、模型调用）的基础上
-完成领域迁移与功能裁剪。本文档说明 Web 模式的构建、运行与部署。
+EconoMind 的桌面与本地 Web 模式共享 Electron 主进程、数据存储、智能体与模型能力。以下是本仓库的开发与构建入口；外部服务可用性和跨平台运行仍需单独验证。
 
-## 1. 产品形态
+## 依赖与桌面启动
 
-- 桌面应用（Electron）：`npm run dev` / `npm run build:unpack` / `npm run build:win`
-- Web 模式（浏览器访问）：`npm run dev:web`（开发）/ `npm run build:web`（产物构建）
-
-两种形态共享同一套 renderer 与主进程能力；Web 模式用于快速体验与轻量部署。
-
-## 2. Web 模式开发运行
+准备 Node.js 22、npm 和 Git。Windows 本机模块构建还需要 Python 与 Visual Studio C++ Build Tools。
 
 ```bash
-npm install
-npm run dev:web
+npm ci
+npm run dev
 ```
 
-- `dev:web` 会先执行 `dev-app-branding.cjs` 注入开发品牌，再启动本地 Web 服务。
-- 默认绑定本地端口（由 `scripts/dev-web.cjs` 输出）；浏览器打开输出地址即可。
-- 无头模式：`npm run dev:headless`（适用于 CI / 容器）。
+独立开发配置方法见 [README](../README.md#独立开发配置powershell)。首次启动通过向导配置数据位置和模型，默认开发配置与安装版配置使用不同目录。
 
-## 3. Web 产物构建
+## 本地 Web 模式
 
 ```bash
 npm run build:web
+npm run dev:web
 ```
 
-- 先运行 `gen:web-api-map` 生成 Web 可用的 API 清单，再由 Vite 构建静态产物。
-- 产物输出目录以 Vite 配置（`vite.web.config.ts`）为准，通常为 `dist/` 或 `out/`。
+`build:web` 生成 API 映射并构建 `out/web/`；`dev:web` 启动 Electron 后端并启用本机 Web 服务，默认服务端口为 `44100`。使用启动日志输出的认证地址访问；端口可通过 `OPEN_SCIENCE_WEB_PORT` 设置。
 
-## 4. 部署到 Web 服务器
+无头运行开发服务可用 `npm run dev:headless`。主机与后端进程需要持续运行。
 
-1. 构建：`npm run build:web`。
-2. 将产物目录作为静态站点发布到任意 Web 服务器 / CDN（Nginx、Caddy、对象存储等）。
-3. 代理规则：Web 模式通过预生成 API 映射与本地或远端模型端点通信；请确保
-   `/api` 前缀（或配置中声明的端点路径）被反向代理到模型服务，未代理时模型调用会降级。
-4. 环境变量：沿用 `OPEN_SCIENCE_*` 前缀的配置项（兼容既有部署脚本），
-   具体变量清单见 `src/shared/app-config.ts` 与启动日志。
+Web 界面通过本项目的 RPC、认证与事件接口访问后端。完整系统不能只部署 `out/web/` 静态文件，也不能把其后端请求简单转发到模型供应商接口。公网部署、反向代理和认证适配需要单独设计与验证；本次仓库整理未进行这些部署。
 
-## 5. 默认启用的 Skills / Connectors
-
-### Bundled Skills（`resources/skills/manifest.json`，14 项，均可在设置中关闭）
-
-| Skill | 用途 |
-| --- | --- |
-| Literature Review | 文献检索与综述（OpenAlex / arXiv） |
-| Literature Screening | 文献综述筛选工作流（关键词扩展 → 来源配置 → 导入 → 结构化分析 → 五维评分筛选表） |
-| Bibliometrics | 文献计量分析（共词分析、关键词聚类、研究热点、时间演化） |
-| Research Design | 研究设计助手（研究框架、理论基础、变量设计、假设、模型） |
-| Econometrics Assistant | 计量分析助手（描述统计、相关分析、回归模型建议、Python/R 代码模板） |
-
-其余 bundled skills 为平台基础能力（文档、代码、网页、图片等），可按需关闭。
-
-### Connectors
-
-- **literature（Literature Graph）**：文献连接器，数据源 OpenAlex 与 arXiv。
-  文献检索使用 OpenAlex 时需配置 API Key（设置 → 连接器 → Literature Graph）。
-
-### 内置 Specialists（`resources/specialists/manifest.json`，4 项）
-
-| Specialist | 职责 |
-| --- | --- |
-| Literature Agent | 文献检索 / 阅读 / 分类 / 筛选 / 摘要提取 |
-| Methodology Agent | 研究方法识别 / 模型分析 / 变量设计 / 计量方法建议 |
-| Data Agent | 数据集整理 / 数据清洗 / 描述统计 / 可视化 |
-| Review Agent | 研究逻辑检查 / 引用核验 / 方法合理性评估 |
-
-Specialist 为研究辅助角色，不自动生成论文正文；研究者拥有最终判断权。
-
-## 6. 验证命令
+## 构建与定制 Windows 分享包
 
 ```bash
-npm run lint          # ESLint 全仓检查
-npm test              # 单元测试（vitest；并发多文件时建议 --maxWorkers=1）
-npm run typecheck     # node + web 双重类型检查
-npm run build         # typecheck + electron-vite build + build:web
-npm run test:e2e      # Playwright 端到端（需 Electron 环境）
+npm run build
+node scripts/fetch-micromamba.mjs win-64 resources/bin/win/x64/micromamba.exe
+node scripts/fetch-micromamba.mjs win-64 resources/bin/win/x64/micromamba-compat.exe compatibility
+node packages/notebook-network-sandbox/vendor/windows/build.mjs x64
+node node_modules/electron-builder/cli.js --win nsis --x64 --config electron-builder.share.yml --publish never
 ```
 
-## 7. 安全提示
+上述命令是 Windows x64 打包入口；沙箱宿主编译还需要 Rust 工具链。先检查资源准备脚本与平台要求，必要的资源路径由 `electron-builder.yml` 声明。本次文档整理未执行打包；安装包需要单独做启动和数据保留验证。分享配置关闭上游更新发布，产物写入 `dist/share/`。
 
-- 部署到公网前配置认证（登录 / 反向代理鉴权）；Web 模式默认面向受信网络。
-- 模型 API Key 通过设置页凭据存储，不写入前端产物；请勿将 `.env` / 密钥提交到仓库。
-- 用户数据（项目、文献库、会话）默认落在本地用户目录；备份策略与桌面版一致。
+`electron-builder.economind3.yml` 在分享配置上使用 `3.0.0` 安装包标签；这不改变源码版本记录。默认构建配置仍保留上游发布技术参数，详情见 [UPSTREAM.md](../UPSTREAM.md)。
+
+## 研究技能与专家
+
+经管定制的源码包括文献筛选、文献计量、研究设计和计量分析辅助技能，以及 Literature Agent、Methodology Agent、Data Agent、Review Agent 专家角色。具体配置以 `resources/skills/`、`resources/specialists/` 和界面设置为准；需结合真实研究任务验收。
+
+## 验证与记录
+
+按修改范围运行相关测试、类型检查、代码检查和真实页面检查。依赖安装、构建成功、窗口启动、模型请求与业务流程通过是不同的验证结果；记录实际执行的检查和未覆盖的限制。
+
+用户记录、数据库和模型凭据留在本地配置的数据目录；提交源码前检查 [.gitignore](../.gitignore) 和暂存区。

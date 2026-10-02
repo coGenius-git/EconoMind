@@ -1,6 +1,8 @@
-# @aipoch/open-science
+# EconoMind compatibility SDK — @aipoch/open-science
 
-Node.js SDK and command-line client for an Open Science daemon running on the local machine.
+Node.js SDK and command-line client for the EconoMind local service. The package name and exported API remain compatible with the inherited Open Science implementation.
+
+This repository contains a compatibility source copy, not a separately published EconoMind npm package. See [UPSTREAM.md](../../UPSTREAM.md) and [package notes](../../docs/npm-release.md).
 
 ## Documentation
 

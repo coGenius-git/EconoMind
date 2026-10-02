@@ -1,119 +1,22 @@
-# Security Policy
+# EconoMind 安全与问题反馈
 
-Open Science is a local-first research workbench that runs AI agents, executes code,
-connects to external services, and stores research data and credentials on the user's
-computer. We appreciate coordinated reports that help us protect those trust boundaries.
+EconoMind 是可以调用模型、读写研究文件和执行代码的本地研究工作台。其技术安全边界见 [安全模型](docs/security.md)，上游来源见 [UPSTREAM.md](UPSTREAM.md)。
 
-## Supported versions
+## 本地记录与凭据
 
-Open Science is pre-1.0 and changes quickly. Security fixes are provided for the latest
-tagged `0.x` release and the `main` branch only.
+- 项目、会话、文献和生成结果存放在本机配置的数据目录。
+- 使用独立开发配置时，记录位于 `.dev-isolate/`，已被 Git 忽略。
+- 模型请求、检索或连接器调用可能向所选外部服务传输任务内容；本地存储不代表所有处理都离线。
+- 密钥、数据库、真实环境配置与日志不属于可提交的源码。复制数据到新位置后重新检查忽略规则。
 
-| Version               | Supported |
-| --------------------- | --------- |
-| latest `0.x` / `main` | ✅        |
-| older releases        | ❌        |
+## 报告问题
 
-Nightly builds contain newer, less-reviewed code and do not have the same release
-provenance guarantees as stable releases.
+一般问题通过 [本仓库 Issues](https://github.com/coGenius-git/EconoMind/issues) 反馈，提供版本、系统、复现步骤和去除敏感信息后的日志。
 
-## Reporting a vulnerability
+疑似漏洞或含私人研究数据的问题，应先与仓库维护者建立私密联系，再传递细节。本项目没有在这里承诺响应时限，也不将上游的安全报告渠道冒充为 EconoMind 的维护渠道。
 
-**Do not open a public issue, discussion, pull request, or chat thread for a suspected
-vulnerability.** Public disclosure may expose users before a fix is available.
+## 版本与下载
 
-Use GitHub's private
-[Report a vulnerability](https://github.com/aipoch/open-science/security/advisories/new)
-form. The report and follow-up discussion remain in a private repository security
-advisory. If GitHub private reporting is unavailable, contact a maintainer directly
-through the channels listed in the [README](README.md#get-involved) and request a private
-channel without sharing vulnerability details publicly.
+源码版本以 [package.json](package.json) 和提交记录为准。上游安装包、Homebrew 包、DOI、签名或构建证明不能用于证明本仓库产物的版本与真实性。本仓库发布的产物应在 [EconoMind Releases](https://github.com/coGenius-git/EconoMind/releases) 中单独说明来源与校验信息。
 
-Please include:
-
-- the affected version or commit and operating system;
-- reproduction steps and a minimal proof of concept;
-- the security impact and the boundary or data you expected to remain protected; and
-- relevant logs, screenshots, or stack traces after removing secrets and private data.
-
-We aim to acknowledge reports within a few days, validate the issue, keep reporters
-informed of material progress, and coordinate fixes and disclosure. Please allow
-reasonable time for affected users to receive a fix before publishing details.
-
-### Responsible testing
-
-- Test only accounts, systems, projects, and data that you own or are authorized to use.
-- Avoid social engineering, denial of service, broad automated scanning, persistence,
-  destructive actions, or disruption of other users and services.
-- Access only the minimum data needed to demonstrate impact and stop if you encounter
-  data that is not yours.
-- Do not exfiltrate, retain, or publicly disclose secrets or personal, patient, or
-  unpublished research data.
-
-## What to report
-
-Reports are especially useful when they demonstrate one of these outcomes:
-
-- unauthorized access or a bypass of authentication, pairing, permission, sandbox, or
-  other implemented security controls;
-- code execution or sensitive-data access caused only by opening or previewing untrusted
-  content; or
-- acceptance of tampered release artifacts, updates, dependencies, runtimes, or packages.
-
-Model behavior, including prompt injection, is security-relevant when it causes
-unauthorized tool use, crosses a trust boundary, or exposes data beyond the user's
-authorization. A crash, hallucination, or model response without such an impact is not
-by itself a vulnerability.
-
-Actions that behave within an explicit user approval, and documented platform behavior
-without a control bypass, are generally not vulnerabilities. See the
-[Open Science security model](docs/security.md) for the implemented controls, data model,
-and user-managed boundaries. If you are unsure whether an impact is in scope, report it
-privately and we will help assess it.
-
-## Verifying your download
-
-Installers are published on this repository's
-[GitHub Releases](https://github.com/aipoch/open-science/releases) page. Do not run
-installers or accept update metadata obtained from an unrelated mirror or third party.
-
-On macOS, the [official Homebrew cask](https://formulae.brew.sh/cask/open-science)
-downloads the installer from this repository’s GitHub Releases and checks its pinned
-SHA-256 hash. The manual verification steps below also apply to downloaded release
-installers.
-
-Each stable release includes `SHA256SUMS.txt`. Download it from the same GitHub Release
-and compare the entry for your installer:
-
-```bash
-# macOS
-shasum -a 256 aipoch-open-science-<version>-mac-arm64.dmg
-
-# Linux
-sha256sum aipoch-open-science-<version>-linux-x64.AppImage
-```
-
-```powershell
-# Windows PowerShell
-Get-FileHash .\aipoch-open-science-<version>-win-x64-setup.exe -Algorithm SHA256
-```
-
-A matching checksum proves that the bytes match the release checksum, but it does not by
-itself prove who built them. Stable tagged installers also have a signed SLSA build
-provenance attestation tying the exact bytes to this repository's Release workflow and
-commit:
-
-```bash
-gh attestation verify <installer-path> --repo aipoch/open-science
-```
-
-## Dependencies and supply chain
-
-If a vulnerability originates in a third-party dependency, runtime, model framework,
-Connector, or MCP server, report the reachable Open Science impact privately here and
-notify the upstream project when it is safe to do so.
-
-Building from source runs the repository's `postinstall` steps and downloads pinned
-runtime components. Clone from the official repository, review changes to lockfiles and
-install scripts, and install Skills, Specialist packages, custom Connectors, and remote
-compute configurations only from sources you trust.
+运行命令、安装技能、选择外部模型或执行 Notebook 前，检查其文件与网络访问范围；仅在你有权限的系统和数据上验证问题。

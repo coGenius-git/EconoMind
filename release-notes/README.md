@@ -1,3 +1,5 @@
+> **EconoMind repository note:** Version directories in this snapshot are inherited historical reference material. They are not evidence of releases published by this repository. Upstream mirror, signing, DOI, and nightly instructions below apply to the upstream pipeline; EconoMind Actions are disabled. See [UPSTREAM.md](../UPSTREAM.md).
+
 # In-app release notes
 
 Each stable release has one directory named after the version without the leading `v`:

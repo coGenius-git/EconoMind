@@ -7,7 +7,7 @@
   "main": "./out/main/index.js",
   "author": "aipoch",
   "license": "Apache-2.0",
-  "homepage": "https://www.aipoch.com/open-science",
+  "homepage": "https://github.com/coGenius-git/EconoMind",
   "bin": {
     "open-science": "cli/index.mjs"
   },
@@ -157,5 +157,12 @@
     "vite": "^7.2.6",
     "vitest": "^4.1.11",
     "zustand": "^5.0.14"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coGenius-git/EconoMind.git"
+  },
+  "bugs": {
+    "url": "https://github.com/coGenius-git/EconoMind/issues"
   }
 }

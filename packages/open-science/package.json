@@ -1,7 +1,7 @@
 {
   "name": "@aipoch/open-science",
   "version": "0.1.0",
-  "description": "Node.js SDK and CLI for the Open Science local daemon",
+  "description": "Compatibility Node.js SDK and CLI for the EconoMind local daemon",
   "type": "module",
   "exports": {
     ".": {
@@ -25,7 +25,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/aipoch/open-science.git",
+    "url": "git+https://github.com/coGenius-git/EconoMind.git",
     "directory": "packages/open-science"
   },
   "publishConfig": {
