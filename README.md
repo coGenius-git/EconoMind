@@ -11,11 +11,13 @@
 | 工具                           | 要求                                                       | 检查                              |
 | ------------------------------ | ---------------------------------------------------------- | --------------------------------- |
 | Git                            | Git for Windows，可通过 Git Credential Manager 登录 GitHub | `git --version`                   |
-| Node.js                        | **22.x**，与 `.nvmrc` 一致；自带 npm                       | `node --version`、`npm --version` |
+| Node.js                        | **22.x**，与 `.nvmrc` 一致；本仓库验证使用 npm **10.x**    | `node --version`、`npm --version` |
 | Python                         | 本机模块编译需要 Python 3，建议 3.12                       | `py -3 --version`                 |
 | Visual Studio Build Tools 2022 | 勾选“使用 C++ 的桌面开发”，包括 MSVC v143 与 Windows SDK   | 安装后重新打开终端                |
 
 依赖安装会下载 Electron、生成 Prisma Client、应用仓库补丁并编译本机模块。需要能访问 npm、GitHub 和相关依赖下载服务，首次安装可能需要几分钟。
+
+先检查两个版本。如果曾安装全局 npm，切换 Node 后 npm 仍可能从用户目录加载另一版本；用 `Get-Command npm -All` 检查入口。完整验证环境为 Node 22.23.3 / npm 10.9.9，其他组合需另行验证。
 
 在打算保存源码的目录打开 PowerShell：
 
@@ -40,7 +42,8 @@ npm run dev:isolated
 | PowerShell 阻止 `npm.ps1`                | 使用 `npm.cmd ci`、`npm.cmd run dev:isolated`，不必关闭系统执行策略                                                             |
 | `node-gyp` 找不到 Python / Visual Studio | 安装上表工具与 C++ 工作负载，重开终端后重新 `npm ci`；多版本 Python 可在当前终端设置 `$env:PYTHON = '你的 python.exe 完整路径'` |
 | 下载超时 / `ECONNRESET`                  | 检查自己的网络或代理，再重试 `npm ci`；不要提交个人代理、`.npmrc` 或镜像凭据                                                    |
-| Prisma Client 缺失或与 schema 不一致     | 先 `npm ci`；切分支只改变 schema 时可执行 `npx prisma generate`                                                                 |
+| `EALLOWREMOTE` 拒绝下载 `echarts`        | 更新任务分支的锁文件；已将同版本包地址统一到官方 npm 仓库，完整性校验不变，再执行 `npm ci`                                      |
+| Prisma Client 缺失或与 schema 不一致     | 先确保 `npm ci` 完整成功再启动；安装失败需先修复安装错误。切分支只改变 schema 时可执行 `npx prisma generate`                    |
 | Electron 按 Node 启动                    | `dev:isolated` 会移除继承的 `ELECTRON_RUN_AS_NODE` 环境变量                                                                     |
 | peer / deprecated 警告                   | 警告与失败不同，查看退出码和最终错误；不要为消除警告自行升级整套依赖                                                            |
 
