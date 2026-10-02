@@ -1,0 +1,15 @@
+# Clean, self-contained Windows installer for sharing the customized EconoMind build.
+# Keep the upstream Open Science update feed out of this distribution.
+extends: ./electron-builder.yml
+publish: null
+# Use the already installed, version-locked Electron runtime instead of downloading it again.
+electronDist: node_modules/electron/dist
+directories:
+  output: dist/share
+nsis:
+  artifactName: EconoMind-${version}-Windows-x64-Setup.${ext}
+  installerLanguages:
+    - zh_CN
+    - en_US
+  language: '2052'
+  runAfterFinish: true

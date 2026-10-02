@@ -1,0 +1,151 @@
+name: Package Smoke
+
+# Blocking native-package certification. Each matrix leg downloads the exact artifact produced by
+# build.yml, so a failed smoke can be retried without rebuilding or re-signing any package.
+#
+# Manual dispatch dry-runs reuse this exact workflow:
+# - setup_only=true, platform_name=all: matrix resolution only (the Nightly unfiltered path)
+# - install_only=true, platform_name=macos-x64: matrix resolution plus npm ci, no artifacts
+on:
+  workflow_call:
+    inputs:
+      install_only:
+        description: Skip artifact download and package execution; only install dependencies
+        type: boolean
+        required: false
+        default: false
+      setup_only:
+        description: Resolve the smoke matrix and skip every smoke job
+        type: boolean
+        required: false
+        default: false
+      platform_name:
+        description: Limit the smoke matrix to one platform name, or empty for every platform
+        type: string
+        required: false
+        default: ''
+  workflow_dispatch:
+    inputs:
+      setup_only:
+        description: Resolve the smoke matrix and skip every smoke job
+        type: boolean
+        default: false
+      install_only:
+        description: Skip artifact download and package execution; only install dependencies
+        type: boolean
+        default: true
+      platform_name:
+        description: Platform to install on
+        type: choice
+        default: macos-x64
+        options:
+          - macos-x64
+          - macos-arm64
+          - linux-x64
+          - windows-x64
+          - all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-smoke-${{ github.workflow }}-${{ github.ref }}-${{ inputs.platform_name || 'all' }}
+  cancel-in-progress: true
+
+jobs:
+  setup:
+    name: Resolve smoke matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - id: set
+        name: Resolve platform include list
+        shell: bash
+        env:
+          PLATFORM_NAME: ${{ inputs.platform_name }}
+        run: echo "matrix=$(node scripts/ci/resolve-package-smoke-matrix.mjs)" >> "$GITHUB_OUTPUT"
+
+  smoke:
+    name: Smoke ${{ matrix.name }}
+    needs: setup
+    if: ${{ needs.setup.result == 'success' && !inputs.setup_only }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    steps:
+      - name: Checkout certification tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: node scripts/ci/npm-ci.mjs
+
+      - name: Download packaged artifacts
+        if: ${{ !inputs.install_only }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ matrix.name }}
+          path: dist
+
+      - name: Smoke test macOS packages
+        if: ${{ !inputs.install_only && matrix.platform == 'mac' }}
+        timeout-minutes: 10
+        run: node scripts/macos-package-smoke.mjs --artifact-dir dist
+
+      - name: Smoke test Windows installer
+        if: ${{ !inputs.install_only && matrix.platform == 'win' }}
+        timeout-minutes: 10
+        run: node scripts/windows-installer-smoke.mjs --installer-dir dist
+
+      - name: Smoke test Linux packages
+        if: ${{ !inputs.install_only && matrix.platform == 'linux' }}
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          sudo apt-get install --yes ./dist/*.deb
+          trap 'sudo apt-get remove --yes open-science || true' EXIT
+          xvfb-run -a node scripts/linux-package-smoke.mjs \
+            --artifact-dir dist \
+            --installed-executable /usr/bin/open-science
+
+      - name: Record platform certification evidence
+        if: ${{ !inputs.install_only }}
+        shell: bash
+        run: |
+          database_certification="dist/database-migration-certification-${{ matrix.name }}.json"
+          mv dist/database-migration-certification.json "$database_certification"
+          authenticode=not-applicable
+          if [ "${{ matrix.platform }}" = "win" ]; then
+            authenticode=not-required
+          fi
+          node scripts/ci/release-certification-evidence.mjs write \
+            --platform "${{ matrix.name }}" \
+            --artifact-dir dist \
+            --output "dist/certification-${{ matrix.name }}.json" \
+            --electron-p0 not-applicable \
+            --visual-regression not-applicable \
+            --package-smoke passed \
+            --database-migration-certification "$database_certification" \
+            --authenticode "$authenticode"
+
+      - name: Upload platform certification evidence
+        if: ${{ !inputs.install_only }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: certification-${{ matrix.name }}
+          retention-days: 7
+          path: |
+            dist/certification-${{ matrix.name }}.json
+            dist/database-migration-certification-${{ matrix.name }}.json
+          if-no-files-found: error

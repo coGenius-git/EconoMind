@@ -1,0 +1,9 @@
+# EconoMind 3.0 clean Windows release, using the share-build allowlist and offline updates.
+extends: ./electron-builder.share.yml
+afterPack: build/clean-share-resources.cjs
+directories:
+  output: dist/economind3
+extraMetadata:
+  version: 3.0.0
+nsis:
+  artifactName: EconoMind3.0.${ext}

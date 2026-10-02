@@ -1,0 +1,367 @@
+import type { ChatSession } from '@/stores/session-store'
+import { File, FileArchive, FileCode2, FileImage, FileSpreadsheet, FileText } from 'lucide-react'
+import { parse } from 'papaparse'
+import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
+
+import type { PreviewFileSource } from '@/stores/preview-workbench-store'
+
+import type { ArtifactPreviewResult } from '../../../../shared/artifacts'
+import {
+  getArtifactExtension,
+  getArtifactPreviewFormat,
+  getArtifactName,
+  isImageArtifact
+} from './artifact-preview-utils'
+import { PdfThumbnail } from './previews/renderers/PdfThumbnail'
+import { TiffThumbnail } from './previews/renderers/TiffThumbnail'
+import { usePreviewResourceKey } from './previews/usePreviewResourceGeneration'
+import { useCachedPreviewImage } from './previews/useCachedPreviewImage'
+
+type MessageArtifact = NonNullable<ChatSession['artifacts']>[number]
+type ArtifactIconKind = 'archive' | 'code' | 'file' | 'image' | 'spreadsheet' | 'text'
+
+const TEXT_SKELETON_EXTENSIONS = new Set(['iqtree', 'nwk', 'state', 'tree', 'treefile'])
+
+const getArtifactExtensionLabel = (artifact: MessageArtifact): string =>
+  getArtifactExtension(artifact).toUpperCase().slice(0, 6)
+
+const isTextSkeletonArtifact = (artifact: MessageArtifact): boolean =>
+  TEXT_SKELETON_EXTENSIONS.has(getArtifactExtension(artifact))
+
+const getArtifactIconKind = (artifact: MessageArtifact): ArtifactIconKind => {
+  const mimeType = artifact.mimeType ?? ''
+  const extension = getArtifactExtension(artifact)
+
+  if (isImageArtifact(artifact)) return 'image'
+  if (mimeType.includes('spreadsheet') || ['csv', 'tsv', 'xls', 'xlsx'].includes(extension)) {
+    return 'spreadsheet'
+  }
+  if (
+    mimeType.includes('html') ||
+    mimeType.includes('json') ||
+    ['css', 'html', 'js', 'json', 'md', 'pdb', 'svg', 'ts', 'tsx', 'xml'].includes(extension)
+  ) {
+    return 'code'
+  }
+  if (['7z', 'gz', 'rar', 'tar', 'zip'].includes(extension)) return 'archive'
+  if (mimeType.startsWith('text/') || ['pdf', 'txt'].includes(extension)) return 'text'
+
+  return 'file'
+}
+
+const ArtifactFileIcon = ({
+  className,
+  kind
+}: {
+  className: string
+  kind: ArtifactIconKind
+}): React.JSX.Element => {
+  if (kind === 'archive') return <FileArchive className={className} aria-hidden />
+  if (kind === 'code') return <FileCode2 className={className} aria-hidden />
+  if (kind === 'image') return <FileImage className={className} aria-hidden />
+  if (kind === 'spreadsheet') return <FileSpreadsheet className={className} aria-hidden />
+  if (kind === 'text') return <FileText className={className} aria-hidden />
+
+  return <File className={className} aria-hidden />
+}
+
+const getPreviewLines = (content: string, maxLines: number): string[] =>
+  content
+    .replace(/\0/g, '')
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0)
+    .slice(0, maxLines)
+
+const getPreviewText = (content: string, maxLines: number): string =>
+  getPreviewLines(content, maxLines)
+    .map((line) => line.trim())
+    .join('\n')
+
+const getCsvPreview = (
+  artifact: MessageArtifact,
+  preview: ArtifactPreviewResult,
+  t: ReturnType<typeof useTranslation<'workspace'>>['t']
+): { columns: string[]; hiddenColumnCount: number; rowCountLabel: string } => {
+  const delimiter = getArtifactExtension(artifact) === 'tsv' ? '\t' : undefined
+  const parsed = parse<string[]>(preview.content, {
+    delimiter,
+    skipEmptyLines: true
+  })
+  const rows = parsed.data.filter((row): row is string[] => Array.isArray(row))
+  const columns = (rows[0] ?? []).map((column) => column.trim()).filter(Boolean)
+  const visibleColumnCount = 5
+  const dataRows = Math.max(0, rows.length - 1)
+
+  return {
+    columns: columns.slice(0, visibleColumnCount),
+    hiddenColumnCount: Math.max(0, columns.length - visibleColumnCount),
+    rowCountLabel: preview.truncated
+      ? t('{{rows}}+ rows · {{columns}} columns', { rows: dataRows, columns: columns.length })
+      : t('{{rows}} rows · {{columns}} columns', { rows: dataRows, columns: columns.length })
+  }
+}
+
+const CsvPreview = ({
+  artifact,
+  preview
+}: {
+  artifact: MessageArtifact
+  preview: ArtifactPreviewResult
+}): React.JSX.Element => {
+  const { t } = useTranslation()
+  const csvPreview = getCsvPreview(artifact, preview, t)
+
+  return (
+    <div className="flex size-full flex-col overflow-hidden bg-bg-000 p-2 text-text-000">
+      <div className="shrink-0 pb-1 text-[10px] font-medium text-text-300">
+        {csvPreview.rowCountLabel}
+      </div>
+      <div className="min-h-0 flex-1 space-y-0.5 overflow-hidden">
+        {csvPreview.columns.map((column) => (
+          <div key={column} className="flex items-center gap-1.5 text-[11px]">
+            <span className="w-6 shrink-0 font-mono text-[9px] text-text-300">abc</span>
+            <span className="truncate text-text-100">{column}</span>
+          </div>
+        ))}
+        {csvPreview.hiddenColumnCount > 0 ? (
+          <div className="pl-[30px] text-[10px] text-text-300">
+            {t('+{{count}} more', { count: csvPreview.hiddenColumnCount })}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+const getSkeletonWidths = (content: string): number[] => {
+  const source = content || 'generated artifact preview'
+
+  return Array.from({ length: 9 }, (_, index) => {
+    const charCode = source.charCodeAt(index % source.length) || 37
+    return 13 + (charCode % 22)
+  })
+}
+
+const TextSkeletonPreview = ({
+  preview
+}: {
+  preview: ArtifactPreviewResult
+}): React.JSX.Element => (
+  <div
+    className="size-full overflow-hidden bg-bg-000"
+    data-testid="artifact-skeleton-preview"
+    aria-hidden
+  >
+    <svg viewBox="0 0 40 40" className="size-full">
+      <rect x="0" y="0" width="40" height="40" rx="2" className="fill-bg-200" />
+      <rect x="4" y="3" width="24" height="2.2" rx="0.5" className="fill-text-300" />
+      {getSkeletonWidths(preview.content).map((width, index) => (
+        <rect
+          key={`${width}-${index}`}
+          x="4"
+          y={6.5 + index * 3.5}
+          width={width}
+          height="1.5"
+          rx="0.5"
+          className="fill-text-300/45"
+        />
+      ))}
+    </svg>
+  </div>
+)
+
+const FileTypePreview = ({ artifact }: { artifact: MessageArtifact }): React.JSX.Element => {
+  const iconClassName = 'size-5 text-text-300'
+
+  return (
+    <div className="flex size-full flex-col items-center justify-center gap-1.5 bg-bg-200 text-text-300">
+      <ArtifactFileIcon className={iconClassName} kind={getArtifactIconKind(artifact)} />
+      <span className="text-[10px] font-semibold text-text-000">
+        {getArtifactExtensionLabel(artifact)}
+      </span>
+    </div>
+  )
+}
+
+// Copies managed image bytes into the bounded renderer cache so transcript remounts can reuse them.
+const ManagedImageThumbnail = ({
+  artifact,
+  name,
+  source,
+  projectId,
+  sessionId,
+  managedFileId,
+  selectedVersionId,
+  enabled
+}: {
+  artifact: MessageArtifact
+  name: string
+  source: PreviewFileSource
+  projectId?: string
+  sessionId?: string
+  managedFileId?: string
+  selectedVersionId?: string
+  enabled: boolean
+}): React.JSX.Element => {
+  const requestKey = usePreviewResourceKey({
+    projectId,
+    sessionId,
+    source,
+    path: artifact.path,
+    mimeType: artifact.mimeType,
+    size: artifact.size,
+    mtimeMs: artifact.mtimeMs,
+    managedFileId,
+    selectedVersionId
+  })
+  const { t } = useTranslation()
+  const [failedRequestKey, setFailedRequestKey] = useState<string | undefined>(undefined)
+  const hasFailed = failedRequestKey === requestKey
+  // A decode failure disables the hook, which releases the protocol capability immediately.
+  const imageState = useCachedPreviewImage(
+    {
+      path: artifact.path,
+      projectId,
+      sessionId,
+      source,
+      mimeType: artifact.mimeType,
+      size: artifact.size,
+      mtimeMs: artifact.mtimeMs,
+      managedFileId,
+      selectedVersionId
+    },
+    enabled && !hasFailed,
+    hasFailed
+  )
+
+  if (imageState.status !== 'ready') return <FileTypePreview artifact={artifact} />
+
+  return (
+    <img
+      src={imageState.url}
+      alt={t('Preview of {{name}}', { name })}
+      className="size-full object-cover object-top"
+      loading="lazy"
+      decoding="async"
+      draggable={false}
+      onError={() => setFailedRequestKey(requestKey)}
+    />
+  )
+}
+
+export const ArtifactPreview = ({
+  artifact,
+  preview,
+  source = 'artifact',
+  projectId,
+  sessionId,
+  managedFileId,
+  selectedVersionId,
+  isVisible = true
+}: {
+  artifact: MessageArtifact
+  preview?: ArtifactPreviewResult
+  source?: PreviewFileSource
+  projectId?: string
+  sessionId?: string
+  managedFileId?: string
+  selectedVersionId?: string
+  isVisible?: boolean
+}): React.JSX.Element => {
+  const artifactName = getArtifactName(artifact)
+  // Renderer selection is source-neutral; source remains relevant only to the nested file reader.
+  const format = getArtifactPreviewFormat(artifact)
+
+  // Managed readers build their acquire request inside effects, where a missing logical identity
+  // throws. Cards for artifacts persisted before editable versions carry no identity — show the
+  // static file-type tile instead of unmounting the whole tree through the uncaught effect error.
+  // Only the reader-mounting branches need the gate; csv/fasta/text render the already-fetched
+  // preview prop and never acquire.
+  const readerMountsManagedAcquire =
+    (source === 'artifact' || source === 'upload') && !(projectId && managedFileId)
+  if (readerMountsManagedAcquire && ['pdf', 'image', 'tiff'].includes(format)) {
+    return <FileTypePreview artifact={artifact} />
+  }
+
+  // PDFs render only their first page through the managed range transport.
+  if (format === 'pdf') {
+    return (
+      <PdfThumbnail
+        path={artifact.path}
+        name={artifactName}
+        source={source}
+        projectId={projectId}
+        sessionId={sessionId}
+        managedFileId={managedFileId}
+        selectedVersionId={selectedVersionId}
+        mimeType={artifact.mimeType}
+        size={artifact.size}
+        mtimeMs={artifact.mtimeMs}
+      />
+    )
+  }
+
+  if (format === 'image') {
+    return (
+      <ManagedImageThumbnail
+        artifact={artifact}
+        name={artifactName}
+        source={source}
+        projectId={projectId}
+        sessionId={sessionId}
+        managedFileId={managedFileId}
+        selectedVersionId={selectedVersionId}
+        enabled={isVisible}
+      />
+    )
+  }
+
+  if (format === 'tiff') {
+    return (
+      <TiffThumbnail
+        path={artifact.path}
+        name={artifactName}
+        source={source}
+        projectId={projectId}
+        sessionId={sessionId}
+        managedFileId={managedFileId}
+        selectedVersionId={selectedVersionId}
+        mimeType={artifact.mimeType}
+        size={artifact.size}
+        mtimeMs={artifact.mtimeMs}
+        enabled={isVisible}
+        fallback={<FileTypePreview artifact={artifact} />}
+      />
+    )
+  }
+
+  if (preview && format === 'csv') {
+    return <CsvPreview artifact={artifact} preview={preview} />
+  }
+
+  if (preview && isTextSkeletonArtifact(artifact)) {
+    return <TextSkeletonPreview preview={preview} />
+  }
+
+  if (preview) {
+    const previewText = getPreviewText(preview.content, 4)
+
+    return (
+      <div className="size-full overflow-hidden bg-bg-000 px-2 py-1.5">
+        {previewText ? (
+          <pre className="m-0 line-clamp-4 whitespace-pre-wrap break-words font-mono text-[9px] leading-[1.15] text-text-000">
+            {previewText}
+          </pre>
+        ) : (
+          <span className="text-[11px] font-semibold text-text-000">
+            {getArtifactExtensionLabel(artifact)}
+          </span>
+        )}
+      </div>
+    )
+  }
+
+  return <FileTypePreview artifact={artifact} />
+}

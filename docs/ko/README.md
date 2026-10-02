@@ -1,0 +1,401 @@
+<h1 align="center">EconoMind</h1>
+
+<p align="center">
+  재현 가능한 과학을 위한 오픈 소스·로컬 우선·모델 독립형 AI 연구 워크벤치입니다.
+</p>
+
+<p align="center">
+  <a href="https://github.com/aipoch/open-science/releases/latest">
+    <img alt="다운로드" src="https://img.shields.io/badge/Download-Latest%20Release-2f9e44?style=flat">
+  </a>
+  <a href="https://github.com/aipoch/open-science/releases/latest">
+    <img alt="버전" src="https://img.shields.io/github/v/release/aipoch/open-science?label=Version&style=flat&color=4dabf7">
+  </a>
+  <a href="https://doi.org/10.5281/zenodo.22252246">
+    <img alt="DOI" src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22252246-0b7285?style=flat">
+  </a>
+  </a>
+  <a href="https://github.com/aipoch/open-science/releases/latest">
+    <img alt="지원 플랫폼 macOS Windows Linux" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-4263eb?style=flat">
+  </a>
+  <a href="../../LICENSE">
+    <img alt="Apache 2.0 라이선스" src="https://img.shields.io/badge/license-Apache--2.0-7950f2?style=flat">
+  </a>
+  <a href="https://aipoch.com/open-science">
+    <img alt="웹사이트 aipoch.com" src="https://img.shields.io/badge/website-aipoch.com-e8590c?style=flat">
+  </a>
+  <a href="https://discord.gg/zxQAYjReRv">
+    <img alt="Discord" src="https://img.shields.io/badge/Discord-Join%20the%20Community-5865F2?style=flat&logo=discord&logoColor=white">
+  </a>
+</p>
+
+<p align="center">
+  <a href="../../README.md"><img alt="English README" src="https://img.shields.io/badge/English-d9d9d9"></a>
+  <a href="../zh-Hans/README.md"><img alt="简体中文 README" src="https://img.shields.io/badge/简体中文-d9d9d9"></a>
+  <a href="../zh-Hant/README.md"><img alt="繁體中文 README" src="https://img.shields.io/badge/繁體中文-d9d9d9"></a>
+  <a href="../ja/README.md"><img alt="日本語 README" src="https://img.shields.io/badge/日本語-d9d9d9"></a>
+  <a href="../ko/README.md"><img alt="한국어 README" src="https://img.shields.io/badge/한국어-d9d9d9"></a>
+  <a href="../fr/README.md"><img alt="Français README" src="https://img.shields.io/badge/Français-d9d9d9"></a>
+  <a href="../ru/README.md"><img alt="러시아어 README" src="https://img.shields.io/badge/Русский-d9d9d9"></a>
+  <a href="../de/README.md"><img alt="독일어 README" src="https://img.shields.io/badge/Deutsch-d9d9d9"></a>
+  <a href="../es/README.md"><img alt="Español README" src="https://img.shields.io/badge/Español-d9d9d9"></a>
+</p>
+
+> 이 문서는 영어 `README.md`의 번역본입니다. 내용이 다르면 [영문 원본](../../README.md)을 기준으로 합니다.
+
+EconoMind는 [AIPOCH](https://aipoch.com/open-science)가 과학자와 연구자를 위해 개발한 오픈 소스, 로컬 우선, 모델 독립형 AI 연구 워크벤치입니다. 과학 AI 에이전트, Python 및 R 실행, 과학 데이터 커넥터, macOS·Windows·Linux 크로스 플랫폼 지원을 통해 재현 가능하고 검토 가능한 연구를 수행합니다. 하나의 워크스페이스에서 프로젝트를 만들고 연구 목표를 자연어로 설명하면, 에이전트가 파일을 읽고 웹을 검색하며 코드를 실행하고 과학 데이터 소스를 조회하여 추적 가능한 출처가 포함된 보고서, 표, 그림을 생성합니다.
+
+EconoMind는 머신러닝, 통계학, 생명과학, 화학, 재료과학, 물리학, 환경과학을 비롯한 여러 분야의 계산 및 데이터 집약적 연구를 지원합니다. 문헌 검토와 가설 수립부터 코드 실행, 데이터 분석, 시뮬레이션, 시각화, 추적 가능한 연구 결과 생성까지 전체 연구 과정을 지원합니다.
+
+> 💡 **[EconoMind v0.27.0 출시](https://github.com/aipoch/open-science/releases/latest)** _(마지막 업데이트: 2026년 9월)_. EconoMind v0.27.0은 문헌 워크스페이스를 확장하고 장시간 작업을 백그라운드에서 실행할 수 있게 합니다. 파일별 진행 상황과 재시도를 갖춰 여러 PDF를 한 번에 가져오고, 결과를 자동으로 전달하는 Notebook 및 셸 작업을 백그라운드에서 실행하며, 클라이언트 간 동기화, 데이터 위치 이전, 가져오기 무결성을 아우르는 폭넓은 문헌 안정성 점검을 제공합니다. 핵심 애플리케이션 스킬은 항상 활성화로 유지되고, 헤드리스 CLI와 Task SDK에 커넥터 관리가 추가되며, mermaid 다이어그램이 더 매끄럽게 렌더링되고, 헤드리스 Linux 배포는 명시적인 자격 증명 파일 저장소를 갖춥니다. 자세한 내용은 [최신 릴리스 노트](https://github.com/aipoch/open-science/releases/latest)를 확인하세요.
+
+<p align="center">
+ <img width="1920" height="1140" alt="EconoMind 히어로 배너: Science, Open to All — 오픈 소스, 모델 독립적, 자체 호스팅 가능한 과학 AI 연구 워크벤치" src="../images/readme/open-science-banner.png" />
+</p>
+
+## 목차
+
+- [빠른 시작](#-빠른-시작)
+- [제품 둘러보기](#제품-둘러보기)
+- [벤치마크 성능](#벤치마크-성능)
+- [EconoMind를 선택하는 이유](#aipoch-open-science를-선택하는-이유)
+- [핵심 기능](#핵심-기능)
+- [모델 제공업체](#모델-제공업체)
+- [데이터, 권한 및 신뢰](#데이터-권한-및-신뢰)
+- [프로젝트 상태](#프로젝트-상태)
+- [개발 및 패키징](#개발-및-패키징)
+- [자주 묻는 질문](#자주-묻는-질문)
+- [참여하기](#참여하기)
+- [라이선스](#라이선스)
+
+## 🚀 빠른 시작
+
+세 단계로 EconoMind를 실행할 수 있습니다. 플랫폼에 맞는 설치 프로그램을 다운로드하고, 안내에 따라 최초 실행 설정을 완료한 다음 연구 프로젝트를 만듭니다.
+
+### 1. 앱 다운로드
+
+[최신 릴리스](https://github.com/aipoch/open-science/releases/latest)를 열고 **Assets**를 펼친 다음 컴퓨터에 맞는 설치 프로그램을 선택하세요.
+
+| 사용 중인 컴퓨터               | 선택할 파일                           |
+| ------------------------------ | ------------------------------------- |
+| macOS — Apple Silicon(M1 이상) | Apple Silicon / ARM64용 macOS DMG     |
+| macOS — Intel                  | Intel / x64용 macOS DMG               |
+| Windows x64                    | Windows x64 설치 프로그램             |
+| Linux x64                      | Linux x64 AppImage 또는 Debian 패키지 |
+
+릴리스 페이지에 게시된 자산과 검증 정보를 확인하세요. 설치 전에 패키지를 검증해야 한다면 [다운로드 검증](../../SECURITY.md#verifying-your-download)을 참고하세요.
+
+> macOS 또는 Windows에서 확인되지 않은 개발자나 알 수 없는 게시자 경고가 표시되면, 계속하기 전에 패키지가 공식 Releases 페이지에서 제공된 것인지 확인하세요.
+
+macOS에서는 [Homebrew](https://brew.sh)로도 설치할 수 있습니다:
+
+```bash
+brew install --cask open-science
+```
+
+Homebrew는 Apple Silicon 또는 Intel용 패키지를 자동으로 선택합니다.
+
+### 2. 최초 설정 완료
+
+처음 실행할 때 다섯 단계의 안내가 제공됩니다.
+
+1. **환경**에서 호환성, 앱 저장소, 안전한 자격 증명 저장소, 네트워크 액세스를 확인합니다.
+2. **데이터 위치**에서 대용량 아티팩트, Notebook, 업로드, 환경의 저장 위치를 선택합니다.
+3. **에이전트 런타임**에서 Claude Code, OpenCode 또는 Codex를 선택하고 준비합니다. 앱 관리 런타임은 Node.js, npm 또는 관리자 암호 없이 설치할 수 있습니다.
+4. **모델 제공업체**에서 사용할 모델에 연결하고 테스트합니다. 기본 제공업체, 사용자 지정 게이트웨이, 기존 Claude 또는 Codex 구독 로그인을 선택할 수 있습니다.
+5. **Notebook 런타임**에서는 앱 관리 Python 및 R 환경을 선택적으로 준비하거나, 감지 또는 수동 등록한 각 언어 인터프리터를 활성화합니다.
+
+<table>
+  <tr>
+    <td width="50%"><img src="../images/readme/onboarding-environment.jpg" alt="EconoMind의 자동 최초 실행 환경 검사"></td>
+    <td width="50%"><img src="../images/readme/onboarding-model-provider.jpg" alt="EconoMind 최초 실행 모델 제공업체 구성"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>호스트 호환성, 저장소 및 네트워크 검사</sub></td>
+    <td align="center"><sub>제공업체, API Key, 엔드포인트 및 모델 검증</sub></td>
+  </tr>
+</table>
+
+Notebook 실행은 선택 사항입니다. 필수 환경 및 에이전트 런타임 검사를 모두 통과해야 `Continue`가 활성화되며, 모델 연결을 통과해야 설정을 완료할 수 있습니다. Notebook과 데이터 위치 설정은 기본값을 유지하고 나중에 설정에서 변경할 수 있습니다.
+
+### 3. 연구 프로젝트 시작
+
+1. **New project**를 클릭하고 프로젝트에 일관된 연구 이름과 선택적 설명을 지정합니다.
+2. 세션을 열고 목표, 입력 데이터, 제약 조건, 원하는 결과, 결과를 확인할 방법을 설명합니다.
+3. 원본 파일을 첨부하고 검증된 모델과 승인 모드를 선택합니다.
+4. 작업을 보냅니다. 에이전트의 도구 활동을 확인하고 민감한 작업을 승인한 다음 생성된 아티팩트를 미리보기 패널에서 엽니다.
+5. 다른 방향을 탐색하려면 이전 사용자 메시지를 편집해 새 브랜치에서 다시 보냅니다. 메시지 수정 컨트롤로 어느 경로든 다시 선택할 수 있습니다.
+6. 아티팩트의 **Provenance** 보기를 열어 버전과 선택한 결과의 사용 가능한 증거를 확인합니다.
+7. 이후 세션에서도 작업을 계속합니다. `@`로 기존 프로젝트 파일을 참조하고 `/`로 활성화된 스킬을 명시적으로 선택합니다.
+
+> 이 README의 스크린샷은 워크플로를 설명하기 위한 예시입니다. 레이블, 카탈로그 및 기타 인터페이스 세부 사항은 설치한 버전과 다를 수 있습니다.
+
+## 제품 둘러보기
+
+### 연구 요청에서 추적 가능한 결과까지
+
+대표적인 생물정보학 작업을 예로 들어 보겠습니다. 출판된 차등 발현 분석을 재현하고, 다시 생성한 결과를 논문과 비교한 뒤 검토에 필요한 보고서, 표, 그림을 제공합니다. 아래 스크린샷은 기록된 EconoMind 워크플로의 대표 화면으로, 각 단계를 보여 주지만 하나의 연속된 세션을 의미하지는 않습니다.
+
+#### 1. 연구 작업과 근거 정의
+
+연구 질문, 원문 논문과 데이터 세트, 필요한 방법 또는 임계값, 예상 출력, 승인 기준을 설명합니다. 관련 파일을 업로드하거나 `@`로 기존 프로젝트 아티팩트를 참조하여 에이전트가 숨겨진 컨텍스트가 아닌 명시적인 입력에서 시작하도록 합니다.
+
+<p align="center">
+  <img src="../images/readme/product-tour-task.jpg" alt="연구 결론, 생성 아티팩트, 출처 비교를 한 작업 공간에 표시한 EconoMind 논문 재현 작업" width="900">
+</p>
+
+#### 2. 검사 가능한 과학 도구로 실행
+
+에이전트는 공유 Notebook에서 과학 스킬, 권한이 적용된 연구 커넥터, 검색, 파일 작업, Python 또는 R 코드를 함께 사용할 수 있습니다. 생성된 그림을 연구 요약 옆에서 검토할 수 있으며, 아티팩트 기록에서는 캡처된 생성 코드와 실행 근거를 확인할 수 있습니다.
+
+<p align="center">
+  <img src="../images/readme/product-tour-execute.png" alt="연구 요약, 생성된 그림, 캡처된 생성 코드를 나란히 표시한 EconoMind 생물정보학 분석" width="900">
+</p>
+
+#### 3. 보고서, 표, 그림을 한곳에서 검토
+
+최종 응답은 재현된 내용, 달라진 내용, 중요한 한계를 요약합니다. 생성된 Markdown 보고서, CSV 표, 이미지 및 기타 연구 아티팩트는 세션에 연결된 상태로 프로젝트 파일 라이브러리에도 모이며, 대화 옆에서 미리 보고 후속 작업에 다시 사용할 수 있습니다.
+
+<p align="center">
+  <img src="../images/readme/product-tour-output.jpg" alt="에이전트 설명 옆에서 차등 발현 그림과 생성 파일을 미리 보는 EconoMind 재현 결과" width="900">
+</p>
+
+#### 4. 모든 아티팩트를 근거까지 추적
+
+생성된 각 아티팩트는 체크섬이 있는 변경 불가능한 버전으로 저장됩니다. **Provenance** 보기에서는 생성 코드와 실행 기록, 참조된 입력, 관찰된 환경 목록, 생성한 대화 브랜치, 버전별 Reviewer 결과를 표시할 수 있습니다. 검증할 수 없는 근거는 추론하지 않고 사용할 수 없음으로 표시합니다.
+
+<p align="center">
+  <img src="../images/readme/product-tour-provenance.jpg" alt="생성 결과를 추적하는 Provenance 진입점이 있는 EconoMind 연구 아티팩트 미리 보기" width="900">
+</p>
+
+## 벤치마크 성능
+
+
+
+<p align="center">
+</p>
+
+## EconoMind를 선택하는 이유
+
+EconoMind는 채팅, Notebook, 로컬 스크립트, 과학 데이터베이스, 파일, 보고 도구에 흩어진 연구 작업을 실행과 증거가 함께 유지되는 하나의 영구적인 로컬 우선 AI 연구 워크벤치로 통합합니다.
+
+- **영구적인 실행.** 프로젝트, 세션, 파일, 미리보기, 실행 기록은 재시작 후에도 유지되며, 승인된 에이전트는 명령, Python, R을 실행하고 아티팩트를 생성할 수 있습니다.
+- **추적 가능한 결과.** 불변 아티팩트 버전은 검증 가능한 생성 증거를 보존하고 확보할 수 없는 증거를 명확히 표시합니다.
+- **모델 독립적 선택.** 기본 클라우드 제공업체, 호환 사용자 지정 게이트웨이, Claude 또는 Codex 구독을 연결하고 세션마다 모델과 추론 강도를 선택할 수 있습니다.
+- **로컬 우선 제어.** 앱과 프로젝트 상태는 사용자 컴퓨터에 유지되며 외부 호출은 명시적으로 구성하거나 승인한 서비스만 사용합니다.
+- **개방성과 확장성.** 독립적인 Apache-2.0 코드베이스, 스킬, 커넥터, 도구 활동, 생성 파일을 검토할 수 있으며 스킬과 MCP 커넥터를 추가할 수 있습니다.
+
+## 핵심 기능
+
+EconoMind는 프로젝트 관리, 다중 모델 에이전트 실행, Python 및 R Notebook, 과학 데이터 커넥터, 출처가 포함된 불변 아티팩트 버전, 권한이 적용된 사람 참여 제어를 하나의 로컬 워크스페이스에 통합합니다. 변경되는 카탈로그, 패키징 세부 정보, 새 옵션은 설치된 앱과 [최신 릴리스 노트](https://github.com/aipoch/open-science/releases/latest)를 기준으로 확인하세요.
+
+| 영역                                         | 핵심 기능                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **프로젝트와 세션**                          | 프로젝트를 만들고 정리하며, 세션 고정, 영구 메시지 분기와 사이드 대화, 편집 가능한 세션 세부 정보를 지원합니다. 완료된 프롬프트를 원래 후속 경로를 삭제하지 않고 영구적이고 선택 가능한 메시지 분기로 편집하고, 최근 작업·초안·대화 기록·미리보기 상태를 복구할 수 있습니다.                                                                                                                                                                                                                                                                                                                                                         |
+| **에이전트 워크플로**                        | 자연어 세션에서 스트리밍 응답과 목적별로 그룹화된 도구 활동을 확인하고 승인·중지 제어, 후속 작업 대기열, 컨텍스트 압축, 재시작 복구를 사용할 수 있습니다. 완료된 작업을 새 세션으로 분기하고 구조화된 확인, 텍스트·이미지·PDF 주석, 연결된 PDF 읽기 컨텍스트, 프로젝트 메모리, 세션 참조, 검토가 필요한 계획을 결합할 수 있습니다. 알림, 실시간 상태, 시간과 토큰 세부 정보, 명령 팔레트, 소스 미리보기, 프로젝트 전환으로 장시간 연구를 계속 확인하고 관리할 수 있습니다.                                                                                                                                                           |
+| **모델 및 에이전트 백엔드**                  | Apodex, 선별된 에이전트 지원 카탈로그를 제공하는 NVIDIA Build, 최신 OpenAI 및 Anthropic 모델 카탈로그(GPT-6 Astra 및 Claude Fable 5.1)를 포함한 기본 제공 클라우드 공급자뿐 아니라 호환 사용자 지정 게이트웨이, Claude 및 Codex 구독 로그인을 사용할 수 있습니다. 에이전트 백엔드로 Claude Code, OpenCode, Codex 또는 로그인 없는 CodeBuddy를 선택할 수 있으며, 모델/API 호환성 검증, 멀티모달 이미지 입력, 추론 제어, 전용 서브에이전트·검토자·Vision 정책을 제공합니다.                                                                                                                                                            |
+| **스페셜리스트 및 위임**                     | 범위가 지정된 기능을 가진 개인 스페셜리스트 에이전트를 만들고 대화형 사용자 지정, 패키지 가져오기/내보내기, 메인 에이전트에서 즉시 인계하기를 사용할 수 있습니다. 서명된 패키지 마켓플레이스는 공식 및 사용자 승인 GitHub 소스, 충돌을 고려한 가져오기, 64개의 기본 제공 기능 아이콘을 지원하며, 프로덕션 위임은 영구 메시지, 복구, 세션별 위임 스위치를 제공합니다.                                                                                                                                                                                                                                                                 |
+| **Python, R, Notebook 및 HPC**               | 영구 Python, R, REPL 커널과 기록되는 셸 명령을 관리형 오프라인 환경 또는 자체 인터프리터에서 실행합니다. 로컬에서 작업하거나 SSH로 원격 호스트에 연결해 Slurm을 통해 HPC 클러스터에 Notebook 실행을 제출할 수 있습니다. 보호된 네트워크 액세스, 암호화된 자격 증명, 패키지와 변수 검사, 공유 터미널, 점진적 기록 로딩으로 컴퓨팅을 제어하고 관찰할 수 있습니다. 긴 Notebook, REPL, 셸 작업은 백그라운드에서 실행할 수 있습니다 — 에이전트 턴을 놓아주는 동안 정확한 실행 식별 정보, 취소, 출처를 유지하고, 로컬 실행과 원격 컴퓨팅 작업 전반에서 결과를 자동으로 전달합니다. 외부 R 런타임의 패키지 관리는 계속 수동으로 수행합니다. |
+| **문헌 검토 및 참고문헌 관리**               | DOI, PubMed ID, arXiv ID 또는 파일에서 참고문헌을 가져옵니다 — 메타데이터 편집기로 PDF 한 개를 가져오거나, 파일별 진행 상황, 중복 처리, 재시도를 갖춰 여러 개를 한 번에 가져올 수 있습니다 — 그리고 활성 라이브러리의 참고문헌 총계를 한눈에 확인할 수 있습니다. 컬렉션을 정리해 프로젝트에 연결하고 다운로드한 PDF를 휴지통에서 복구할 수 있습니다. Europe PMC, PMC, OpenAlex, arXiv, Unpaywall을 병렬 검색해 오픈 액세스 전문을 찾고, 첨부 파일이나 링크를 잃지 않고 중복 레코드를 병합하며, 저장된 메타데이터에서 아티팩트 출처가 포함된 인용을 서식화합니다.                                                                     |
+| **과학 파일 및 미리보기**                    | 스트리밍 업로드로 최대 10 GB 파일을 첨부하고, 프로젝트 라이브러리를 정리·검색하며, `@` 및 `@path`로 업로드·출력·로컬 폴더를 참조하고, 파일·대화·`.ipynb` 세션을 내보낼 수 있습니다. 과학 데이터, 검색 가능한 PDF, Office 파일, TIFF 등 이미지, 소스 코드, 분자 구조와 반응, Notebook 기록을 인라인 또는 전체 화면으로 미리보고 출처 및 원본으로 돌아가는 탐색 기능을 사용할 수 있습니다.                                                                                                                                                                                                                                             |
+| **아티팩트 및 출처**                         | 체크섬이 있는 콘텐츠, 생성 코드, 실행 기록, 정확한 입력, 환경 목록, 메시지 분기 컨텍스트, 계보, 검토 증거를 포함하는 변경 불가능한 세션 범위 아티팩트 버전을 유지합니다. 편집 가능한 Markdown, 텍스트, 스크립트, 소스 코드는 저장할 때마다 출처를 보존하는 새 버전을 게시하며 이전 버전과 비교할 수 있습니다.                                                                                                                                                                                                                                                                                                                        |
+| **과학 스킬 및 데이터 커넥터**               | **22개의 주요** 기본 제공 스킬과 **24개의 기본 제공** 연구 커넥터로 연구 워크플로를 확장합니다. 대화나 완료된 작업에서 스킬을 만들고, 패키지와 GitHub 소스를 가져오며, 도구 수준 권한과 구성 가져오기/내보내기를 지원하는 사용자 지정 로컬 또는 원격 MCP 커넥터를 추가할 수 있습니다. 핵심 애플리케이션 스킬은 기본 제공 진입점이 계속 작동하도록 항상 활성화로 유지되며, 헤드리스 CLI와 Task SDK는 커넥터를 나열하고 검사하고 활성화 또는 비활성화할 수 있습니다. 리소스 간 태그, 보호된 즐겨찾기 태그, 검색 가능한 필터로 스킬, 커넥터, 스페셜리스트를 정리합니다.                                                                 |
+| **로컬 데이터, 개인정보 보호, 권한 및 검증** | 프로젝트 데이터, 앱 상태, Notebook 캐시를 구성·마이그레이션 가능한 로컬 스토리지에 유지하고, 시스템·수동·직접 프록시 모드와 30일 활동 히트맵 및 실행별 사용량을 제공하는 토큰 대시보드를 사용합니다. `Ask for approval`, `Auto-approve edits`, `Full access`, 범위 지정 권한, 중앙 집중식 자격 증명(헤드리스 Linux 배포를 위한 명시적인 파일 저장 모드 포함), 사용자 승인 컴퓨팅 도메인, 커넥터/도구별 정책으로 작업을 제어합니다. 선택형 검토자는 대화 기록, 실행 로그, 아티팩트를 감사해 통과/경고/실패를 보고하고 영구 증거가 포함된 제한적 수정 루프를 실행할 수 있습니다.                                                       |
+
+## 모델 제공업체
+
+EconoMind는 제품 수준에서 특정 모델에 종속되지 않습니다. 주요 클라우드 LLM 제공업체 또는 사용자 지정 게이트웨이에 연결하거나 기존 Claude 또는 Codex 구독을 재사용할 수 있습니다. 현재 제공업체 사용 가능 여부는 선택한 에이전트 백엔드와 지원 API 프로토콜에 따라 달라집니다. 모델에 연결하는 방법은 네 가지입니다.
+
+| 제공업체 모드              | 작동 방식                                                                                                                                                                                                                                                                      |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **기본 클라우드 제공업체** | 설치된 앱에 표시된 제공업체 목록에서 선택하고 요청된 키로 인증합니다.                                                                                                                                                                                                          |
+| **사용자 지정 게이트웨이** | 호환되는 Base URL, API Key, 정확한 모델 ID를 입력합니다. 기본 API 형식(Messages, Chat Completions 또는 Responses)은 활성 에이전트 프레임워크에서 결정되므로 새 사용자 지정 게이트웨이를 바로 사용할 수 있습니다.                                                               |
+| **Codex 구독**             | Codex 에이전트 프레임워크를 선택한 다음 제공업체 유형에서 Codex 구독을 선택합니다.                                                                                                                                                                                             |
+| **Claude 구독**            | 두 가지 모드로 로그인합니다. **공유** 모드는 브라우저 로그인 자격 증명을 기본 `~/.claude` 프로필에 저장합니다. **격리** 모드는 앱 소유 `CLAUDE_CONFIG_DIR`에서 `claude setup-token`을 실행하여 `~/.claude/`와 완전히 분리하고 브라우저 흐름과 토큰 붙여넣기 폴백을 제공합니다. |
+
+기존 **Local Claude** 제공업체는 제거되었습니다. 저장된 Local Claude 항목은 업그레이드 중 삭제됩니다. **Claude Subscription**을 추가하고 공유 브라우저 로그인 또는 격리된 `claude setup-token` 흐름으로 인증하세요.
+
+기본 클라우드 공급업체에는 OpenAI, Anthropic, Grok (xAI), DeepSeek, 전용 GLM Coding Plan 엔드포인트가 있는 Zhipu AI (GLM), Kimi (Moonshot), MiniMax, 전용 Step Plan 구독 엔드포인트가 있는 StepFun, Xiaomi MIMO, SenseNova, Volcengine Ark, 전용 Bailian for Plan 구독 엔드포인트가 있는 Bailian (Alibaba Cloud), 전용 Tencent Coding Plan 및 Token Plan 구독 엔드포인트가 있는 Tencent TokenHub, OpenCode Go, OpenCode Zen, OpenRouter 통합 게이트웨이 등이 있으며 일부는 지역에 따라 다릅니다.
+
+제공업체, 사용 가능한 모델, 지역 엔드포인트는 이 README와 별개로 변경될 수 있습니다. 설치된 앱의 제공업체 선택기와 연결 테스트를 최신 정보의 기준으로 삼으세요.
+
+## 데이터, 권한 및 신뢰
+
+EconoMind는 프로젝트 데이터, 설정, 아티팩트 버전, 출처 증거를 로컬 컴퓨터에 저장합니다. API Key는 로컬에 보관되며 운영 체제에서 지원할 경우 보안 자격 증명 저장소로 보호됩니다. 로그는 로컬에 있고 자동으로 업로드되지 않습니다.
+
+외부 데이터 흐름은 발생할 수 있으므로 검토해야 합니다.
+
+- 모델 요청은 프롬프트와 필요한 컨텍스트를 선택한 모델 제공업체로 보냅니다.
+- 웹 검색과 원격 커넥터는 표시된 매개변수를 외부 서비스로 보냅니다.
+- 로컬 커넥터는 컴퓨터에서 신뢰할 수 있는 명령을 실행할 수 있습니다.
+- 첨부 파일, `@` 참조, 로그, 생성 보고서에는 민감한 연구 데이터가 포함될 수 있습니다.
+
+작업에 맞는 가장 제한적인 권한 프로필을 선택하세요.
+
+| 모드                 | 동작                                                            | 권장 용도                                          |
+| -------------------- | --------------------------------------------------------------- | -------------------------------------------------- |
+| `Ask for approval`   | 편집, 명령, 네트워크, 커넥터 호출 전에 확인                     | 새 워크플로, 민감한 데이터, 익숙하지 않은 스크립트 |
+| `Auto-approve edits` | 워크스페이스 편집은 자동 허용하고 명령, 네트워크, 커넥터는 확인 | 외부 액세스를 제어하는 신뢰할 수 있는 파일 편집    |
+| `Full access`        | 편집, 명령, 네트워크, 커넥터를 자동 허용                        | 범위가 명확하고 완전히 신뢰하는 무인 작업          |
+
+승인 전에 커넥터 매개변수와 도구 활동을 검토하세요. API Key, 액세스 토큰, 환자 식별자, 미공개 데이터, 민감한 로컬 경로를 스크린샷이나 공개 이슈 로그에 포함하지 마세요.
+
+## 프로젝트 상태
+
+EconoMind는 macOS, Windows, Linux에서 사용할 수 있으며 활발히 개발되는 데스크톱 앱입니다. 신뢰할 수 있는 로컬 우선 연구 워크플로, 확장 가능한 과학 기능, 추적 가능한 연구 아티팩트, 사용자 제어 실행에 중점을 둡니다.
+
+현재 다운로드와 버전별 변경 사항은 [최신 릴리스](https://github.com/aipoch/open-science/releases/latest)를 확인하세요. 제공됨, 일부 구현됨, 계획됨 상태의 기능은 [기능 맵](../../ROADMAP.md#capability-map)을 참고하세요.
+
+EconoMind는 연구 실행과 기록 보관을 지원하지만 연구자는 방법, 해석, 개인정보 보호, 과학적 타당성에 대한 책임을 집니다.
+
+## 개발 및 패키징
+
+EconoMind는 React, TypeScript, Prisma/SQLite, ACP 기반 에이전트 런타임으로 구축된 Electron 앱입니다.
+
+소스 개발 요구 사항:
+
+- Node.js 22([`.nvmrc`](../../.nvmrc) 참고)와 npm
+- Git
+- Notebook을 실행할 때만 Python 3
+
+```bash
+git clone https://github.com/aipoch/open-science.git
+cd open-science
+npm install
+npm run dev
+```
+
+`npm install`은 Prisma 클라이언트를 자동 생성하고 Electron 네이티브 종속성을 설치합니다. `npm run dev`는 Electron main/preload 번들을 빌드하고 렌더러를 시작하여 데스크톱 앱을 엽니다. 개발 데이터는 `~/.open-science-project`에 격리됩니다.
+
+유용한 명령:
+
+| 명령                   | 용도                                 |
+| ---------------------- | ------------------------------------ |
+| `npm run dev`          | 개발 앱 시작                         |
+| `npm run dev:web`      | 개발 앱 + localhost 웹 UI(127.0.0.1) |
+| `npm run dev:headless` | Electron 창 없는 개발 백엔드 + 웹 UI |
+| `npm run lint`         | ESLint 실행                          |
+| `npm run typecheck`    | main 및 renderer 코드 타입 검사      |
+| `npm test`             | Vitest 모음 실행                     |
+| `npm run build`        | 타입 검사 및 앱 빌드                 |
+| `npm run build:web`    | 선택적 localhost 웹 UI 빌드          |
+| `npm run build:mac`    | macOS 빌드 패키징                    |
+| `npm run build:win`    | Windows 빌드 패키징                  |
+| `npm run build:linux`  | Linux 빌드 패키징                    |
+
+패키지 출력은 `dist/`에 기록됩니다.
+
+### Localhost 웹 및 헤드리스 모드
+
+데스크톱 백엔드는 로컬 컴퓨터의 브라우저에 동일한 렌더러를 선택적으로 제공할 수 있습니다. 이 기능은 기본적으로 꺼져 있고 `127.0.0.1`에만 바인딩됩니다.
+
+```bash
+npm run build:web
+npm run dev:web
+```
+
+앱에 출력된 인증 URL을 여세요. `npm run dev:headless`를 사용하면 Electron 창을 열지 않고 백엔드, 트레이, 에이전트 런타임, localhost 웹 서비스를 시작합니다. `OPEN_SCIENCE_WEB_PORT`로 포트를 선택할 수 있습니다(기본값 `44100`). 앱을 명시적으로 종료하면 에이전트와 Notebook 프로세스도 정상적으로 종료됩니다.
+
+### 모바일 원격 액세스
+
+Remote.It 페어링을 통해 휴대전화나 태블릿에서 동일한 localhost 웹 UI에 연결할 수 있습니다. 6자리 EconoMind 코드로 브라우저를 페어링하고 데스크톱에서 한 번 승인하면 루프백 서버를 직접 공개하지 않고 워크스페이스에 연결할 수 있습니다. 브라우저 신뢰는 취소할 수 있으며 모드 변경이나 서비스 종료는 활성 원격 세션을 즉시 무효화합니다.
+
+### 헤드리스 CLI 및 SDK
+
+헤드리스 CLI와 종속성이 없는 Node.js SDK는 데스크톱 및 웹 인터페이스와 같은 로컬 데몬, 프로젝트, 세션, 자격 증명, 권한을 사용합니다. 자세한 사용법은 게시 가능 패키지와 함께 관리하므로 하나의 명령 참조만 유지합니다.
+
+- [CLI 가이드](../../packages/open-science/CLI.md) — 설치, 서비스 수명 주기, 작업 자동화, 아티팩트, 출력 형식, 종료 코드
+- [SDK 패키지 개요](../../packages/open-science/README.md) — Node.js 빠른 시작 및 패키지 진입점
+
+## 자주 묻는 질문
+
+### EconoMind란 무엇이며 누가 개발하나요?
+
+답변: EconoMind는 AIPOCH 팀이 개발하는 독립적인 오픈 소스(Apache-2.0) 연구 워크벤치입니다. **EconoMind**는 제품의 정식 명칭이고 **EconoMind**는 줄임말입니다. 두 이름 모두 동일한 AIPOCH 제품을 가리킵니다.
+
+### EconoMind를 처음 열면 무엇을 해야 하나요?
+
+답변: **Environment**, **Data location**, **Agent runtime**, **Model provider**, **Notebook runtime**의 다섯 설정 단계를 완료하세요. `Action needed`로 표시된 필수 항목을 해결하고, 선택한 에이전트의 설치 또는 복구가 제안되면 수행한 다음 모델 연결을 테스트하세요. Notebook 설정과 사용자 지정 데이터 위치는 선택 사항입니다.
+
+### API Key란 무엇이며 어디에서 받나요?
+
+답변: API Key는 모델 제공업체가 발급하는 비밀 자격 증명입니다. 제공업체의 개발자/API 콘솔에서 만들거나 복사하세요. 이 키를 사용하는 요청에 요금이 청구될 수 있습니다. 암호처럼 취급하고 공유하거나 저장소에 커밋하지 마세요.
+
+### API Key가 필요한가요?
+
+답변: 기존 구독 로그인을 재사용하면 필요하지 않습니다. 공유 브라우저 로그인이나 앱이 관리하는 격리된 `claude setup-token` 흐름으로 Claude 구독을 사용하거나, Codex 백엔드에서 ChatGPT/Codex 구독으로 로그인할 수 있습니다. 기본 클라우드 제공업체와 사용자 지정 게이트웨이에는 각각의 키가 필요합니다.
+
+### 어떤 모델 제공업체를 사용할 수 있나요?
+
+답변: 설정 중 또는 `Settings → Model`에서 제공업체 선택기를 열어 설치된 앱과 선택한 에이전트 백엔드가 지원하는 옵션을 확인하세요. 기본 클라우드 제공업체, 호환 Custom Gateway, 공유 또는 격리 로그인 방식의 Claude 구독, Codex 백엔드의 Codex 구독을 사용할 수 있습니다.
+
+### 모델 연결 테스트가 실패하는 이유는 무엇인가요?
+
+답변: API Key에 빠진 문자나 공백이 없는지, Base URL과 지역이 올바른지, 제공업체의 정확한 모델 ID를 사용했는지 확인하고 네트워크 연결과 계정 잔액도 확인하세요. Claude 구독은 선택한 모드에 따라 공유 브라우저 로그인을 다시 시도하거나 격리된 `claude setup-token` 자격 증명을 갱신하세요.
+
+### 설정 중 `Continue`가 비활성화되는 이유는 무엇인가요?
+
+답변: 현재 단계의 필수 조건이 충족되지 않았습니다. 해당 단계에 따라 `Action needed` 환경 항목을 해결하거나, 선택한 에이전트 런타임을 설치 또는 복구하거나, 모델 제공업체를 검증하세요. Notebook 설정은 선택 사항이며 Notebook 실행에만 영향을 줍니다.
+
+### 설정을 마쳤습니다. 연구 작업을 어떻게 시작하나요?
+
+답변: 프로젝트를 만들거나 열고 세션을 시작한 다음 원본 파일을 첨부하고 목표, 제약 조건, 예상 결과, 검증 기준을 설명하세요. `@`로 프로젝트 파일을 참조하고 `/`로 활성화된 스킬을 선택하세요.
+
+### 원격 HPC 클러스터에서 작업을 실행하려면 어떻게 하나요?
+
+답변: **Settings → Skills**에서 **Remote Compute (SSH)** 스킬을 활성화하고, **Settings → Compute**에서 클러스터를 등록한 다음 세션을 시작해 `/remote-compute-ssh`로 스킬을 선택하세요. 스킬은 호스트 등록, SSH를 통한 짧은 명령, 완전 비동기 작업 제출을 처리합니다. 작업이 완료되면 앱이 자동으로 분석 턴을 시작하므로 폴링 루프를 작성할 필요가 없습니다.
+
+### 명령줄 인터페이스가 있나요?
+
+답변: 있습니다. **Settings → General → Command line tool → Install command**에서 한 번에 설치할 수 있습니다(`open-science`를 PATH에 추가하며 별도 Node.js가 필요하지 않습니다). CLI는 브라우저를 열지 않고 로컬 서비스를 제어하고 연구 작업을 제출합니다.
+
+```bash
+# 백그라운드에서 서비스 시작
+open-science start --no-open
+
+# 프로젝트를 만들고 정확한 이름으로 작업 실행
+open-science project create "Systematic review"
+open-science run --project "Systematic review" \
+  --prompt-file ./task.md \
+  --approval-profile auto \
+  --skill literature-review \
+  --wait --json
+
+# 생성된 아티팩트 다운로드
+open-science artifacts list <session-id> --json
+open-science artifacts download <artifact-id> --output ./report.md
+```
+
+전체 명령 참조, JSON/JSONL 출력 형식, 종료 코드, 헤드리스 서비스 옵션은 [CLI 가이드](../../packages/open-science/CLI.md)를 참고하세요.
+
+### 생성된 결과의 출처를 확인하려면 어떻게 하나요?
+
+답변: 생성된 아티팩트를 열고 **Provenance**를 선택하세요. 버전을 선택하여 콘텐츠 ID와 사용 가능한 생성 코드, 실행 기록, 입력, 환경 인벤토리, 생성 대화 컨텍스트, 리뷰 증거를 확인합니다. EconoMind가 검증할 수 없는 증거는 사용할 수 없음으로 표시됩니다.
+
+### 이후 대화를 잃지 않고 이전 요청을 수정할 수 있나요?
+
+답변: 가능합니다. 완료된 사용자 메시지를 편집해 다시 보내면 해당 지점에서 새 브랜치가 생성됩니다. 원래 후속 턴은 계속 사용할 수 있고, 메시지 옆의 수정 화살표로 대체 경로를 전환합니다.
+
+### 연구 데이터가 내 컴퓨터에 남나요?
+
+답변: 프로젝트, 세션, 파일, 설정, 구성된 자격 증명은 기본적으로 로컬에 저장됩니다. 모델 요청, 웹 검색, 커넥터 호출에 필요한 내용은 선택한 외부 서비스로 전송될 수 있으므로 작업을 실행하기 전에 민감한 입력과 제공업체 정책을 검토하세요.
+
+## 참여하기
+
+EconoMind는 GitHub, Discord, X 및 AIPOCH 웹사이트를 통해 버그 신고, 기능 제안, 설계 토론, 커뮤니티 질문 및 기여를 받습니다. 목적에 가장 잘 맞는 채널을 선택하고 프로젝트 세부 정보를 공개하기 전에 관련 기여 가이드와 공개 게시 안전 안내를 확인하세요.
+
+| 채널                                                                     | 용도                                       |
+| ------------------------------------------------------------------------ | ------------------------------------------ |
+| [GitHub Issues](https://github.com/aipoch/open-science/issues)           | 버그, 재현 가능한 오류, 구체적인 기능 제안 |
+| [GitHub Discussions](https://github.com/aipoch/open-science/discussions) | 설계 질문, 로드맵 제안, 긴 기술 토론       |
+| [Discord](https://discord.gg/zxQAYjReRv)                                 | 커뮤니티 지원, 기여자 조율, 비공식 토론    |
+| [X / @aipoch_ai](https://x.com/aipoch_ai)                                | 릴리스 발표 및 공개 개발 업데이트          |
+| [EconoMind 공식 웹사이트](https://aipoch.com/open-science)     | 공식 제품 개요 및 다운로드                 |
+
+공개 이슈를 만들기 전에 로그와 스크린샷에서 API Key, 토큰, 비공개 파일 경로, 미공개 데이터, 환자 식별자 및 기타 민감한 정보를 제거하세요. 개발 워크플로는 [기여 가이드](CONTRIBUTING.md)를 참고하세요.
+
+> ⭐ **저장소에 Star:** 이 프로젝트가 도움이 되었다면 GitHub에서 Star를 남겨 주세요. Star는 지속적인 개발에 힘이 됩니다. 몇 초면 충분하지만 프로젝트에는 큰 의미가 있습니다.
+
+## 라이선스
+
+Apache License 2.0 — [LICENSE](../../LICENSE)를 참고하세요.

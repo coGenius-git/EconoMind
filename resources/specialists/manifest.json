@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "specialists": [
+    "literature-agent",
+    "methodology-agent",
+    "data-agent",
+    "review-agent"
+  ]
+}
