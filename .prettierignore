@@ -12,6 +12,7 @@ tmp
 .worktree
 .codex
 .scratch
+.dev-isolate
 .superpowers
 
 # Auditable upstream snapshot and native sources retain their original formatting.

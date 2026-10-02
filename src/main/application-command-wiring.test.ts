@@ -263,20 +263,18 @@ describe('production application command wiring', () => {
     expect(occurrences(indexSource + ipcSource, 'registerNetworkIpcHandlers()')).toBe(1)
   })
 
-  it('late-binds the unique Remote Access owner and passes only narrow views to Web and Task', () => {
+  it('leaves Remote Access disabled and passes only narrow views to local Web and Task', () => {
     const startup = compact(
       between(
         indexSource,
-        'const remoteAccess = await RemoteAccessService.create()',
+        'const webController = createWebServiceController(',
         '// A launch that itself requested serving'
       )
     )
-    expect(occurrences(indexSource, 'RemoteAccessService.create()')).toBe(1)
-    expect(startup).toMatch(
-      /const remoteAccess = await RemoteAccessService\.create\(\) bindRemoteAccess\(remoteAccess\) const webController = createWebServiceController\(\{[^}]*externalAccess: remoteAccess\.webAccess/
-    )
-    expect(startup).toContain('remoteAccess.attachWebController(webController)')
-    expect(startup).toContain('registerRemoteAccessIpcHandlers(remoteAccess)')
+    expect(indexSource).not.toContain('RemoteAccessService.create()')
+    expect(indexSource).not.toContain('bindRemoteAccess(remoteAccess)')
+    expect(indexSource).not.toContain('registerRemoteAccessIpcHandlers(remoteAccess)')
+    expect(startup).not.toContain('externalAccess:')
 
     expect(occurrences(ipcSource, 'applicationCommands')).toBe(2)
     expect(indexSource).toContain('applicationCommands,')

@@ -54,24 +54,24 @@ describe('SessionMessageLink', () => {
 
     await act(async () => {
       root.render(
-        <SessionMessageLink href="https://pubmed.ncbi.nlm.nih.gov/123?view=full">
+        <SessionMessageLink href="https://www.worldbank.org/123?view=full">
           Paper
         </SessionMessageLink>
       )
     })
 
     let favicon = container.querySelector<HTMLImageElement>('[data-session-link-favicon] img')
-    expect(favicon?.getAttribute('src')).toBe('https://pubmed.ncbi.nlm.nih.gov/favicon.ico')
+    expect(favicon?.getAttribute('src')).toBe('https://www.worldbank.org/favicon.ico')
     expect(favicon?.getAttribute('loading')).toBe('lazy')
     expect(favicon?.getAttribute('referrerpolicy')).toBe('no-referrer')
 
     await act(async () => {
       root.render(
-        <SessionMessageLink href="https://pubmed.ncbi.nlm.nih.gov/456">Paper</SessionMessageLink>
+        <SessionMessageLink href="https://www.worldbank.org/456">Paper</SessionMessageLink>
       )
     })
     favicon = container.querySelector<HTMLImageElement>('[data-session-link-favicon] img')
-    expect(favicon?.getAttribute('src')).toBe('https://pubmed.ncbi.nlm.nih.gov/favicon.ico')
+    expect(favicon?.getAttribute('src')).toBe('https://www.worldbank.org/favicon.ico')
 
     await act(async () => {
       favicon?.dispatchEvent(new Event('error'))

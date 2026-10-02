@@ -564,6 +564,7 @@ describe('Settings backend ownership architecture', () => {
       'src/main/acp/image-input-compatibility-owner.ts',
       'src/main/acp/restricted-inference-runner.ts',
       'src/main/artifacts/code-reconstruction.ts',
+      'src/main/literature/screening-model.ts',
       'src/main/notebook/host-model-service.ts',
       'src/main/reviewer/model-runtime-owner.ts',
       'src/main/settings/reviewer-model-owner.ts',

@@ -109,19 +109,22 @@ describe('Windows icon assets', () => {
     { relativePath: 'build/icon.ico', expectedHashes: LIGHT_SMALL_FRAME_HASHES },
     { relativePath: 'resources/icon-light.ico', expectedHashes: LIGHT_SMALL_FRAME_HASHES },
     { relativePath: 'resources/icon-dark.ico', expectedHashes: DARK_SMALL_FRAME_HASHES }
-  ])('keeps the user-supplied artwork recognizable in the small frames of $relativePath', (asset) => {
-    const { bytes, entries } = readIco(asset.relativePath)
-    const smallFrameHashes = Object.fromEntries(
-      entries
-        .filter(({ width }) => width in asset.expectedHashes)
-        .map(({ width, byteSize, imageOffset }) => [
-          width,
-          createHash('sha256')
-            .update(bytes.subarray(imageOffset, imageOffset + byteSize))
-            .digest('hex')
-        ])
-    )
+  ])(
+    'keeps the user-supplied artwork recognizable in the small frames of $relativePath',
+    (asset) => {
+      const { bytes, entries } = readIco(asset.relativePath)
+      const smallFrameHashes = Object.fromEntries(
+        entries
+          .filter(({ width }) => width in asset.expectedHashes)
+          .map(({ width, byteSize, imageOffset }) => [
+            width,
+            createHash('sha256')
+              .update(bytes.subarray(imageOffset, imageOffset + byteSize))
+              .digest('hex')
+          ])
+      )
 
-    expect(smallFrameHashes).toEqual(asset.expectedHashes)
-  })
+      expect(smallFrameHashes).toEqual(asset.expectedHashes)
+    }
+  )
 })

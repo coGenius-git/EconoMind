@@ -1,6 +1,7 @@
 # EconoMind 文档索引
 
 - [项目介绍与源码启动](../README.md)
+- [协作准备验证与清理记录](COLLABORATION_CHECK.md)
 - [桌面与本地 Web 运行](DEPLOY.md)
 - [产品需求与验收范围](PRD.md)
 - [开发与贡献](../CONTRIBUTING.md)

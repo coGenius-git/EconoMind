@@ -1022,7 +1022,7 @@ describe('mandatory product glossary', () => {
       manualLower: de.renderer.manual,
       remote: de.renderer.Remote,
       proxy: de.renderer.Proxy,
-      nodeVersion: de.renderer['Node v'],
+
       nodeScript: de.renderer['node — script file'],
       nodePackage: de.renderer['npx — Node package'],
       bioconductor: de.renderer.Bioconductor,
@@ -1045,7 +1045,7 @@ describe('mandatory product glossary', () => {
       manualLower: 'manuell',
       remote: 'Remote',
       proxy: 'Proxy',
-      nodeVersion: 'Node v',
+
       nodeScript: 'Node – Skriptdatei',
       nodePackage: 'npx – Node-Paket',
       bioconductor: 'Bioconductor',
@@ -1090,7 +1090,7 @@ describe('mandatory product glossary', () => {
   it('uses concise infinitive labels for representative German interface actions', () => {
     expect({
       addSshHost: de.renderer['Add SSH host'],
-      trustBrowserFor180Days: de.renderer['Trust this browser for 180 days'],
+
       askEveryTime: de.renderer['Ask every time'],
       askForApproval: de.renderer['Ask for approval'],
       attachSkill: de.renderer['Attach skill'],
@@ -1117,7 +1117,7 @@ describe('mandatory product glossary', () => {
       uncheckAll: de.renderer['Uncheck all']
     }).toEqual({
       addSshHost: 'SSH-Host hinzufügen',
-      trustBrowserFor180Days: 'Diesem Browser 180 Tage vertrauen',
+
       askEveryTime: 'Jedes Mal nachfragen',
       askForApproval: 'Freigabe anfordern',
       attachSkill: 'Fähigkeit anhängen',
@@ -1691,7 +1691,7 @@ describe('mandatory product glossary', () => {
     expect(offenders).toEqual([])
   })
 
-  it('keeps the German README complete, structurally valid, and aligned with the glossary', () => {
+  it('keeps the German README valid and linked to the current EconoMind documentation', () => {
     const readmePath = join(__dirname, '..', '..', '..', '..', 'docs', 'de', 'README.md')
     const readme = readFileSync(readmePath, 'utf8')
     const malformedTableRows: string[] = []
@@ -1712,41 +1712,20 @@ describe('mandatory product glossary', () => {
     expect(readme).not.toMatch(/\b(?:Skill|Connector|Subagent|Shell)\b|Active-Agent-Framework/u)
     expect(readme).not.toMatch(/\bAnrufe\b|Turnusbezogene/u)
     expect(readme).not.toMatch(/Ã|Â|â€|�/u)
-    expect(readme).toContain('MiniMax')
-    expect(readme).toContain('StepFun')
-    expect(readme).toContain('Xiaomi MIMO')
-    expect(readme).toContain('SenseNova')
-    expect(readme).toContain('Volcengine Ark')
-    expect(readme).toContain('Bailian (Alibaba Cloud)')
-    expect(readme).toContain(
-      'abgeschlossene Prompts als dauerhafte, auswählbare Nachrichten-Branches bearbeiten, ohne den ursprünglichen Verlauf zu löschen'
-    )
-    expect(readme).toContain(
-      'Wenn macOS oder Windows vor einem nicht identifizierten Entwickler oder einem unbekannten Herausgeber warnt'
-    )
-    expect(readme).toContain(
-      'Nach Abschluss eines Jobs startet die App automatisch eine Analyseinteraktion; eine eigene Polling-Schleife ist nicht erforderlich.'
-    )
+    expect(readme).toContain('https://github.com/coGenius-git/EconoMind')
+    expect(readme).toContain('[README](../../README.md)')
+    expect(readme).toContain('[Docs](../README.md)')
+    expect(readme).toContain('[Startup](../DEPLOY.md)')
+    expect(readme).toContain('[UPSTREAM.md](../../UPSTREAM.md)')
+    expect(readme).toContain('[Apache-2.0](../../LICENSE)')
+    expect(readme).toContain('Anwendungsbackend')
+    expect(readme).toContain('npm ci')
+    expect(readme).toContain('npm run dev')
     const rootPackage = JSON.parse(
       readFileSync(join(__dirname, '..', '..', '..', '..', 'package.json'), 'utf8')
     ) as { version: string }
-    // The banner assertion tracks the repo version instead of a hardcoded bump target.
-    expect(readme).toContain(`AIPOCH Open-Science v${rootPackage.version} veröffentlicht`)
-    expect(readme).toContain('30-Tage-Aktivitäts-Heatmap')
-    expect(readme).toContain('10 GB')
-    expect(readme).toContain('22 hervorgehobenen')
-    expect(readme).toContain('24 integrierten')
-    expect(readme).toContain('64 integrierte Fähigkeitssymbole')
-    expect(readme).toContain('GPT-6 Astra')
-    expect(readme).toContain('Claude Fable 5.1')
-    expect(readme).toContain('SSH')
-    expect(readme).toContain('Slurm')
-    expect(readme).toContain('Konfigurationsimport/-export')
-    expect(readme).toContain('bearbeitbaren Sitzungsdetails')
-    expect(readme).toContain('Quellenvorschau')
-    expect(readme).toContain('CodeBuddy')
-    expect(readme).toContain('Text-, Bild- und PDF-Anmerkungen')
-    expect(readme).toContain('OpenCode Go und OpenCode Zen')
+    expect(readme).toContain(`Version ${rootPackage.version}`)
+    expect(readme).not.toContain('AIPOCH Open-Science v')
   })
 
   const chosenGenericTerms = {
@@ -2083,8 +2062,7 @@ describe('mandatory product glossary', () => {
       'Search specialists': 'Rechercher des spécialistes',
       'Search specialists…': 'Rechercher des spécialistes…',
       'Specialist delete': 'Suppression du spécialiste',
-      'Remote.It is a third-party service. EconoMind only calls its user-installed desktop CLI and does not include, redistribute, register, or create an account for it.':
-        "Remote.It est un service tiers. EconoMind utilise uniquement son interface en ligne de commande (CLI) de bureau installée par l'utilisateur ; il n'inclut pas ce logiciel, ne le redistribue pas, ne l'enregistre pas et ne crée aucun compte pour ce service.",
+
       'No folders granted yet.': "Aucun accès à un dossier n'a encore été autorisé.",
       "Your home folder itself can't be granted — pick a subfolder.":
         "L'accès ne peut pas être accordé directement au dossier personnel ; choisissez un sous-dossier.",
@@ -3177,11 +3155,6 @@ describe('Russian catalog quality', () => {
 
     expect(offenders).toEqual([])
     expect(catalog('ru').Approve).toBe('Утвердить')
-    expect(
-      catalog('ru')[
-        'Choose "Trust this browser for 180 days" to skip approval on future visits to the same remote address.'
-      ]
-    ).toContain('разрешение на доступ')
   })
 
   it('uses native Russian terminology for reasoning depth', () => {
@@ -3214,10 +3187,7 @@ describe('Russian catalog quality', () => {
       'Creates Plans and records decisions you make during review. This Permission Grant never approves a Plan; you must approve each Plan separately.',
       'Создаёт планы и записывает решения, принятые во время проверки. Это разрешение не утверждает план: каждый план необходимо утверждать отдельно.'
     ],
-    [
-      'Remote.It is a third-party service. EconoMind only calls its user-installed desktop CLI and does not include, redistribute, register, or create an account for it.',
-      'Remote.It — сторонний сервис. EconoMind лишь вызывает установленный пользователем настольный CLI-клиент и не включает его в поставку, не распространяет, не регистрирует и не создаёт для него учётную запись.'
-    ],
+
     ['Incomplete data copy found', 'Обнаружена неполная копия данных'],
     ['Verified data copy found', 'Обнаружена проверенная копия данных'],
     [
@@ -3305,10 +3275,7 @@ describe('Korean safety copy', () => {
       "Notifications only appear while you're using another app. Tasks you cancel and failures the app retries automatically stay silent. Your operating system may ask for notification permission the first time one appears.",
       '알림은 다른 앱을 사용하는 동안에만 표시됩니다. 사용자가 취소한 작업과 앱이 자동으로 다시 시도하는 실패는 알림을 표시하지 않습니다. 알림이 처음 표시될 때 운영 체제에서 알림 권한을 요청할 수 있습니다.'
     ],
-    [
-      'Remote.It is a third-party service. EconoMind only calls its user-installed desktop CLI and does not include, redistribute, register, or create an account for it.',
-      'Remote.It은 제3자 서비스입니다. EconoMind는 사용자가 설치한 데스크톱 CLI를 호출할 뿐이며, 이를 포함하거나 재배포하지 않고 등록하거나 계정을 생성하지도 않습니다.'
-    ],
+
     [
       'This report is posted publicly on GitHub. Edit the error text below to remove anything sensitive before sharing. Your runtime log stays on this device and is never attached automatically.',
       '이 보고서는 GitHub에 공개로 게시됩니다. 공유하기 전에 아래 오류 텍스트를 편집하여 민감한 내용을 제거하세요. 런타임 로그는 이 기기에 남아 있으며 자동으로 첨부되지 않습니다.'
@@ -3668,7 +3635,7 @@ describe('Korean binding terminology', () => {
     ['Refreshing…', '새로고침 중…'],
     ['Application storage', '애플리케이션 저장소'],
     ['Anthropic approx.', 'Anthropic 근사치'],
-    ['Chromium v', 'Chromium v'],
+
     ['Add interpreter…', '인터프리터 추가…'],
     ['Could not add that interpreter.', '해당 인터프리터를 추가할 수 없습니다.'],
     [
@@ -3696,10 +3663,7 @@ describe('Korean binding terminology', () => {
       'Used by host.mcp("{{name}}", …), Specialists, and the generated MCP skill.',
       'host.mcp("{{name}}", …), 스페셜리스트 및 생성된 MCP 스킬에서 사용됩니다.'
     ],
-    [
-      'Two-step verification uses a six-digit code. Approve a new remote session only when its code matches the request shown here.',
-      '2단계 인증은 6자리 코드를 사용합니다. 코드가 여기에 표시된 요청과 일치할 때만 새 원격 세션을 승인하세요.'
-    ],
+
     ['Library', '라이브러리'],
     ['{{count}} tasks_other', '작업 {{count}}개'],
     ['{{count}} repl_other', 'REPL {{count}}개'],

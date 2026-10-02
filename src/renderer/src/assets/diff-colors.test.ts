@@ -9,12 +9,18 @@ type Rgb = [number, number, number]
 
 const themeBlock = (selector: ':root' | '.dark'): string => {
   const escapedSelector = selector.replace('.', '\\.')
-  const match = css.match(new RegExp(`${escapedSelector}\\s*\\{([\\s\\S]*?)\\n\\}`))
-  if (!match?.[1]) throw new Error(`Missing ${selector} theme block`)
-  return match[1]
+  const matches = [...css.matchAll(new RegExp(`${escapedSelector}\\s*\\{([\\s\\S]*?)\\n\\}`, 'g'))]
+  if (matches.length === 0) throw new Error(`Missing ${selector} theme block`)
+  return matches.map((match) => match[1]).join('\n')
 }
 
 const hslToken = (block: string, name: string): Rgb => {
+  const variable = block.match(new RegExp(`--${name}:\\s*var\\(--([\\w-]+)\\);`))
+  if (variable?.[1]) return hslToken(block, variable[1])
+  const hex = block.match(new RegExp(`--${name}:\\s*#([a-fA-F0-9]{6});`))
+  if (hex?.[1]) {
+    return [0, 2, 4].map((offset) => parseInt(hex[1]!.slice(offset, offset + 2), 16) / 255) as Rgb
+  }
   const match = block.match(
     new RegExp(`--${name}:\\s*hsl\\(([\\d.]+)\\s+([\\d.]+)%\\s+([\\d.]+)%\\);`)
   )
