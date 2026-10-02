@@ -1,105 +1,162 @@
-# EconoMind · 经管智研工作台
+# EconoMind · 团队协作指南
 
-面向经济学、管理学、金融学、会计学与公共政策研究的 AI 辅助研究软件。EconoMind 将文献工作区、研究设计、智能体会话和代码执行组织在同一个本地工作台中。
+这是华北五省智能体大赛团队的源码仓库。EconoMind 是面向经济学、管理学、金融学与会计学研究的 Electron 桌面软件，基于 AIPOCH Open Science 定制。
 
-本仓库由 [coGenius-git/EconoMind](https://github.com/coGenius-git/EconoMind) 维护，基于 AIPOCH 的 Open Science 项目进行经管领域定制。源码来源、继承能力和兼容标识见 [上游来源说明](UPSTREAM.md)，许可证见 [LICENSE](LICENSE)。
+**参与流程：获得仓库权限 → 克隆 → 安装依赖 → 启动独立开发环境 → 从最新 `main` 建任务分支 → 修改、验证 → 推送分支并提交 PR → 审查合并。**
 
-## 项目状态
+## 1. 首次安装与启动
 
-- 产品形态：Electron 桌面软件，也提供依赖应用后端的本地 Web 模式。
-- 当前源码版本：`0.27.2`，以 [package.json](package.json) 为准。
-- 已有定制安装包使用 `3.0.0` 标签；源码版本与安装包标签属于不同的版本记录。
-- 本仓库目前主要存放源码，GitHub Actions 已关闭；上游的下载、DOI、签名和跨平台发布记录不代表本仓库的发布成果。
-- 已在 Windows 上验证依赖安装、源码开发启动、页面加载和数据库就绪。这不等于所有功能、外部模型和其他平台均通过验收。
+本指南以 Windows PowerShell 为例。仓库为私有仓库：维护者邀请队友后，队友需接受邀请，并使用自己的 GitHub 账号登录才能克隆。不要共享维护者的密码或令牌。
 
-## 主要工作区
+| 工具                           | 要求                                                       | 检查                              |
+| ------------------------------ | ---------------------------------------------------------- | --------------------------------- |
+| Git                            | Git for Windows，可通过 Git Credential Manager 登录 GitHub | `git --version`                   |
+| Node.js                        | **22.x**，与 `.nvmrc` 一致；自带 npm                       | `node --version`、`npm --version` |
+| Python                         | 本机模块编译需要 Python 3，建议 3.12                       | `py -3 --version`                 |
+| Visual Studio Build Tools 2022 | 勾选“使用 C++ 的桌面开发”，包括 MSVC v143 与 Windows SDK   | 安装后重新打开终端                |
 
-| 工作区       | 源码中的功能                                    |
-| ------------ | ----------------------------------------------- |
-| 文献筛选     | 文献导入、筛选条件、结构化评分和结果导出        |
-| 文献计量     | 关键词、研究热点与文献关系分析辅助              |
-| 研究设计     | 研究问题、理论框架、变量、假设和方法建议        |
-| 计量分析     | 数据分析、模型建议、Python/R 代码与结果解释辅助 |
-| 项目与智能体 | 按项目组织会话、文件、专家角色与研究输出        |
+依赖安装会下载 Electron、生成 Prisma Client、应用仓库补丁并编译本机模块。需要能访问 npm、GitHub 和相关依赖下载服务，首次安装可能需要几分钟。
 
-上述功能仍需结合具体数据、模型配置和测试结果判断是否适合某项研究。模型输出、引用和统计结论需要研究者核验。
+在打算保存源码的目录打开 PowerShell：
 
-## 从源码启动
-
-准备 Git、Node.js 和 npm。`.nvmrc` 建议 Node.js 22；Windows 本机模块编译还需要 Python 和 Visual Studio C++ Build Tools。依赖安装会执行仓库的 `postinstall`，生成 Prisma Client 并准备 Electron 模块。
-
-```bash
+```powershell
 git clone https://github.com/coGenius-git/EconoMind.git
 cd EconoMind
 npm ci
-npm run dev
+npm run dev:isolated
 ```
 
-仓库为私有时，克隆需要具有访问权限的 GitHub 账号。首次启动按向导选择数据位置和模型；模型凭据在软件中配置，不写入源码。
+`npm ci` 使用锁文件中的依赖版本，不要用 `--ignore-scripts` 跳过安装步骤。出现 **EconoMind (DEV)** 开发窗口后，按向导设置模型。打开界面无需先把 API Key 写入代码；实际模型任务需要在软件设置中配置有效凭据。
 
-### 独立开发配置（PowerShell）
+`dev:isolated` 自动把开发配置、数据库、文献与会话保存到已忽略的 `.dev-isolate/`，并允许与安装版并行运行。关闭窗口后用 `Ctrl+C` 结束开发进程。下次启动继续使用相同数据；**不要删除 `.dev-isolate/` 来更新源码**。
 
-下列方式将开发配置、数据库、会话与 Electron 用户配置保存到仓库内已忽略的 `.dev-isolate/` 目录，适合与安装版并行使用：
+普通 `npm run dev` 使用应用默认数据位置；团队日常开发建议使用 `dev:isolated`，避免混用正式研究数据。
+
+### 常见问题
+
+| 现象                                     | 处理                                                                                                                            |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `Repository not found` / 无法克隆        | 确认已接受邀请，Git 登录的账号具有权限                                                                                          |
+| PowerShell 阻止 `npm.ps1`                | 使用 `npm.cmd ci`、`npm.cmd run dev:isolated`，不必关闭系统执行策略                                                             |
+| `node-gyp` 找不到 Python / Visual Studio | 安装上表工具与 C++ 工作负载，重开终端后重新 `npm ci`；多版本 Python 可在当前终端设置 `$env:PYTHON = '你的 python.exe 完整路径'` |
+| 下载超时 / `ECONNRESET`                  | 检查自己的网络或代理，再重试 `npm ci`；不要提交个人代理、`.npmrc` 或镜像凭据                                                    |
+| Prisma Client 缺失或与 schema 不一致     | 先 `npm ci`；切分支只改变 schema 时可执行 `npx prisma generate`                                                                 |
+| Electron 按 Node 启动                    | `dev:isolated` 会移除继承的 `ELECTRON_RUN_AS_NODE` 环境变量                                                                     |
+| peer / deprecated 警告                   | 警告与失败不同，查看退出码和最终错误；不要为消除警告自行升级整套依赖                                                            |
+
+本次检查范围为 Windows x64。macOS/Linux 的编译工具不同，先参考 [运行指南](docs/DEPLOY.md)，验证后再补充对应步骤。
+
+## 2. 团队分工
+
+以下按分工图整理，属于待推进任务，不表示相关新功能已经完成。每项任务先建 Issue，说明范围、预期效果与验收方法。
+
+| 任务                         | 负责人 | 建议查看的源码                                                                                         | 交付与验收                                                                                                |
+| ---------------------------- | ------ | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| 新版 Open Science 新功能增加 | 陈     | `UPSTREAM.md`、`src/main/`、`src/renderer/`                                                            | 先列出具体功能与上游版本；逐项适配并提供操作示例和测试结果，避免整仓覆盖                                  |
+| AI 生图、UI 设计方案选择     | 林     | `docs/design.md`、`src/renderer/src/pages/`                                                            | 选定方案、页面效果与交互说明，交接给 UI 实现                                                              |
+| UI 修改与实现                | 王     | `src/renderer/src/pages/`、`src/renderer/src/components/`                                              | 实现方案；附截图，检查缩放、中文显示与主要交互                                                            |
+| 专家完善                     | 许     | `resources/specialists/`、`resources/skills/`、`src/main/specialist/`                                  | 完善专家角色与能力，给出可运行示例及输出核验说明                                                          |
+| 专家引导式介绍               | 王     | `src/renderer/src/pages/onboarding/`、`src/renderer/src/pages/settings/`                               | 用户理解专家用途并能进入示例；引导与实际能力一致                                                          |
+| 文献库、工作流板块放置区域   | 陈     | `src/renderer/src/pages/literature/`、`src/renderer/src/pages/research-tools/`、`src/main/literature/` | 明确入口、位置与跳转关系；已有文献与工作流仍可正常使用                                                    |
+| 链接知网、一键下载           | 李     | `src/main/literature/`、`resources/skills/`                                                            | 先确认登录与可用入口；验证有权限时下载、无权限/失败时的反馈，保留来源                                     |
+| 模型/API 方案测试            | 许、陈 | 软件“设置 → 模型”、`src/shared/provider-registry.ts`                                                   | 测试图中“step plan”或其他免费 API 方案，平台名称待确认；记录模型、配置、限额和成功/失败案例，凭据仅存本地 |
+
+目录是定位入口，不是各人独占区域。多人修改同一文件时先协调，尤其 UI、专家引导与工作流入口可能同时修改导航。**一个分支处理一个任务。**
+
+## 3. 每次修改的 Git 流程
+
+### 从最新主分支开始
+
+先确认 `git status` 没有未提交修改。有修改时先在所属任务分支提交，或用自己清楚用途的 `git stash` 保存，不要覆盖文件。
 
 ```powershell
-$sourceProfile = Join-Path (Get-Location) '.dev-isolate'
-$env:OPEN_SCIENCE_STORAGE_ROOT = Join-Path $sourceProfile 'storage'
-$env:OPEN_SCIENCE_E2E_STORAGE_ROOT = $env:OPEN_SCIENCE_STORAGE_ROOT
-$env:OPEN_SCIENCE_USER_DATA = Join-Path $sourceProfile 'electron-user-data'
-$env:OPEN_SCIENCE_ALLOW_MULTI_INSTANCE = '1'
-New-Item -ItemType Directory -Force -Path $env:OPEN_SCIENCE_STORAGE_ROOT, $env:OPEN_SCIENCE_USER_DATA | Out-Null
-npm run dev
+git status
+git switch main
+git pull --ff-only origin main
+git switch -c feat/wang-ui
 ```
 
-这些环境变量仅影响当前 PowerShell 会话。名称保留 `OPEN_SCIENCE_*` 是源码兼容约定，含义见 [上游来源说明](UPSTREAM.md)。
+`feat/wang-ui` 是示例，请替换成自己的任务名，例如 `feat/chen-workflow`、`feat/xu-specialists`、`feat/li-cnki`、`docs/lin-ui-design` 或 `test/xu-models`。更新涉及 `package.json` / `package-lock.json` 时重新 `npm ci`。
 
-### 本地 Web 模式
+继续已有任务时使用原分支，并合入最新主分支：
 
-```bash
-npm run dev:web
+```powershell
+git switch feat/wang-ui
+git fetch origin
+git merge origin/main
 ```
 
-打开启动日志输出的带认证信息的本机地址。Web 模式仍需 Electron 主进程提供项目、文件与模型等后端能力；仅上传前端静态文件不能运行完整软件。详细说明见 [运行指南](docs/DEPLOY.md)。
+冲突需确认双方意图、编辑冲突文件并验证，再 `git add` 对应文件、`git commit`。不要只保留自己的一侧，不要强制推送覆盖队友提交。
 
-## 构建与验证
+### 修改与检查
 
-```bash
+```powershell
+npm run dev:isolated
 npm run typecheck
 npm run lint
-npm test -- <相关测试文件>
+npm test -- 相关测试文件路径
 npm run build
 ```
 
-打包定制 Windows 版本时使用 `electron-builder.share.yml`；该配置关闭上游更新发布。先准备构建要求的运行时资源，再按 [运行指南](docs/DEPLOY.md) 打包。构建、安装包启动、模型请求和功能验收是分别需要执行的验证步骤。
+完成启动检查后，先关闭开发窗口并用 `Ctrl+C` 结束开发进程，再执行后续检查，避免开发服务与构建同时写入输出目录。
 
-## 目录与文档
+“相关测试文件路径”需换成实际路径，例如 `npm test -- src/renderer/src/pages/settings/SettingsPage.render.test.tsx`。新功能检查真实操作流程，界面修改附截图，模型任务检查真实请求与输出。
 
-| 路径                                          | 内容                                  |
+需要全量检查时执行 `npm test -- --maxWorkers=2`。Windows 上也可在当前终端设置 `$env:VITEST_WINDOWS_FULL_TEST = '1'` 后执行 `npm test`，使用仓库的单 worker 与超时预算。不要通过删除失败测试或跳过断言让检查通过。
+
+新增界面文字遵循 [AGENTS.md](AGENTS.md)，八种翻译保持对应。新增依赖时同时提交 `package.json` 与 `package-lock.json`。数据库修改遵循现有迁移流程，并确认旧数据仍能打开。
+
+### 提交与推送任务分支
+
+```powershell
+git status
+git diff
+git add 你实际修改的文件路径
+git diff --cached
+git commit -m "feat: 调整工作流入口"
+git push -u origin feat/wang-ui
+```
+
+文件路径、提交说明、分支名均需替换成自己的实际内容。以后向同一分支推送只需 `git push`。不要提交安装包、数据库、日志或真实 API Key。
+
+### 在 GitHub 提交 Pull Request
+
+1. 打开 [仓库](https://github.com/coGenius-git/EconoMind)，进入 **Pull requests → New pull request**。
+2. 选择 **base: `main`**，**compare: 自己的任务分支**。
+3. 写明任务、改动、验证命令与结果、截图和已知限制。
+4. 由维护者审查；反馈后的修改继续提交到原分支，PR 自动更新。
+5. 审查通过后由维护者合并。其他成员切回 `main`，执行 `git pull --ff-only origin main`，再开始新任务。
+
+GitHub Actions 当前关闭，保留的上游工作流不代表自动检查已经运行。PR 作者需如实填写本地验证结果，维护者确认后合并。通过 PR 合并是团队约定，不等于已经配置 GitHub 分支保护。
+
+## 4. 源码地图
+
+| 路径                                          | 用途                                  |
 | --------------------------------------------- | ------------------------------------- |
-| `src/main/`                                   | Electron 主进程、存储、模型与研究流程 |
-| `src/renderer/`                               | 桌面及 Web 界面                       |
-| `src/preload/`、`src/shared/`                 | 界面桥接、协议与共享类型              |
-| `resources/skills/`、`resources/specialists/` | 技能及专家角色                        |
+| `src/renderer/src/`                           | React 页面、组件与前端状态            |
+| `src/main/`                                   | Electron 主进程、模型、存储与研究流程 |
+| `src/preload/`、`src/shared/`                 | 前后端桥接、协议、共享类型与翻译      |
+| `resources/specialists/`、`resources/skills/` | 专家与技能资源                        |
+| `prisma/`、`src/main/database/`               | 数据模型与迁移                        |
 | `packages/`                                   | CLI/SDK、网络沙箱与本机模块           |
-| `prisma/`、`build/`、`scripts/`               | 数据模型、打包资源和开发脚本          |
+| `scripts/`、`build/`、`patches/`              | 检查、打包资源与依赖补丁              |
+| `e2e/`、各目录 `*.test.*`                     | 应用、单元和组件测试                  |
 
-- [文档索引](docs/README.md)
-- [开发与贡献](CONTRIBUTING.md)
-- [路线图](ROADMAP.md)
-- [安全与问题反馈](SECURITY.md)
-- [本地 Web 与远程访问边界](REMOTE_CONTROL.md)
-- [上游来源与兼容说明](UPSTREAM.md)
+`OPEN_SCIENCE_*`、部分内部路径与包名仍有兼容用途，不能因为名字旧就删除或全局替换。许可证、版权和必要补丁需保留。
 
-## 数据与 GitHub
+本地 Web 模式可执行 `npm run dev:web`，但仍依赖 Electron 后端，不能单独上传静态页面运行整个软件。详见 [运行指南](docs/DEPLOY.md)。
 
-软件记录存放在你选择的本地数据目录。GitHub 保存已提交并推送的源码，不会自动同步软件里的聊天、文献或模型配置。
+## 5. 本地记录与提交边界
 
-[.gitignore](.gitignore) 已排除依赖、编译输出、`.dev-isolate/`、运行目录、数据库、真实环境配置和凭据。新增数据存储位置时先检查忽略规则；已经被 Git 跟踪的文件不会因新增忽略规则自动退出跟踪。
+GitHub 只保存已提交并推送的源码，不会自动同步软件里的聊天、文献或模型配置。[.gitignore](.gitignore) 已忽略 `.dev-isolate/`、依赖、构建输出、数据库、真实环境配置与常见凭据文件。
 
-模型调用和外部连接器会向你配置的服务发送任务所需内容，这与 GitHub 源码同步是两个独立过程。
+新增数据位置时用 `git check-ignore -v 文件路径` 检查。已跟踪文件不会因新增忽略规则退出跟踪。提交前检查 `git diff --cached`；截图、日志与示例也要去除私人信息。API Key 不写入源码、README、Issue 或 PR。
 
-## 反馈与许可
+## 6. 验证与其他文档
 
-本项目的问题和建议提交到 [EconoMind Issues](https://github.com/coGenius-git/EconoMind/issues)。提供日志或截图前移除密钥、账号、私人路径和研究数据。
+最近的实际检查见 [验证与清理记录](docs/COLLABORATION_CHECK.md)。全新安装、源码启动与构建已通过，**全量测试仍有失败**。记录区分通过项目与未验证范围，不能据此保证任何电脑或模型配置都不会报错。
 
-本项目沿用 Apache-2.0 许可。保留 AIPOCH / Open Science 及依赖代码的原有署名、许可和版权声明；详细来源见 [UPSTREAM.md](UPSTREAM.md)。
+- [开发约定](CONTRIBUTING.md) · [运行与打包](docs/DEPLOY.md) · [设计规范](docs/design.md)
+- [文档索引](docs/README.md) · [安全反馈](SECURITY.md) · [上游来源](UPSTREAM.md)
+
+源码版本以 `package.json` 为准，目前为 `0.27.2`；既有安装包标签 `3.0.0` 属于另一份版本记录。项目沿用 [Apache-2.0](LICENSE)，保留 AIPOCH / Open Science 与依赖代码的署名和许可。

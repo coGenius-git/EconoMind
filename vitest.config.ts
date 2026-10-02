@@ -37,6 +37,7 @@ const BASE_VITEST_EXCLUDE_PATTERNS = [
   'docs/internal/**',
   '**/.claude/**',
   '**/.codex/**',
+  '**/.dev-isolate/**',
   '**/.pnpm-store/**',
   '**/tmp/**',
   '**/.worktrees/**',

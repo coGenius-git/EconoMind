@@ -16,7 +16,6 @@ describe('SettingsPage loading boundaries', () => {
       'NetworkPanel',
       'StoragePanel',
       'RuntimesPanel',
-      'RemoteControlPanel',
       'SkillsPanel',
       'ConnectorsPanel',
       'SpecialistsPanel',
@@ -37,6 +36,7 @@ describe('SettingsPage loading boundaries', () => {
     }
 
     expect(source).toContain('<SettingsPanelLoadingBoundary')
+    expect(source).not.toContain('RemoteControlPanel')
     expect(boundarySource).toContain('<Suspense')
     expect(boundarySource).toContain('min-h-[360px]')
   })
@@ -45,7 +45,6 @@ describe('SettingsPage loading boundaries', () => {
     for (const load of [
       'loadStatus()',
       'useRuntimeSettingsStore.getState().load()',
-      'RemoteControlPanel.preload()',
       'useSettingsStore.getState().loadSkills()',
       'useSettingsStore.getState().loadConnectors()',
       'useSpecialistStore.getState().load()',

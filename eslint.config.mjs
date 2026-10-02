@@ -26,6 +26,7 @@ export default defineConfig(
       // Codex worktrees (same duplicate-source rationale as .claude/.worktree) and local SDD scratch.
       '**/.codex/**',
       '**/.scratch/**',
+      '**/.dev-isolate/**',
       // Local subagent scratch (ledgers, briefs, ad-hoc demo scripts) — never shipped.
       '**/.superpowers/**',
       // Keep official shadcn registry output unmodified; local adaptations live in wrappers.

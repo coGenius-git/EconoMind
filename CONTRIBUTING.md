@@ -10,10 +10,10 @@
 git clone https://github.com/coGenius-git/EconoMind.git
 cd EconoMind
 npm ci
-npm run dev
+npm run dev:isolated
 ```
 
-`npm ci` 使用锁文件并执行 Prisma Client 生成、依赖补丁和 Electron 本机模块准备。独立开发配置的 PowerShell 示例见 [README](README.md#独立开发配置powershell)。
+`npm ci` 使用锁文件并执行 Prisma Client 生成、依赖补丁和 Electron 本机模块准备。团队分工、独立开发环境、任务分支与 PR 操作步骤见 [README](README.md)。
 
 ## 修改范围
 

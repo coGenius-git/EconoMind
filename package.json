@@ -46,6 +46,7 @@
     "build:web": "npm run gen:web-api-map && vite build --config vite.web.config.ts",
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
+    "dev:isolated": "node scripts/dev-isolated.mjs",
     "dev:native-send-now": "node scripts/dev-native-send-now.cjs",
     "dev:web": "node scripts/dev-app-branding.cjs && node scripts/dev-web.cjs",
     "dev:headless": "node scripts/dev-app-branding.cjs && node scripts/dev-web.cjs --headless",
@@ -58,6 +59,7 @@
     "build:win": "npm run build:web && electron-vite build && electron-builder --win",
     "stage-default-envs": "node scripts/stage-default-envs.mjs",
     "predev": "node scripts/check-prisma-client.mjs && node scripts/dev-app-branding.cjs",
+    "predev:isolated": "node scripts/check-prisma-client.mjs && node scripts/dev-app-branding.cjs",
     "test:e2e:browser": "playwright test --config playwright.browser.config.ts"
   },
   "dependencies": {
@@ -85,7 +87,6 @@
     "js-yaml": "^4.1.0",
     "marked": "^17.0.6",
     "micromatch": "^4.0.8",
-    "openchemlib": "^9.24.0",
     "parse5": "^7.3.0",
     "pdfjs-dist": "5.4.624",
     "sharp": "0.35.4",
@@ -121,7 +122,6 @@
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.1.1",
     "@vitest/coverage-v8": "^4.1.11",
-    "3dmol": "^2.5.5",
     "axe-core": "^4.12.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

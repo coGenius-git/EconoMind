@@ -1,5 +1,10 @@
 # Optional remote access integration
 
+> EconoMind currently disables this integration: `main/index.ts` does not create the service,
+> and Settings has no Remote panel. The former `RemoteControlPanel` has been removed because it
+> had no application entry point. The backend, IPC contracts, pairing code and their tests remain
+> as compatibility code; the description below records the upstream design, not an enabled feature.
+
 This directory owns the optional Remote.It lifecycle plus EconoMind's remote-session verification
 boundary. EconoMind does not bundle, download, install, sign in to, or redistribute the
 provider. The adapter only detects the user-installed CLI and invokes its documented commands
@@ -37,9 +42,9 @@ they are inactive until a matching route is enabled again.
 The integration deliberately touches the rest of the app through a few narrow seams:
 
 - `web-service/http-server.ts` exposes a provider-neutral external authentication hook.
-- `main/index.ts` constructs this service and gives the local Web controller to it.
+- The upstream `main/index.ts` constructed this service and gave the local Web controller to it.
 - `preload/index.ts` exposes typed IPC calls; mutation handlers accept real Electron senders only.
-- `SettingsPage.tsx` mounts one self-contained `RemoteControlPanel` in an independent nav group.
+- The upstream Settings UI had a Remote panel; EconoMind has removed that entry point.
 
 Persistent state lives in `remote-access.json` under the existing config root. Browser secrets are
 never stored in plaintext: the desktop persists only SHA-256 token hashes. One-time grants remain

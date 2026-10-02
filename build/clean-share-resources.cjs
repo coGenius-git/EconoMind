@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-require-imports */
+/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/explicit-function-return-type */
 const fs = require('node:fs/promises')
 const path = require('node:path')
 

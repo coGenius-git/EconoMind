@@ -55,7 +55,7 @@ test('uses economics resources and application branding without remote access', 
   await page.getByRole('button', { name: 'Save changes', exact: true }).click()
   await expect(macro).not.toBeChecked()
   const snapshot = await page.evaluate(() => window.api.settings.getSettings())
-  expect(snapshot.notebookNetwork.disabledOpenScienceDomainGroups).toContain('macroeconomics')
+  expect(snapshot.notebookNetwork?.disabledOpenScienceDomainGroups).toContain('macroeconomics')
   await macro.click()
   await page.getByRole('button', { name: 'Save changes', exact: true }).click()
   await expect(macro).toBeChecked()
