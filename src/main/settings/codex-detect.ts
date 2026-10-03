@@ -5,11 +5,12 @@ import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
-import { isSupportedCodexAcpVersion } from '../../shared/codex-runtime'
+import { isSupportedCodexAcpVersion, isSupportedCodexCliVersion } from '../../shared/codex-runtime'
 import { createLogger } from '../logger'
 import { augmentedPathEnv } from './shell-path'
 import { stripCodexCredentialEnv } from './process-tree'
-import { terminateProcessTree } from '../process-tree'
+import { registerOwnedPosixProcessGroup, terminateProcessTree } from '../process-tree'
+import { spawnCodexWithInstallAdmission } from './managed-codex'
 
 const execFileAsync = promisify(execFile)
 
@@ -127,7 +128,7 @@ const detectCodex = async (
         : await detectNativeCodex(deps, signal)
       // The adapter is app-owned, while the native executable may be the bundled binary or a global
       // installation. Pin the resolved executable through CODEX_PATH in either case.
-      if (!nativeCodex) continue
+      if (!nativeCodex || !isSupportedCodexCliVersion(nativeCodex.version)) continue
       result.nativeCodexPath = nativeCodex.path
       result.nativeCodexVersion = nativeCodex.version
     }
@@ -294,18 +295,24 @@ const runAcpInitializeSmoke =
       const result = await new Promise<boolean>((resolve) => {
         let settled = false
         let buffer = ''
-        const child = spawn(command, args, {
-          windowsHide: true,
-          shell: useShell,
-          stdio: ['pipe', 'pipe', 'ignore'],
-          env: {
-            ...stripCodexCredentialEnv(augmentedPathEnv(process.env)),
-            ...(isJavaScript ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
-            NO_BROWSER: '1',
-            CODEX_HOME: codexHome,
-            ...(opts.codexPath ? { CODEX_PATH: opts.codexPath } : {})
-          }
-        })
+        const child = spawnCodexWithInstallAdmission(
+          [adapterPath, ...(opts.codexPath ? [opts.codexPath] : [])],
+          () =>
+            spawn(command, args, {
+              detached: platform !== 'win32',
+              windowsHide: true,
+              shell: useShell,
+              stdio: ['pipe', 'pipe', 'ignore'],
+              env: {
+                ...stripCodexCredentialEnv(augmentedPathEnv(process.env)),
+                ...(isJavaScript ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
+                NO_BROWSER: '1',
+                CODEX_HOME: codexHome,
+                ...(opts.codexPath ? { CODEX_PATH: opts.codexPath } : {})
+              }
+            })
+        )
+        if (platform !== 'win32') registerOwnedPosixProcessGroup(child)
 
         const finish = (ok: boolean): void => {
           if (settled) return

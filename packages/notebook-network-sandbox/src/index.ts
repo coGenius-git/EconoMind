@@ -4,10 +4,13 @@ import {
   NotebookNetworkRuntime,
   installWindows,
   setWindowsRuntimeAccess,
+  getWindowsRuntimeAccess,
+  isWindowsProtectionConfigured,
   removeWindows,
   statusForPlatform,
   type SandboxDependencyCheck,
-  type WindowsShell
+  type WindowsShell,
+  type WindowsRuntimeVerification
 } from '../runtime/src/index.js'
 
 import { createRuntimeConfig, normalizePolicy } from './config.js'
@@ -16,17 +19,78 @@ import type {
   NotebookNetworkPolicy,
   NotebookNetworkSandboxOptions,
   NotebookNetworkSandboxStatus,
+  NotebookSandboxCleanupResult,
+  NotebookSandboxProcessOutcome,
   NotebookSandboxCommand,
-  NotebookSandboxedProcess
+  NotebookSandboxedProcess,
+  NotebookSandboxTarget
 } from './types.js'
 
 let activeOwnerToken: symbol | undefined
 
-type ActiveCommand = Readonly<{
+class NotebookSandboxPreparationError extends Error {
+  // Certifies only this request: other commands may still own unresolved cleanup debt.
+  readonly cleanupComplete = true
+
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause })
+    this.name = 'NotebookSandboxPreparationError'
+  }
+}
+
+class NotebookSandboxPreparationCleanupError extends Error {
+  constructor(
+    cause: unknown,
+    readonly retryCleanup: () => Promise<NotebookSandboxCleanupResult>
+  ) {
+    super('SHELL_CLEANUP_INCOMPLETE: Shell preparation cleanup could not be verified.', { cause })
+    this.name = 'NotebookSandboxPreparationCleanupError'
+  }
+}
+
+type ActiveCommand = {
+  target: NotebookSandboxTarget
   onNetworkAccessRequest: NotebookSandboxCommand['onNetworkAccessRequest']
   controller: AbortController
+  preparation: Promise<void>
+  prepared: boolean
+  cleanupTask?: Promise<NotebookSandboxCleanupResult>
   detachSignal?: () => void
-}>
+  cleanupRequest?: Readonly<{
+    reason: 'exit' | 'cancel' | 'timeout' | 'spawn-failed'
+    processOutcome: NotebookSandboxProcessOutcome
+  }>
+}
+
+const normalizedTarget = (target: NotebookSandboxTarget | undefined): NotebookSandboxTarget =>
+  target?.kind === 'wsl2'
+    ? {
+        kind: 'wsl2',
+        profileId: target.profileId,
+        distro: target.distro,
+        user: target.user
+      }
+    : { kind: 'native' }
+
+const sharesCleanupDomain = (
+  left: NotebookSandboxTarget,
+  right: NotebookSandboxTarget
+): boolean => {
+  if (left.kind !== right.kind) return false
+  if (left.kind === 'native' || right.kind === 'native') return true
+  return left.distro === right.distro && left.user === right.user
+}
+
+const cleanupComplete = (result: NotebookSandboxCleanupResult): boolean =>
+  result.processesTerminated && result.networkClosed && result.temporaryResourcesRemoved
+
+const initializationFailureReason = (
+  status: Exclude<NotebookNetworkSandboxStatus, { kind: 'ready' }>
+): string => {
+  if (status.kind === 'setupRequired') return status.reasons.join('; ')
+  if (status.kind === 'unsupported') return `unsupported platform: ${status.platform}`
+  return status.message
+}
 
 const dependencyStatus = (
   platform: NodeJS.Platform,
@@ -81,13 +145,9 @@ class NotebookNetworkSandbox {
     this.#initializing = (async () => {
       const status = await this.status()
       if (status.kind !== 'ready' && process.platform !== 'win32') {
-        const reason =
-          status.kind === 'setupRequired'
-            ? status.reasons.join('; ')
-            : status.kind === 'unsupported'
-              ? `unsupported platform: ${status.platform}`
-              : status.message
-        throw new Error(`Notebook network sandbox is not ready: ${reason}`)
+        throw new Error(
+          `Notebook network sandbox is not ready: ${initializationFailureReason(status)}`
+        )
       }
 
       await this.#backend.initialize(createRuntimeConfig(this.#options), async (request) => {
@@ -96,6 +156,7 @@ class NotebookNetworkSandbox {
         try {
           const allowed = await command.onNetworkAccessRequest({
             host: request.host,
+            purpose: request.purpose,
             ...(request.port === undefined ? {} : { port: request.port }),
             signal: command.controller.signal
           })
@@ -117,22 +178,56 @@ class NotebookNetworkSandbox {
   }
 
   async wrap(command: NotebookSandboxCommand): Promise<NotebookSandboxedProcess> {
-    if (!this.#initialized) throw new Error('Notebook network sandbox is not initialized.')
+    let target: NotebookSandboxTarget
+    try {
+      if (!this.#initialized) throw new Error('Notebook network sandbox is not initialized.')
+      target = normalizedTarget(command.target)
+      await this.#reconcilePendingCommands(target)
+    } catch (error) {
+      // No command has been registered or passed to the runtime. The caller may release this
+      // request's unused resources, but the commands blocking admission retain their own debt.
+      throw new NotebookSandboxPreparationError(error)
+    }
     const commandId = randomUUID()
     const shell = command.shell as string | WindowsShell | undefined
+    const controller = new AbortController()
+    const abort = (): void => controller.abort(command.signal?.reason)
+    if (command.signal?.aborted) abort()
+    else command.signal?.addEventListener('abort', abort, { once: true })
+    let finishPreparation!: () => void
+    const activeCommand: ActiveCommand = {
+      target,
+      onNetworkAccessRequest: command.onNetworkAccessRequest,
+      controller,
+      preparation: new Promise<void>((resolve) => (finishPreparation = resolve)),
+      prepared: false,
+      ...(command.signal
+        ? { detachSignal: () => command.signal?.removeEventListener('abort', abort) }
+        : {})
+    }
+    this.#activeCommands.set(commandId, activeCommand)
     let wrapped: Awaited<ReturnType<typeof NotebookNetworkRuntime.wrap>>
     try {
       wrapped = await this.#backend.wrap({
+        target,
         command: command.command,
         ...(command.executable ? { executable: command.executable, args: command.args ?? [] } : {}),
         commandId,
         ...(shell ? { shell } : {}),
         cwd: command.cwd,
         env: command.env ?? {},
+        ...(command.pathEnvironment ? { pathEnvironment: command.pathEnvironment } : {}),
         ...(command.localRpcSocketPath ? { localRpcSocketPath: command.localRpcSocketPath } : {}),
         ...(command.inheritedFileDescriptorCount
           ? { inheritedFileDescriptorCount: command.inheritedFileDescriptorCount }
           : {}),
+        ...(command.superviseProcessTree ? { superviseProcessTree: true } : {}),
+        ...(command.windowsShellControlPipe
+          ? { windowsShellControlPipe: command.windowsShellControlPipe }
+          : {}),
+        windowsProtectionRequired: command.windowsProtectionRequired,
+        windowsRuntimeAccessRequired: command.windowsRuntimeAccessRequired,
+        signal: controller.signal,
         filesystem: command.filesystem ?? {
           readOnlyRoots: [command.cwd],
           readWriteRoots: [command.cwd],
@@ -140,27 +235,63 @@ class NotebookNetworkSandbox {
           deniedWriteRoots: []
         }
       })
+      activeCommand.prepared = true
     } catch (error) {
-      this.#backend.cleanupAfterCommand(commandId)
-      throw error
+      const cleanup = await this.#releaseCommand(
+        commandId,
+        { processesTerminated: true },
+        'spawn-failed'
+      ).catch(() => undefined)
+      if (!cleanup || !cleanupComplete(cleanup)) {
+        // Retain the exact command's cleanup ownership even though no process was returned.
+        throw new NotebookSandboxPreparationCleanupError(error, () =>
+          this.#releaseCommand(commandId, { processesTerminated: true }, 'spawn-failed')
+        )
+      }
+      throw new NotebookSandboxPreparationError(error)
+    } finally {
+      finishPreparation()
     }
-    const controller = new AbortController()
-    const abort = (): void => controller.abort(command.signal?.reason)
-    if (command.signal?.aborted) abort()
-    else command.signal?.addEventListener('abort', abort, { once: true })
-    this.#activeCommands.set(commandId, {
-      onNetworkAccessRequest: command.onNetworkAccessRequest,
-      controller,
-      ...(command.signal
-        ? { detachSignal: () => command.signal?.removeEventListener('abort', abort) }
-        : {})
-    })
+    let cleanupPromise: Promise<NotebookSandboxCleanupResult> | undefined
+    const assertOpen = (): void => {
+      if (activeCommand.cleanupRequest) {
+        throw new Error('Notebook sandbox process is already closed.')
+      }
+    }
     return {
       argv: wrapped.argv,
       env: wrapped.env,
-      annotateStderr: (stderr) => this.#backend.annotateStderr(commandId, stderr),
+      ...(wrapped.confirmProcessTreeTermination
+        ? { confirmProcessTreeTermination: wrapped.confirmProcessTreeTermination }
+        : {}),
+      ...(wrapped.beginSpawn
+        ? {
+            beginSpawn: () => {
+              assertOpen()
+              return wrapped.beginSpawn!()
+            }
+          }
+        : {}),
+      annotateStderr: (stderr, stdout) => this.#backend.annotateStderr(commandId, stderr, stdout),
+      setExecutionActive: (active) => {
+        if (active) assertOpen()
+        this.#backend.setCommandExecutionActive(commandId, active)
+      },
       resetNetworkConnections: () => this.#backend.resetCommandConnections(commandId),
-      cleanup: () => this.#releaseCommand(commandId, true)
+      cleanup: (reason, processOutcome) => {
+        if (cleanupPromise) return cleanupPromise
+        cleanupPromise = this.#releaseCommand(commandId, processOutcome, reason).then(
+          (result) => {
+            if (!cleanupComplete(result)) cleanupPromise = undefined
+            return result
+          },
+          (error) => {
+            cleanupPromise = undefined
+            throw error
+          }
+        )
+        return cleanupPromise
+      }
     }
   }
 
@@ -215,14 +346,36 @@ class NotebookNetworkSandbox {
     return { cancelled: result.cancelled === true }
   }
 
+  async isWindowsProtectionConfigured(): Promise<boolean> {
+    if (process.platform !== 'win32')
+      throw new Error('Windows protection is only available on Windows.')
+    if (this.#initializing) await this.#initializing
+    return isWindowsProtectionConfigured(createRuntimeConfig(this.#options))
+  }
+
+  async getWindowsRuntimeAccess(
+    executable: string
+  ): Promise<{ authorized: boolean; registered: boolean }> {
+    if (process.platform !== 'win32')
+      throw new Error('R runtime access is only available on Windows.')
+    if (this.#initializing) await this.#initializing
+    return getWindowsRuntimeAccess(createRuntimeConfig(this.#options), executable)
+  }
+
   async setWindowsRuntimeAccess(
     executable: string,
-    authorized: boolean
+    authorized: boolean,
+    verification?: WindowsRuntimeVerification
   ): Promise<{ cancelled: boolean }> {
     if (process.platform !== 'win32')
       throw new Error('R runtime access is only available on Windows.')
     if (this.#initializing) await this.#initializing
-    return setWindowsRuntimeAccess(createRuntimeConfig(this.#options), executable, authorized)
+    return setWindowsRuntimeAccess(
+      createRuntimeConfig(this.#options),
+      executable,
+      authorized,
+      verification
+    )
   }
 
   async removeWindows(): Promise<{ cancelled: boolean }> {
@@ -238,26 +391,108 @@ class NotebookNetworkSandbox {
   async dispose(): Promise<void> {
     if (this.#initializing) await this.#initializing
     if (!this.#initialized) return
-    this.#initialized = false
-    for (const commandId of this.#activeCommands.keys()) this.#releaseCommand(commandId, false)
+    const preparing = [...this.#activeCommands.values()]
+    for (const command of preparing) {
+      if (!command.controller.signal.aborted) {
+        command.detachSignal?.()
+        command.controller.abort(new Error('Notebook process ended.'))
+      }
+    }
+    await Promise.all(preparing.map((command) => command.preparation))
+    const results = await Promise.all(
+      [...this.#activeCommands.entries()].map(([commandId, command]) =>
+        this.#releaseCommand(commandId, { processesTerminated: !command.prepared })
+      )
+    )
+    if (results.some((result) => !cleanupComplete(result))) {
+      throw new Error('Notebook network sandbox cleanup was incomplete.')
+    }
     try {
       await this.#backend.reset()
+      this.#initialized = false
     } finally {
-      if (activeOwnerToken === this.#ownerToken) activeOwnerToken = undefined
+      if (!this.#initialized && activeOwnerToken === this.#ownerToken) activeOwnerToken = undefined
     }
   }
 
-  #releaseCommand(commandId: string, cleanupBackend: boolean): void {
+  #releaseCommand(
+    commandId: string,
+    processOutcome: NotebookSandboxProcessOutcome,
+    reason: 'exit' | 'cancel' | 'timeout' | 'spawn-failed' = 'cancel'
+  ): Promise<NotebookSandboxCleanupResult> {
     const command = this.#activeCommands.get(commandId)
-    if (!command) return
+    if (!command) {
+      return Promise.resolve({
+        processesTerminated: processOutcome.processesTerminated,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      })
+    }
+    if (!command.controller.signal.aborted) {
+      command.detachSignal?.()
+      command.controller.abort(new Error('Notebook process ended.'))
+    }
+    if (command.cleanupTask) return command.cleanupTask
+    const retry = Boolean(command.cleanupRequest)
+    command.cleanupRequest ??= { reason, processOutcome }
+    command.cleanupTask = (async () => {
+      const retainedOutcome = command.cleanupRequest!.processOutcome
+      if (retry && !retainedOutcome.processesTerminated && retainedOutcome.confirmTermination) {
+        // Only the original process owner can supply new evidence. The runtime consumes a snapshot;
+        // resource-cleanup layers cannot upgrade an unverified outcome themselves.
+        const confirmed = await retainedOutcome.confirmTermination().catch(() => false)
+        if (confirmed) {
+          command.cleanupRequest = {
+            reason: command.cleanupRequest!.reason,
+            processOutcome: { processesTerminated: true }
+          }
+        }
+      }
+      const result = await this.#backend.cleanupAfterCommand(
+        commandId,
+        command.cleanupRequest!.reason,
+        { processesTerminated: command.cleanupRequest!.processOutcome.processesTerminated }
+      )
+      if (cleanupComplete(result)) this.#forgetCommand(commandId)
+      return result
+    })().finally(() => {
+      command.cleanupTask = undefined
+    })
+    return command.cleanupTask
+  }
+
+  async #reconcilePendingCommands(target: NotebookSandboxTarget): Promise<void> {
+    const pending = [...this.#activeCommands.entries()].filter(
+      ([, command]) =>
+        Boolean(command.cleanupRequest) && sharesCleanupDomain(command.target, target)
+    )
+    if (pending.length === 0) return
+    const results = await Promise.all(
+      pending.map(([commandId, command]) =>
+        this.#releaseCommand(
+          commandId,
+          command.cleanupRequest!.processOutcome,
+          command.cleanupRequest!.reason
+        )
+      )
+    )
+    if (
+      results.some(
+        (result) => !cleanupComplete(result) && result.admission !== 'independent-command-allowed'
+      )
+    ) {
+      throw new Error('SHELL_CLEANUP_INCOMPLETE: Previous shell cleanup could not be reconciled.')
+    }
+  }
+
+  #forgetCommand(commandId: string): void {
+    const command = this.#activeCommands.get(commandId)
+    command?.detachSignal?.()
     this.#activeCommands.delete(commandId)
-    command.detachSignal?.()
-    command.controller.abort(new Error('Notebook process ended.'))
-    if (cleanupBackend) this.#backend.cleanupAfterCommand(commandId)
   }
 }
 
-export { NotebookNetworkSandbox }
+export { NotebookNetworkSandbox, NotebookSandboxPreparationError }
 // Shared transport accepts an already validated numeric destination, preserving DNS pinning.
 export { tunnelThroughProxy } from '../runtime/src/gateway/command-gateway.js'
 export type {
@@ -269,6 +504,10 @@ export type {
   NotebookNetworkSandboxOptions,
   NotebookNetworkSandboxStatus,
   NotebookSandboxCommand,
+  NotebookSandboxCleanupReason,
+  NotebookSandboxCleanupResult,
+  NotebookSandboxProcessOutcome,
+  NotebookSandboxTarget,
   NotebookSandboxResources,
   NotebookSandboxedProcess,
   NotebookTrustBundle

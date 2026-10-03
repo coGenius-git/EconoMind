@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useSettingsStore } from '@/stores/settings-store'
 import { i18next } from '@/i18n'
+import type { AgentFrameworkView } from '../../../../shared/settings'
 import { ProviderForm } from './ProviderForm'
 import { getApiKeySecurityCopyKeys } from './provider-key-security'
 import {
@@ -35,15 +36,19 @@ const render = (
   {
     onChange = vi.fn(),
     errors,
+    supportedModels,
     hasStoredKey = false,
     showCodexSubscriptions = false,
-    showClaudeIsolated = false
+    showClaudeIsolated = false,
+    framework
   }: {
     onChange?: () => void
+    supportedModels?: string[]
     errors?: ProviderFormErrors
     hasStoredKey?: boolean
     showCodexSubscriptions?: boolean
     showClaudeIsolated?: boolean
+    framework?: AgentFrameworkView
   } = {}
 ): void => {
   act(() => {
@@ -52,15 +57,174 @@ const render = (
         value={value}
         onChange={onChange}
         errors={errors}
+        supportedModels={supportedModels}
         hasStoredKey={hasStoredKey}
         showCodexSubscriptions={showCodexSubscriptions}
         showClaudeIsolated={showClaudeIsolated}
+        framework={framework}
       />
     )
   })
 }
 
 describe('ProviderForm field switching', () => {
+  it('quick-fills a local model preset into the draft on tap', () => {
+    // The seed/revert patch semantics are pinned as unit tests on localModelPresetPatch; this
+    // smoke test only wires the preset buttons to onChange.
+    const onChange = vi.fn()
+    render(createEmptyProviderFormValue({ type: 'custom' }), { onChange })
+
+    act(() => {
+      container
+        .querySelector<HTMLButtonElement>('button[aria-controls="provider-local-model-server"]')
+        ?.click()
+    })
+    const ollama = [...container.querySelectorAll<HTMLButtonElement>('button[type="button"]')].find(
+      (button) => button.textContent?.includes('Ollama')
+    )
+    act(() => ollama?.click())
+
+    expect(onChange).toHaveBeenCalledWith({
+      baseUrl: 'http://localhost:11434',
+      apiEndpoint: 'openai',
+      name: 'Ollama'
+    })
+  })
+
+  it('uses the shared disclosure for local model server presets', () => {
+    render(createEmptyProviderFormValue({ type: 'custom' }))
+
+    const disclosure = container.querySelector<HTMLButtonElement>(
+      'button[aria-controls="provider-local-model-server"]'
+    )
+    expect(disclosure?.getAttribute('aria-expanded')).toBe('false')
+    expect(container.querySelector('details')).toBeNull()
+
+    act(() => disclosure?.click())
+
+    expect(disclosure?.getAttribute('aria-expanded')).toBe('true')
+    expect(
+      container.querySelector('[role="group"][aria-label="Local model server"]')
+    ).not.toBeNull()
+  })
+
+  it('opens local model presets for a loopback gateway', () => {
+    render(
+      createEmptyProviderFormValue({
+        type: 'custom',
+        baseUrl: 'http://localhost:11434'
+      })
+    )
+
+    const disclosure = container.querySelector<HTMLButtonElement>(
+      'button[aria-controls="provider-local-model-server"]'
+    )
+    expect(disclosure?.getAttribute('aria-expanded')).toBe('true')
+
+    act(() => disclosure?.click())
+
+    expect(disclosure?.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('opens local model presets when the base URL becomes loopback', () => {
+    const onChange = vi.fn()
+    render(createEmptyProviderFormValue({ type: 'custom' }), { onChange })
+
+    const baseUrl = container.querySelector<HTMLInputElement>('[aria-label="Base URL"]')
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    act(() => {
+      setter?.call(baseUrl, 'http://localhost:11434')
+      baseUrl?.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    expect(
+      container
+        .querySelector<HTMLButtonElement>('button[aria-controls="provider-local-model-server"]')
+        ?.getAttribute('aria-expanded')
+    ).toBe('true')
+  })
+
+  it('marks the API key optional for a loopback custom gateway', () => {
+    render(
+      createEmptyProviderFormValue({
+        type: 'custom',
+        baseUrl: 'http://localhost:11434',
+        model: 'qwen3:14b'
+      })
+    )
+
+    const keyLabel = container.querySelector('label[for="provider-key"]')
+    expect(keyLabel?.textContent).toContain('(optional)')
+    expect(container.querySelector('#provider-key')?.getAttribute('aria-required')).toBeNull()
+  })
+
+  it('explains a framework the draft cannot drive while keeping the save unblocked', () => {
+    const value = createEmptyProviderFormValue({
+      type: 'custom',
+      baseUrl: 'http://localhost:11434',
+      model: 'qwen3:14b',
+      apiEndpoint: 'openai'
+    })
+    render(value, {
+      framework: {
+        id: 'claude-code',
+        displayName: 'Claude Code',
+        supportedApiTypes: ['anthropic'],
+        supportsSkills: true
+      }
+    })
+
+    expect(container.textContent).toContain('Not usable with Claude Code')
+    expect(container.textContent).toContain('/v1/messages')
+
+    // The same draft under a framework that speaks its format shows no warning.
+    render(value, {
+      framework: {
+        id: 'opencode',
+        displayName: 'OpenCode',
+        supportedApiTypes: ['anthropic', 'openai'],
+        supportsSkills: true
+      }
+    })
+    expect(container.textContent).not.toContain('Not usable with')
+  })
+
+  it('shows the expanded SenseNova chat catalog and links directly to API keys', () => {
+    render(createEmptyProviderFormValue({ type: 'official', vendorId: 'sensenova' }))
+
+    for (const model of [
+      'sensenova-6.8-flash-lite',
+      'deepseek-v4-pro',
+      'deepseek-v4-flash',
+      'glm-5.2',
+      'kimi-k3',
+      'sensenova-6.7-flash-lite'
+    ]) {
+      expect(container.textContent).toContain(model)
+    }
+    expect(container.textContent).not.toContain('sensenova-u1')
+    expect(container.textContent).not.toContain('Refresh from vendor')
+    expect(
+      container.querySelector('a[href="https://platform.sensenova.cn/console/keys"]')?.textContent
+    ).toBe('Get an API key')
+  })
+
+  it('shows only the Global chat model even when an edit carries the China catalog', () => {
+    render(
+      createEmptyProviderFormValue({ type: 'official', vendorId: 'sensenova', region: 'global' }),
+      {
+        supportedModels: ['deepseek-v4-pro', 'sensenova-6.7-flash-lite']
+      }
+    )
+    expect(container.querySelector('[aria-label="Endpoint"]')?.textContent).toBe('Global')
+    expect(container.textContent).toContain('sensenova-6.8-flash-lite')
+    expect(container.textContent).not.toContain('deepseek-v4-pro')
+    expect(container.textContent).not.toContain('sensenova-6.7-flash-lite')
+    expect(
+      container.querySelector('a[href="https://platform.sensenova.ai/console/keys"]')?.textContent
+    ).toBe('Get an API key')
+  })
+
   it('describes unencrypted file storage without claiming OS protection', () => {
     useSettingsStore.setState({ credentialStore: 'file' })
     render(createEmptyProviderFormValue({ type: 'custom' }))
@@ -90,13 +254,7 @@ describe('ProviderForm field switching', () => {
     expect(container.querySelector<HTMLInputElement>('[aria-label="Model"]')?.placeholder).toBe(
       'e.g. deepseek-v4-flash'
     )
-    const contextWindow = container.querySelector<HTMLInputElement>('[aria-label="Context window"]')
-    expect(contextWindow?.placeholder).toBe('Use provider default')
-    expect(contextWindow?.getAttribute('role')).toBeNull()
-    expect(
-      container.querySelector('[role="group"][aria-labelledby="provider-context-window-label"]')
-        ?.textContent
-    ).toBe('32K64K128K200K256K1M')
+    expect(container.querySelector('[aria-label="Context window"]')).toBeNull()
     expect(container.querySelector('[aria-label="Maximum input tokens"]')).toBeNull()
     expect(container.querySelector('[aria-label="Maximum output tokens"]')).toBeNull()
 
@@ -141,17 +299,16 @@ describe('ProviderForm field switching', () => {
   it('shows context and input/output presets as inline shortcuts', () => {
     render(createEmptyProviderFormValue({ type: 'custom' }))
 
-    expect(
-      container.querySelector('[role="group"][aria-labelledby="provider-context-window-label"]')
-        ?.textContent
-    ).toBe('32K64K128K200K256K1M')
-
     act(() => {
       Array.from(container.querySelectorAll('button'))
         .find((button) => button.textContent === 'Advanced settings')
         ?.click()
     })
 
+    expect(
+      container.querySelector('[role="group"][aria-labelledby="provider-context-window-label"]')
+        ?.textContent
+    ).toBe('32K64K128K200K256K1M')
     expect(
       container.querySelector('[role="group"][aria-labelledby="provider-max-input-tokens-label"]')
         ?.textContent
@@ -199,8 +356,22 @@ describe('ProviderForm field switching', () => {
     expect(providerType?.textContent).toContain('xAI (Grok)')
     expect(icon?.getAttribute('src')).toMatch(/^data:image\/svg\+xml/)
     expect(decodeURIComponent(icon?.getAttribute('src') ?? '')).toContain('<title>Grok</title>')
+    expect(container.textContent).toContain('grok-4.7')
     expect(container.textContent).toContain('grok-4.6')
   })
+
+  it.each(['grok-4.7', 'grok-4.6', 'grok-4.3'])(
+    'labels the xAI catalog default without changing the saved %s selection',
+    (model) => {
+      const value = createEmptyProviderFormValue({ type: 'xai-subscription', model })
+      const onChange = vi.fn()
+      render(value, { onChange })
+
+      expect(container.querySelector('code')?.textContent).toBe('Default model: grok-4.7 · 500K')
+      expect(value.model).toBe(model)
+      expect(onChange).not.toHaveBeenCalled()
+    }
+  )
 
   it('renders the bundled Bailian brand mark and regional catalog', () => {
     render(
@@ -429,6 +600,25 @@ describe('ProviderForm field switching', () => {
     expect(trigger?.textContent).toContain('DeepSeek')
   })
 
+  it('explains DeepSeek routing and retains legacy tags after refresh', () => {
+    render(createEmptyProviderFormValue({ type: 'official', vendorId: 'deepseek' }), {
+      supportedModels: ['deepseek-flash', 'deepseek-v4-pro']
+    })
+    const link = container.querySelector(
+      'a[href="https://api-docs.deepseek.com/quick_start/pricing/"]'
+    )
+    expect(link?.textContent).toBe('DeepSeek API model and routing details')
+    expect(container.textContent).toContain('with Flash pricing')
+    expect(container.textContent).toContain('original model IDs')
+    const tags = Array.from(container.querySelectorAll('span')).map((span) => span.textContent)
+    expect(tags).toContain('deepseek-v4-flash')
+    expect(tags).toContain('deepseek-v4-flash-vision-exp')
+    render(createEmptyProviderFormValue({ type: 'official', vendorId: 'anthropic' }))
+    expect(
+      container.querySelector('a[href="https://api-docs.deepseek.com/quick_start/pricing/"]')
+    ).toBeNull()
+  })
+
   it('shows a key field but no base URL or model control for an official vendor', () => {
     render(createEmptyProviderFormValue({ type: 'official', vendorId: 'deepseek' }))
 
@@ -442,6 +632,23 @@ describe('ProviderForm field switching', () => {
     expect(container.textContent).toContain('deepseek-v4-pro')
     expect(container.textContent).toContain('deepseek-v4-flash-vision-exp')
   })
+
+  it.each([
+    {
+      vendorId: 'openrouter',
+      label: 'OpenRouter',
+      models: ['openrouter/free', 'google/gemma-4-31b-it:free']
+    },
+    { vendorId: 'opencode', label: 'OpenCode Zen', models: ['big-pickle', 'mimo-v2.5-free'] }
+  ] as const)(
+    'shows $label and its free models in the provider form',
+    ({ vendorId, label, models }) => {
+      render(createEmptyProviderFormValue({ type: 'official', vendorId }))
+
+      expect(container.querySelector('[aria-label="Provider type"]')?.textContent).toContain(label)
+      for (const model of models) expect(container.textContent).toContain(model)
+    }
+  )
 
   it('shows a region-specific "get a key" link for an official vendor', () => {
     render(createEmptyProviderFormValue({ type: 'official', vendorId: 'zhipu', region: 'china' }))
@@ -536,15 +743,15 @@ describe('ProviderForm field switching', () => {
     )
   })
 
-  it('moves custom-provider descriptions into generic field-help tooltips', async () => {
+  it('identifies field-help tooltips by the field they explain', async () => {
     render(createEmptyProviderFormValue({ type: 'custom' }))
     const helpButtons = Array.from(
       container.querySelectorAll<HTMLButtonElement>('[data-slot="field-help"]')
     )
 
-    expect(helpButtons).toHaveLength(5)
+    expect(helpButtons).toHaveLength(4)
     expect(
-      helpButtons.every((button) => button.getAttribute('aria-label') === 'More information')
+      helpButtons.every((button) => button.getAttribute('aria-label')?.startsWith('Help for '))
     ).toBe(true)
     expect(container.textContent).not.toContain(
       'Base URL, key, and model for an Anthropic or OpenAI-compatible endpoint'

@@ -12,6 +12,7 @@ import {
 } from '@/stores/preview-workbench-store'
 import { previewLeaveGuards } from '@/stores/preview-leave-guard'
 import { useNavigationStore } from '@/stores/navigation-store'
+import { useSearchMessageFocusStore } from '@/stores/search-message-focus-store'
 import { useProjectStore } from '@/stores/project-store'
 import { i18next } from '@/i18n'
 import { createNotebookInputPreviewKey } from '../../../../shared/notebook'
@@ -33,6 +34,7 @@ vi.mock('./ArtifactProvenancePanel', () => ({
     onClose: () => void
     onVersionChange?: (item: PreviewFileItem) => boolean
     initialTab?: 'sources'
+    tooltipClassName?: string
   }) => {
     provenancePanelSpy(props)
     return (
@@ -347,6 +349,19 @@ const managedInspect = {
   text: '# Current\n',
   textFormat: { hasUtf8Bom: false, newline: 'lf' as const, hasTrailingNewline: true }
 }
+
+describe('PreviewFileSurface header', () => {
+  it('shows the file type icon before the file name', async () => {
+    await act(async () => {
+      root.render(<PreviewFileSurface item={item} onClose={vi.fn()} />)
+    })
+
+    const fileName = container.querySelector('[data-testid="file-name-root"]')
+    expect(
+      fileName?.parentElement?.previousElementSibling?.querySelector('svg.lucide-file-image')
+    ).not.toBeNull()
+  })
+})
 
 describe('PreviewFileSurface managed text versions', () => {
   beforeEach(() => {
@@ -1468,6 +1483,55 @@ describe('PreviewFileSurface managed text versions', () => {
       })
     )
   })
+
+  it.each([false, true])(
+    'copies the complete conflict draft without changing its baseline (clipboard failure: %s)',
+    async (failure) => {
+      const clipboard = vi.fn()
+      if (failure) clipboard.mockRejectedValue(new Error('denied'))
+      else clipboard.mockResolvedValue(undefined)
+      const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: clipboard }
+      })
+      try {
+        window.api.managedFileVersions.saveTextEdit = vi.fn().mockResolvedValue({
+          ok: true,
+          value: {
+            kind: 'conflict',
+            actualHead: { ...managedInspect.versions[1], id: 'upload-v3' }
+          }
+        })
+        await act(async () => {
+          root.render(<PreviewFileSurface item={managedUploadItem} onClose={vi.fn()} />)
+        })
+        await click(container.querySelector('[aria-label="Edit README.md"]'))
+        const textarea = container.querySelector<HTMLTextAreaElement>('textarea')!
+        const draft = '# Draft\nαβ 中文\r\n' + 'data '.repeat(5000)
+        await changeTextarea(textarea, draft)
+        const normalized = textarea.value
+        await click(container.querySelector('[aria-label="Save changes"]'))
+        const request = vi.mocked(window.api.managedFileVersions.saveTextEdit).mock.calls[0][0]
+        await click(
+          Array.from(container.querySelectorAll('button')).find(
+            (button) => button.textContent === 'Copy draft'
+          )!
+        )
+        expect(clipboard).toHaveBeenCalledExactlyOnceWith(normalized)
+        expect(container.querySelector('textarea')).toBe(textarea)
+        expect(textarea.value).toBe(normalized)
+        expect(container.textContent).toContain(
+          failure ? 'Could not copy the draft. Select the text and copy it manually.' : 'Copied!'
+        )
+        await click(container.querySelector('[aria-label="Save changes"]'))
+        expect(window.api.managedFileVersions.saveTextEdit).toHaveBeenLastCalledWith(request)
+      } finally {
+        if (original) Object.defineProperty(navigator, 'clipboard', original)
+        else Reflect.deleteProperty(navigator, 'clipboard')
+      }
+    }
+  )
 
   it('ignores a save result that arrives after the surface moves to another file', async () => {
     let resolveSave!: (value: unknown) => void
@@ -2773,7 +2837,14 @@ describe('PreviewFileSurface Provenance entry', () => {
 
   it('opens and closes Provenance from the full-screen preview header', async () => {
     await act(async () => {
-      root.render(<PreviewFileSurface item={item} provenanceEntry="leading" onClose={vi.fn()} />)
+      root.render(
+        <PreviewFileSurface
+          item={item}
+          provenanceEntry="leading"
+          tooltipClassName="z-[70]"
+          onClose={vi.fn()}
+        />
+      )
     })
 
     expect(container.querySelector('[data-testid="preview-content"]')).not.toBeNull()
@@ -2792,7 +2863,8 @@ describe('PreviewFileSurface Provenance entry', () => {
           selectedVersionId: 'version-1',
           versionNumber: 1
         }),
-        projectId: 'project-1'
+        projectId: 'project-1',
+        tooltipClassName: 'z-[70]'
       })
     )
 
@@ -2804,6 +2876,25 @@ describe('PreviewFileSurface Provenance entry', () => {
 
     expect(container.querySelector('[data-testid="provenance-panel"]')).toBeNull()
     expect(container.querySelector('[data-testid="preview-content"]')).not.toBeNull()
+  })
+
+  it('does not open the Provenance tooltip on programmatic focus', async () => {
+    // The preview dialog auto-focuses this first header button on open; the tooltip must stay
+    // closed unless real keyboard focus (":focus-visible") lands on the trigger.
+    await act(async () => {
+      root.render(<PreviewFileSurface item={item} provenanceEntry="trailing" onClose={vi.fn()} />)
+    })
+    const trigger = container.querySelector<HTMLElement>(
+      '[aria-label="Open Provenance for sin.png"]'
+    )
+    if (!trigger) throw new Error('Provenance trigger did not render')
+
+    await act(async () => trigger.focus())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350))
+    })
+
+    expect(document.body.querySelector('[role="tooltip"]')).toBeNull()
   })
 
   it('opens Literature directly from an Artifact Version that cites references', async () => {
@@ -2865,9 +2956,19 @@ describe('PreviewFileSurface Provenance entry', () => {
       await act(async () => resizePreview(900))
       expect(container.querySelector('[data-testid="provenance-panel"]')).not.toBeNull()
       expect(container.querySelector('[data-testid="preview-content"]')).toBe(content)
-      expect(
-        container.querySelector('[data-testid="preview-provenance-pane"]')?.className
-      ).toContain('basis-[40%]')
+      const separator = container.querySelector<HTMLElement>(
+        '[aria-label="Resize provenance panel"]'
+      )!
+      expect(separator.getAttribute('aria-hidden')).toBe('false')
+      const capturePointer = vi.spyOn(separator, 'setPointerCapture')
+      const pointerDown = new MouseEvent('pointerdown', { bubbles: true, button: 0 })
+      Object.defineProperty(pointerDown, 'pointerId', { value: 17 })
+      await act(async () => separator.dispatchEvent(pointerDown))
+      expect(capturePointer).toHaveBeenCalledWith(17)
+      await act(async () =>
+        separator.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, button: 0 }))
+      )
+      capturePointer.mockRestore()
       await act(async () => resizePreview(600))
       expect(container.querySelector('[data-testid="provenance-panel"]')).toBeNull()
       expect(container.querySelector('[data-testid="preview-content"]')).toBe(content)
@@ -2917,6 +3018,45 @@ describe('PreviewFileSurface Provenance entry', () => {
     })
 
     expect(container.querySelector('[data-testid="artifact-literature-entry"]')).toBeNull()
+  })
+
+  it('restores each workbench tab view after its file surface unmounts', async () => {
+    const store = usePreviewWorkbenchStore.getState()
+    store.upsertAndActivateItem(item)
+    const other = { ...item, id: 'artifact-2', artifactId: 'artifact-2', title: 'other.png' }
+    const show = async (next: PreviewFileItem): Promise<void> => {
+      await act(async () => {
+        store.upsertAndActivateItem(next)
+        root.render(
+          <PreviewFileSurface
+            key={next.id}
+            item={next}
+            workbenchConnected
+            provenanceEntry="leading"
+            onClose={vi.fn()}
+          />
+        )
+      })
+    }
+    await show(item)
+    await click(container.querySelector('[aria-label="Open Provenance for sin.png"]'))
+    await act(async () => {
+      provenancePanelSpy.mock.lastCall?.[0].onTabChange('reproducibility')
+    })
+    await show(other)
+    expect(container.querySelector('[data-testid="provenance-panel"]')).toBeNull()
+    await click(container.querySelector('[aria-label^="Open Provenance for "]'))
+    await act(async () => {
+      provenancePanelSpy.mock.lastCall?.[0].onTabChange('environment')
+    })
+    await show(item)
+    expect(container.querySelector('[data-testid="provenance-panel"]')).not.toBeNull()
+    expect(provenancePanelSpy.mock.lastCall?.[0].selectedTab).toBe('reproducibility')
+    await click(container.querySelector('[data-testid="provenance-panel"] button'))
+    await show(other)
+    expect(provenancePanelSpy.mock.lastCall?.[0].selectedTab).toBe('environment')
+    await show(item)
+    expect(container.querySelector('[data-testid="provenance-panel"]')).toBeNull()
   })
 
   it('does not offer Provenance for uploaded inputs', async () => {
@@ -3351,37 +3491,42 @@ describe('PreviewFileSurface PDF context action matrix', () => {
     })
   })
 
-  it('adds an immutable Literature PDF Version to the active Session context', async () => {
-    selectPdfContextSession()
-    const { linkPdfContext } = installPdfContextApi()
-    const literaturePdf: PreviewFileItem = {
-      ...pdfItem,
-      id: 'literature-version:attachment-version-1',
-      sessionId: '__literature__',
-      path: 'literature-attachment-version:attachment-version-1',
-      source: 'literature',
-      artifactId: undefined,
-      selectedVersionId: undefined
+  it.each([undefined, 'literature-attachment-1'])(
+    'adds an immutable Literature PDF Version to the active Session context (file identity: %s)',
+    async (managedFileId) => {
+      selectPdfContextSession()
+      const { linkPdfContext } = installPdfContextApi()
+      const literaturePdf: PreviewFileItem = {
+        ...pdfItem,
+        id: 'literature-version:attachment-version-1',
+        managedFileId,
+        sessionId: '__literature__',
+        path: 'literature-attachment-version:attachment-version-1',
+        source: 'literature',
+        artifactId: undefined,
+        selectedVersionId: undefined
+      }
+
+      await act(async () => {
+        root.render(<PreviewFileSurface item={literaturePdf} onClose={vi.fn()} />)
+        await Promise.resolve()
+      })
+      await clickHeaderAction('Read with agent')
+
+      expect(linkPdfContext).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        sessionId: 'active-session',
+        expectedRevision: 3,
+        sources: [
+          {
+            sourceKind: 'literature-attachment-version',
+            ...(managedFileId ? { sourceFileId: managedFileId } : {}),
+            sourceVersionId: 'attachment-version-1'
+          }
+        ]
+      })
     }
-
-    await act(async () => {
-      root.render(<PreviewFileSurface item={literaturePdf} onClose={vi.fn()} />)
-      await Promise.resolve()
-    })
-    await clickHeaderAction('Read with agent')
-
-    expect(linkPdfContext).toHaveBeenCalledWith({
-      projectId: 'project-1',
-      sessionId: 'active-session',
-      expectedRevision: 3,
-      sources: [
-        {
-          sourceKind: 'literature-attachment-version',
-          sourceVersionId: 'attachment-version-1'
-        }
-      ]
-    })
-  })
+  )
 
   it('hides Reading context controls when the preview owner disables them', async () => {
     selectPdfContextSession()
@@ -3781,6 +3926,30 @@ describe('PreviewFileSurface PDF context action matrix', () => {
       sourceVersionId: 'version-1',
       previewItemId: 'artifact-1'
     })
+  })
+
+  it('routes removal of draft Reading through the composer owner', async () => {
+    installPdfContextApi()
+    usePreviewWorkbenchStore.getState().setPendingPdfContext('project-1', {
+      kind: 'version',
+      sourceKind: 'artifact-version',
+      sourceFileId: 'artifact-1',
+      sourceVersionId: 'version-1',
+      previewItemId: 'artifact-1'
+    })
+    const onUnlinkReadingContext = vi.fn()
+    await act(async () => {
+      root.render(
+        <PreviewFileSurface
+          item={pdfItem}
+          onClose={vi.fn()}
+          onUnlinkReadingContext={onUnlinkReadingContext}
+        />
+      )
+    })
+    await openMenu(container.querySelector('[data-testid="pdf-context-status"]'))
+    await clickMenuItem('Remove PDF from context')
+    expect(onUnlinkReadingContext).toHaveBeenCalledWith('version:artifact-version:version-1')
   })
 
   it('preserves other draft PDFs when removing one and enforces the three PDF limit', async () => {
@@ -4536,6 +4705,36 @@ const seedWorkspaceStores = (): void => {
 }
 
 describe('PreviewFileSurface View in context entry', () => {
+  it('locates the source message of the selected artifact version after navigation', async () => {
+    seedWorkspaceStores()
+    useSearchMessageFocusStore.setState({ pending: undefined })
+    vi.mocked(window.api.artifacts.getLineage).mockResolvedValue({
+      artifactId: 'artifact-1',
+      filename: 'sin.png',
+      originSession: { sessionId: 'session-1', state: 'active' },
+      versions: [
+        { ...descriptor, messageId: 'version-one-message' },
+        { ...secondDescriptor, messageId: 'version-two-message' }
+      ]
+    })
+    await act(async () => {
+      root.render(
+        <PreviewFileSurface
+          item={{ ...item, selectedVersionId: descriptor.versionId }}
+          provenanceEntry="trailing"
+          onClose={vi.fn()}
+        />
+      )
+    })
+    await click(container.querySelector('[aria-label="View in context for sin.png"]'))
+    expect(useSearchMessageFocusStore.getState().pending).toMatchObject({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      messageId: 'version-one-message',
+      navigationRevision: useNavigationStore.getState().userNavigationRevision
+    })
+    useSearchMessageFocusStore.setState({ pending: undefined })
+  })
   it('opens managed Artifact capabilities from the preview content context menu', async () => {
     seedWorkspaceStores()
     const onOpenFullScreen = vi.fn()

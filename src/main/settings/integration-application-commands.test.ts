@@ -1,3 +1,5 @@
+// Modified by EconoMind contributors: remove marketplace commands from the integration inventory.
+// Based on AIPOCH Open Science; see LICENSE and NOTICE.
 import { describe, expect, it, vi } from 'vitest'
 
 import { RENDERER_CONTRACT_GROUPS } from '../../shared/renderer-contract-catalog'

@@ -1,6 +1,8 @@
+import { ExternalTextLink } from '@/components/ExternalTextLink'
+import { InlineNotice } from '@/components/ui/inline-notice'
 import { useFileCredentialNotice } from './use-file-credential-notice'
 import { BookOpen, Check, KeyRound, Server, Trash2, X } from 'lucide-react'
-import { AlertDialog } from 'radix-ui'
+import * as AlertDialog from '@/components/ui/alert-dialog'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -51,6 +53,7 @@ type CredentialsPanelProps = {
 
 const statusLabel = (configured: boolean): React.JSX.Element | null =>
   configured ? <Check className="size-4 text-primary" aria-hidden="true" /> : null
+
 const isLocalOnlyActionError = (error: unknown): boolean =>
   error instanceof Error && error.message.includes('only available in the local desktop app')
 
@@ -311,7 +314,7 @@ export function CredentialsPanel({
           <p className="mt-1 text-sm text-muted-foreground">
             {isOpenAlex
               ? t(
-                  'Used by OpenAlex tools in the Literature Connector. Every OpenAlex request requires this key.'
+                  'Used by OpenAlex tools in the Literature Connector. Basic queries work without a key; adding one raises your daily limit.'
                 )
               : t(
                   'Contact information and an optional NCBI API key used by research-service Connector calls.'
@@ -336,9 +339,21 @@ export function CredentialsPanel({
           </div>
         ) : null}
         <div className="space-y-1.5">
-          <label htmlFor="service-api-key" className="text-sm font-medium">
-            {isOpenAlex ? t('API key') : t('NCBI API key')}
-          </label>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <label htmlFor="service-api-key" className="text-sm font-medium">
+              {isOpenAlex ? t('API key') : t('NCBI API key')}
+            </label>
+            <ExternalTextLink
+              href={
+                isOpenAlex
+                  ? 'https://openalex.org/settings/api'
+                  : 'https://account.ncbi.nlm.nih.gov/settings/'
+              }
+              className="whitespace-nowrap text-xs"
+            >
+              {t('Get an API key')}
+            </ExternalTextLink>
+          </div>
           <MaskedPasswordField
             id="service-api-key"
             value={apiKey}
@@ -358,9 +373,9 @@ export function CredentialsPanel({
           </p>
         </div>
         {!encryptionAvailable ? (
-          <p className="text-xs text-danger-000">
+          <InlineNotice level="error" role="note">
             {t('Secure key storage is unavailable. Unlock the system keychain and try again.')}
-          </p>
+          </InlineNotice>
         ) : null}
         {message ? (
           <p role="status" className="text-xs text-muted-foreground">
@@ -437,7 +452,7 @@ export function CredentialsPanel({
     {
       id: 'openalex' as const,
       label: t('OpenAlex'),
-      description: t('API key required by OpenAlex tools in the Literature Connector.'),
+      description: t('Optional API key for OpenAlex tools in the Literature Connector.'),
       configured: openAlex.hasApiKey,
       desktopOnly: true,
       Icon: BookOpen
@@ -481,7 +496,17 @@ export function CredentialsPanel({
             const checking = desktopOnly && desktopCredentialAvailability === 'checking'
             const unavailable = desktopOnly && desktopCredentialAvailability === 'unavailable'
             return (
-              <div key={id} className="flex items-center gap-3 px-4 py-3">
+              <div
+                key={id}
+                data-settings-anchor={
+                  id === 'github'
+                    ? 'credentials.github'
+                    : id === 'literature'
+                      ? 'credentials.literature'
+                      : undefined
+                }
+                className="flex items-center gap-3 px-4 py-3"
+              >
                 <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/40">
                   <Icon className="size-4" aria-hidden="true" />
                 </span>
@@ -519,7 +544,11 @@ export function CredentialsPanel({
             'Device-wide credentials that can be shared by the Custom Connectors you choose.'
           )}
           action={
-            <Button type="button" onClick={() => onNavigate({ kind: 'create' })}>
+            <Button
+              type="button"
+              data-settings-anchor="credentials.new"
+              onClick={() => onNavigate({ kind: 'create' })}
+            >
               {t('New credential')}
             </Button>
           }
@@ -604,9 +633,9 @@ export function CredentialsPanel({
             <p className="text-sm text-muted-foreground">{t('No Connector credentials yet.')}</p>
           ) : null}
           {credentialMessage ? (
-            <p className="mt-3 text-sm text-destructive" role="alert">
+            <InlineNotice level="error" className="mt-3" role="alert">
               {credentialMessage}
-            </p>
+            </InlineNotice>
           ) : null}
         </SettingsSection>
       ) : null}
@@ -705,9 +734,9 @@ export function CredentialsPanel({
                 {t('This permanently removes the stored credential from this device.')}
               </AlertDialog.Description>
               {credentialMessage ? (
-                <p className="mt-4 text-sm text-destructive" role="alert">
+                <InlineNotice level="error" className="mt-4" role="alert">
                   {credentialMessage}
-                </p>
+                </InlineNotice>
               ) : null}
             </div>
             <div className={dialogFooterClassName}>

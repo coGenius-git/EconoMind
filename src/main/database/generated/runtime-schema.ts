@@ -2,10 +2,10 @@
 
 const RUNTIME_SCHEMA_TABLE_DDLS = [
   `CREATE TABLE IF NOT EXISTS "Project" (
+    "category" TEXT NOT NULL DEFAULT 'general',
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
     "description" TEXT NOT NULL DEFAULT '',
-    "category" TEXT NOT NULL DEFAULT 'general',
     "agentContext" TEXT NOT NULL DEFAULT '',
     "sessionDefaults" TEXT NOT NULL DEFAULT '{}',
     "isExample" BOOLEAN NOT NULL DEFAULT false,
@@ -15,6 +15,65 @@ const RUNTIME_SCHEMA_TABLE_DDLS = [
     "deletedAt" DATETIME,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL
+);`,
+  `CREATE TABLE IF NOT EXISTS "bookmarks" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "projectId" TEXT NOT NULL,
+    "sessionId" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "sourceKind" TEXT NOT NULL,
+    "sourceId" TEXT NOT NULL,
+    "sourceJson" TEXT NOT NULL,
+    "selectorJson" TEXT NOT NULL,
+    "quote" TEXT,
+    "note" TEXT NOT NULL DEFAULT '',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "bookmarks_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "bookmarks_identity_check" CHECK (length(trim("id")) > 0 AND length(trim("projectId")) > 0 AND length(trim("sessionId")) > 0 AND length(trim("sourceId")) > 0),
+    CONSTRAINT "bookmarks_kind_check" CHECK ("kind" IN ('text', 'pdf-text', 'pdf-region') AND "sourceKind" IN ('agent-message', 'session-item', 'project-file', 'artifact-version', 'upload-version', 'literature-attachment-version')),
+    CONSTRAINT "bookmarks_json_check" CHECK (json_valid("sourceJson") AND json_type("sourceJson") = 'object' AND json_valid("selectorJson") AND json_type("selectorJson") = 'object' AND length("sourceJson") <= 65536 AND length("selectorJson") <= 65536),
+    CONSTRAINT "bookmarks_content_check" CHECK (length("note") <= 2000 AND ("quote" IS NULL OR length("quote") BETWEEN 1 AND 4000) AND ("kind" != 'text' OR "quote" IS NOT NULL))
+);`,
+  `CREATE TABLE IF NOT EXISTS "pdf_annotations" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "projectId" TEXT,
+    "sessionId" TEXT,
+    "sourceSessionId" TEXT,
+    "sourceKind" TEXT NOT NULL,
+    "sourceFileId" TEXT NOT NULL,
+    "versionId" TEXT NOT NULL,
+    "checksum" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "path" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "selectorJson" TEXT NOT NULL,
+    "color" TEXT,
+    "origin" TEXT NOT NULL DEFAULT 'user',
+    "externalSubtype" TEXT,
+    "note" TEXT NOT NULL DEFAULT '',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "pdf_annotations_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "PdfAnnotation_identity_check" CHECK (length(trim("id")) > 0 AND length(trim("projectId")) > 0 AND length(trim("sourceFileId")) > 0 AND length(trim("versionId")) > 0 AND length(trim("name")) > 0 AND length(trim("path")) > 0 AND length(trim("sessionId")) > 0),
+    CONSTRAINT "PdfAnnotation_source_check" CHECK ("sourceKind" IN ('artifact-version', 'upload-version', 'literature-attachment-version') AND length("checksum") = 64 AND "checksum" NOT GLOB '*[^0-9a-f]*'),
+    CONSTRAINT "PdfAnnotation_kind_check" CHECK ("kind" IN ('highlight', 'underline', 'squiggly', 'strikethrough', 'area', 'page-note', 'document-note') AND ("color" IS NULL OR "color" IN ('yellow', 'blue', 'green', 'pink', 'purple'))),
+    CONSTRAINT "PdfAnnotation_origin_check" CHECK ("origin" IN ('user', 'imported') AND ("origin" = 'imported' OR "externalSubtype" IS NULL) AND ("externalSubtype" IS NULL OR (length(trim("externalSubtype")) > 0 AND length("externalSubtype") <= 64))),
+    CONSTRAINT "PdfAnnotation_json_check" CHECK (json_valid("selectorJson") AND json_type("selectorJson") = 'object' AND length("selectorJson") <= 65536),
+    CONSTRAINT "PdfAnnotation_content_check" CHECK (length("note") <= 20000),
+    CONSTRAINT "PdfAnnotation_scope_check" CHECK (("projectId" IS NOT NULL AND "sourceKind" <> 'literature-attachment-version') OR ("projectId" IS NULL AND "sessionId" IS NULL AND "sourceKind" = 'literature-attachment-version' AND "sourceSessionId" IS NULL))
+);`,
+  `CREATE TABLE IF NOT EXISTS "pdf_annotation_imports" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "projectId" TEXT,
+    "sessionId" TEXT,
+    "sourceKind" TEXT NOT NULL,
+    "sourceFileId" TEXT NOT NULL,
+    "versionId" TEXT NOT NULL,
+    "checksum" TEXT NOT NULL,
+    "resultJson" TEXT NOT NULL,
+    CONSTRAINT "pdf_annotation_imports_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "PdfAnnotationImport_json_check" CHECK (json_valid("resultJson"))
 );`,
   `CREATE TABLE IF NOT EXISTS "SessionNumberSequence" (
     "id" TEXT NOT NULL PRIMARY KEY,
@@ -118,7 +177,7 @@ const RUNTIME_SCHEMA_TABLE_DDLS = [
 
     PRIMARY KEY ("sessionId", "eventId"),
     CONSTRAINT "SessionAuxiliaryTurnUsage_identity_check" CHECK (length(trim("sessionId")) > 0 AND length(trim("eventId")) > 0 AND length(trim("frameworkId")) > 0 AND ("model" IS NULL OR length(trim("model")) > 0)),
-    CONSTRAINT "SessionAuxiliaryTurnUsage_source_check" CHECK ("source" IN ('reviewer', 'side-chat', 'vision', 'session-details', 'host-llm', 'artifact-code-reconstruction', 'context-compaction')),
+    CONSTRAINT "SessionAuxiliaryTurnUsage_source_check" CHECK ("source" IN ('reviewer', 'side-chat', 'vision', 'session-details', 'host-llm', 'artifact-code-reconstruction', 'context-compaction', 'classification')),
     CONSTRAINT "SessionAuxiliaryTurnUsage_nonnegative_check" CHECK ("completedAtMs" >= 0 AND "inputTokens" >= 0 AND "cacheTokens" >= 0 AND "outputTokens" >= 0 AND (("cachedReadTokens" IS NULL AND "cachedWriteTokens" IS NULL) OR ("cachedReadTokens" IS NOT NULL AND "cachedWriteTokens" IS NOT NULL AND "cachedReadTokens" >= 0 AND "cachedWriteTokens" >= 0)) AND ("modelCallCount" IS NULL OR "modelCallCount" > 0))
 );`,
   `CREATE TABLE IF NOT EXISTS "SessionRun" (
@@ -172,6 +231,24 @@ const RUNTIME_SCHEMA_TABLE_DDLS = [
     CONSTRAINT "ProjectPreviewState_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "ProjectPreviewState_panelState_check" CHECK ("panelState" IN ('open', 'collapsed')),
     CONSTRAINT "ProjectPreviewState_itemsJson_check" CHECK (json_valid("items") AND json_type("items") = 'array')
+);`,
+  `CREATE TABLE IF NOT EXISTS "SessionReplayProgress" (
+    "projectId" TEXT NOT NULL,
+    "sessionId" TEXT NOT NULL,
+    "stateJson" TEXT,
+    "revision" INTEGER NOT NULL DEFAULT 0,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY ("projectId", "sessionId"),
+    CONSTRAINT "SessionReplayProgress_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);`,
+  `CREATE TABLE IF NOT EXISTS "SessionDiscussionSnapshot" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "sourceProjectId" TEXT NOT NULL,
+    "sourceSessionId" TEXT NOT NULL,
+    "contextJson" TEXT NOT NULL,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "SessionDiscussionSnapshot_sourceProjectId_fkey" FOREIGN KEY ("sourceProjectId") REFERENCES "Project" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );`,
   `CREATE TABLE IF NOT EXISTS "UnreadTaskSession" (
     "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
@@ -981,10 +1058,159 @@ const RUNTIME_SCHEMA_TABLE_DDLS = [
     "expectedMetadataRevision" INTEGER NOT NULL,
     "committedMetadataRevision" INTEGER NOT NULL,
     CONSTRAINT "LiteratureMetadataCommitReceipt_itemId_fkey" FOREIGN KEY ("itemId") REFERENCES "LiteratureItem" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);`,
+  `CREATE TABLE IF NOT EXISTS "LiteratureSmartCollection" (
+    "automaticPauseReason" TEXT,
+    "automaticPauseRunId" TEXT,
+    "evidenceMode" TEXT NOT NULL DEFAULT 'abstract',
+    "autoUpdate" BOOLEAN NOT NULL DEFAULT false,
+    "collectionId" TEXT NOT NULL PRIMARY KEY,
+    "scopeKind" TEXT NOT NULL,
+    "scopeId" TEXT,
+    "ruleRevision" INTEGER NOT NULL DEFAULT 1,
+    CONSTRAINT "LiteratureSmartCollection_collectionId_fkey" FOREIGN KEY ("collectionId") REFERENCES "LiteratureCollection" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "LiteratureSmartCollection_scope_check" CHECK ("scopeKind" IN ('library', 'project', 'collection') AND (("scopeKind" = 'library' AND "scopeId" IS NULL) OR ("scopeKind" != 'library' AND "scopeId" IS NOT NULL AND length(trim("scopeId")) > 0)) AND "ruleRevision" > 0),
+    CONSTRAINT "LiteratureSmartCollection_pause_check" CHECK ("automaticPauseReason" IS NULL OR "automaticPauseReason" IN ('run-limit', 'daily-limit', 'storage-error', 'interrupted'))
+);`,
+  `CREATE TABLE IF NOT EXISTS "LiteratureSmartAssessment" (
+    "evidenceJson" TEXT,
+    "collectionId" TEXT NOT NULL,
+    "itemId" TEXT NOT NULL,
+    "ruleRevision" INTEGER NOT NULL,
+    "inputDigest" TEXT NOT NULL,
+    "policyKey" TEXT NOT NULL,
+    "verdict" TEXT NOT NULL,
+    "probabilitiesJson" TEXT NOT NULL DEFAULT '{}',
+    "model" TEXT NOT NULL,
+    "evaluatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY ("collectionId", "itemId"),
+    CONSTRAINT "LiteratureSmartAssessment_collectionId_fkey" FOREIGN KEY ("collectionId") REFERENCES "LiteratureSmartCollection" ("collectionId") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "LiteratureSmartAssessment_itemId_fkey" FOREIGN KEY ("itemId") REFERENCES "LiteratureItem" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "LiteratureSmartAssessment_decision_check" CHECK ("verdict" IN ('match', 'no-match', 'uncertain') AND "ruleRevision" > 0 AND json_valid("probabilitiesJson") AND json_type("probabilitiesJson") = 'object')
+);`,
+  `CREATE TABLE IF NOT EXISTS "LiteratureSmartOverride" (
+    "collectionId" TEXT NOT NULL,
+    "itemId" TEXT NOT NULL,
+    "decision" TEXT NOT NULL,
+    "updatedAt" DATETIME NOT NULL,
+
+    PRIMARY KEY ("collectionId", "itemId"),
+    CONSTRAINT "LiteratureSmartOverride_collectionId_fkey" FOREIGN KEY ("collectionId") REFERENCES "LiteratureSmartCollection" ("collectionId") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "LiteratureSmartOverride_itemId_fkey" FOREIGN KEY ("itemId") REFERENCES "LiteratureItem" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "LiteratureSmartOverride_decision_check" CHECK ("decision" IN ('include', 'exclude'))
+);`,
+  `CREATE TABLE IF NOT EXISTS "LiteratureSmartRun" (
+    "abandonedAt" DATETIME,
+    "snapshotJson" TEXT,
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "collectionId" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "state" TEXT NOT NULL,
+    "ruleRevision" INTEGER NOT NULL,
+    "policyKey" TEXT NOT NULL,
+    "model" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "LiteratureSmartRun_collectionId_fkey" FOREIGN KEY ("collectionId") REFERENCES "LiteratureSmartCollection" ("collectionId") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "LiteratureSmartRun_collectionId_ruleRevision_fkey" FOREIGN KEY ("collectionId", "ruleRevision") REFERENCES "LiteratureSmartRuleRevision" ("collectionId", "revision") ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT "LiteratureSmartRun_state_check" CHECK ("kind" IN ('preview', 'refresh') AND "state" IN ('queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted') AND "ruleRevision" > 0)
+);`,
+  `CREATE TABLE IF NOT EXISTS "ClassificationUsage" (
+    "eventId" TEXT NOT NULL PRIMARY KEY,
+    "collectionId" TEXT,
+    "runId" TEXT,
+    "scenario" TEXT NOT NULL,
+    "projectId" TEXT,
+    "sessionId" TEXT,
+    "providerId" TEXT NOT NULL,
+    "model" TEXT NOT NULL,
+    "occurredAt" DATETIME NOT NULL,
+    "status" TEXT NOT NULL,
+    "inputTokens" BIGINT,
+    "outputTokens" BIGINT,
+    "usageIncomplete" BOOLEAN NOT NULL DEFAULT true,
+    CONSTRAINT "ClassificationUsage_values_check" CHECK (length(trim("eventId")) > 0 AND length(trim("providerId")) > 0 AND length(trim("model")) > 0
+      AND "scenario" IN ('save-validation', 'probe', 'capability-selection', 'reading-route', 'literature-live-preview', 'literature-trial', 'literature-update', 'literature-reevaluate', 'literature-automatic', 'legacy-classification')
+      AND "status" IN ('started', 'completed', 'failed', 'interrupted')
+      AND (("inputTokens" IS NULL AND "outputTokens" IS NULL AND "usageIncomplete" = true)
+        OR ("inputTokens" IS NOT NULL AND "outputTokens" IS NOT NULL AND "inputTokens" >= 0 AND "outputTokens" >= 0 AND "usageIncomplete" = false)))
+);`,
+  `CREATE TABLE IF NOT EXISTS "LiteratureSmartRuleRevision" (
+    "collectionId" TEXT NOT NULL,
+    "revision" INTEGER NOT NULL,
+    "description" TEXT NOT NULL,
+    "inclusionCriteria" TEXT NOT NULL,
+    "exclusionCriteria" TEXT NOT NULL,
+    "scopeKind" TEXT NOT NULL,
+    "scopeId" TEXT,
+    "evidenceMode" TEXT NOT NULL,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY ("collectionId", "revision"),
+    CONSTRAINT "LiteratureSmartRuleRevision_collectionId_fkey" FOREIGN KEY ("collectionId") REFERENCES "LiteratureSmartCollection" ("collectionId") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "LiteratureSmartRuleRevision_values_check" CHECK ("revision" > 0 AND length(trim("inclusionCriteria")) > 0 AND "evidenceMode" IN ('abstract', 'full-text') AND "scopeKind" IN ('library', 'project', 'collection') AND (("scopeKind" = 'library' AND "scopeId" IS NULL) OR ("scopeKind" != 'library' AND "scopeId" IS NOT NULL)))
+);`,
+  `CREATE TABLE IF NOT EXISTS "LiteratureSmartRunItem" (
+    "runId" TEXT NOT NULL,
+    "itemId" TEXT NOT NULL,
+    "digest" TEXT NOT NULL,
+    "state" TEXT NOT NULL DEFAULT 'pending',
+    "failure" TEXT,
+    "deferred" BOOLEAN NOT NULL DEFAULT false,
+    "resultJson" TEXT,
+    "evaluatedAt" DATETIME,
+
+    PRIMARY KEY ("runId", "itemId"),
+    CONSTRAINT "LiteratureSmartRunItem_runId_fkey" FOREIGN KEY ("runId") REFERENCES "LiteratureSmartRun" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "LiteratureSmartRunItem_values_check" CHECK ("state" IN ('pending', 'done', 'error') AND ("failure" IS NULL OR "failure" IN ('auth', 'rate-limit', 'timeout', 'network', 'invalid-response', 'configuration', 'service', 'unknown')) AND ("resultJson" IS NULL OR (json_valid("resultJson") AND json_type("resultJson") = 'object')))
+);`,
+  `CREATE TABLE IF NOT EXISTS "Journal" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "normalizedName" TEXT NOT NULL,
+    "aliasesJson" TEXT NOT NULL DEFAULT '[]',
+    "issnsJson" TEXT NOT NULL DEFAULT '[]',
+    "externalIdsJson" TEXT NOT NULL DEFAULT '[]'
+);`,
+  `CREATE TABLE IF NOT EXISTS "JournalDataset" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT,
+    "source" TEXT NOT NULL,
+    "year" INTEGER NOT NULL,
+    "revision" INTEGER NOT NULL DEFAULT 1,
+    "fieldsJson" TEXT NOT NULL,
+    "importedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`,
+  `CREATE TABLE IF NOT EXISTS "JournalDatasetEntry" (
+    "datasetId" TEXT NOT NULL,
+    "journalId" TEXT NOT NULL,
+    "valuesJson" TEXT NOT NULL,
+    "sourceRow" INTEGER NOT NULL,
+
+    PRIMARY KEY ("datasetId", "journalId"),
+    CONSTRAINT "JournalDatasetEntry_datasetId_fkey" FOREIGN KEY ("datasetId") REFERENCES "JournalDataset" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "JournalDatasetEntry_journalId_fkey" FOREIGN KEY ("journalId") REFERENCES "Journal" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);`,
+  `CREATE TABLE IF NOT EXISTS "JournalItemBinding" (
+    "itemId" TEXT NOT NULL PRIMARY KEY,
+    "journalId" TEXT NOT NULL,
+    "identityFingerprint" TEXT NOT NULL,
+    "revision" TEXT NOT NULL,
+    CONSTRAINT "JournalItemBinding_itemId_fkey" FOREIGN KEY ("itemId") REFERENCES "LiteratureItem" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "JournalItemBinding_journalId_fkey" FOREIGN KEY ("journalId") REFERENCES "Journal" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );`
 ] as const
 
 const RUNTIME_SCHEMA_INDEX_DDLS = [
+  `CREATE INDEX IF NOT EXISTS "bookmarks_projectId_sessionId_createdAt_id_idx" ON "bookmarks"("projectId", "sessionId", "createdAt", "id");`,
+  `CREATE INDEX IF NOT EXISTS "bookmarks_projectId_sessionId_sourceKind_sourceId_idx" ON "bookmarks"("projectId", "sessionId", "sourceKind", "sourceId");`,
+  `CREATE INDEX IF NOT EXISTS "pdf_annotations_projectId_createdAt_id_idx" ON "pdf_annotations"("projectId", "createdAt", "id");`,
+  `CREATE INDEX IF NOT EXISTS "pdf_annotations_projectId_sourceFileId_versionId_createdAt_id_idx" ON "pdf_annotations"("projectId", "sourceFileId", "versionId", "createdAt", "id");`,
+  `CREATE INDEX IF NOT EXISTS "pdf_annotations_projectId_sourceKind_sourceFileId_versionId_createdAt_id_idx" ON "pdf_annotations"("projectId", "sourceKind", "sourceFileId", "versionId", "createdAt", "id");`,
+  `CREATE INDEX IF NOT EXISTS "pdf_annotations_sourceKind_sourceFileId_versionId_createdAt_id_idx" ON "pdf_annotations"("sourceKind", "sourceFileId", "versionId", "createdAt", "id");`,
+  `CREATE INDEX IF NOT EXISTS "pdf_annotation_imports_projectId_sessionId_idx" ON "pdf_annotation_imports"("projectId", "sessionId");`,
+  `CREATE INDEX IF NOT EXISTS "pdf_annotation_imports_sourceKind_sourceFileId_versionId_idx" ON "pdf_annotation_imports"("sourceKind", "sourceFileId", "versionId");`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "Session_number_key" ON "Session"("number");`,
   `CREATE INDEX IF NOT EXISTS "Session_projectId_deletedAtMs_archivedAtMs_updatedAtMs_id_idx" ON "Session"("projectId", "deletedAtMs", "archivedAtMs", "updatedAtMs", "id");`,
   `CREATE INDEX IF NOT EXISTS "Session_deletedAtMs_archivedAtMs_updatedAtMs_id_idx" ON "Session"("deletedAtMs", "archivedAtMs", "updatedAtMs", "id");`,
@@ -998,6 +1224,7 @@ const RUNTIME_SCHEMA_INDEX_DDLS = [
   `CREATE UNIQUE INDEX IF NOT EXISTS "PermissionGrant_fingerprint_key" ON "PermissionGrant"("fingerprint");`,
   `CREATE INDEX IF NOT EXISTS "PermissionGrant_capabilityKind_capabilityKey_qualifierMode_qualifierValue_scopeKind_projectId_sessionId_idx" ON "PermissionGrant"("capabilityKind", "capabilityKey", "qualifierMode", "qualifierValue", "scopeKind", "projectId", "sessionId");`,
   `CREATE INDEX IF NOT EXISTS "PermissionGrant_projectId_sessionId_idx" ON "PermissionGrant"("projectId", "sessionId");`,
+  `CREATE INDEX IF NOT EXISTS "SessionDiscussionSnapshot_sourceProjectId_sourceSessionId_idx" ON "SessionDiscussionSnapshot"("sourceProjectId", "sourceSessionId");`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "UnreadTaskSession_sessionId_key" ON "UnreadTaskSession"("sessionId");`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "NotificationInboxItem_id_key" ON "NotificationInboxItem"("id");`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "NotificationInboxItem_dedupeKey_key" ON "NotificationInboxItem"("dedupeKey");`,
@@ -1116,6 +1343,19 @@ const RUNTIME_SCHEMA_INDEX_DDLS = [
   `CREATE INDEX IF NOT EXISTS "BackgroundResultDelivery_sourceKind_state_createdAt_id_idx" ON "BackgroundResultDelivery"("sourceKind", "state", "createdAt", "id");`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "BackgroundResultDelivery_sourceKind_sourceId_key" ON "BackgroundResultDelivery"("sourceKind", "sourceId");`,
   `CREATE INDEX IF NOT EXISTS "LiteratureMetadataCommitReceipt_itemId_idx" ON "LiteratureMetadataCommitReceipt"("itemId");`,
+  `CREATE INDEX IF NOT EXISTS "LiteratureSmartAssessment_itemId_idx" ON "LiteratureSmartAssessment"("itemId");`,
+  `CREATE INDEX IF NOT EXISTS "LiteratureSmartOverride_itemId_idx" ON "LiteratureSmartOverride"("itemId");`,
+  `CREATE INDEX IF NOT EXISTS "LiteratureSmartRun_collectionId_createdAt_idx" ON "LiteratureSmartRun"("collectionId", "createdAt");`,
+  `CREATE INDEX IF NOT EXISTS "ClassificationUsage_sessionId_idx" ON "ClassificationUsage"("sessionId");`,
+  `CREATE INDEX IF NOT EXISTS "ClassificationUsage_occurredAt_idx" ON "ClassificationUsage"("occurredAt");`,
+  `CREATE INDEX IF NOT EXISTS "ClassificationUsage_collectionId_idx" ON "ClassificationUsage"("collectionId");`,
+  `CREATE INDEX IF NOT EXISTS "ClassificationUsage_runId_idx" ON "ClassificationUsage"("runId");`,
+  `CREATE INDEX IF NOT EXISTS "LiteratureSmartRunItem_runId_state_idx" ON "LiteratureSmartRunItem"("runId", "state");`,
+  `CREATE INDEX IF NOT EXISTS "LiteratureSmartRunItem_itemId_evaluatedAt_idx" ON "LiteratureSmartRunItem"("itemId", "evaluatedAt");`,
+  `CREATE INDEX IF NOT EXISTS "Journal_normalizedName_idx" ON "Journal"("normalizedName");`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "JournalDataset_source_year_key" ON "JournalDataset"("source", "year");`,
+  `CREATE INDEX IF NOT EXISTS "JournalDatasetEntry_journalId_idx" ON "JournalDatasetEntry"("journalId");`,
+  `CREATE INDEX IF NOT EXISTS "JournalItemBinding_journalId_idx" ON "JournalItemBinding"("journalId");`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "MemoryEntry_global_contentKey_key" ON "MemoryEntry"("contentKey") WHERE "projectId" IS NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "LiteratureCollection_root_nameKey_key" ON "LiteratureCollection"("nameKey") WHERE "parentId" IS NULL`,
   `CREATE INDEX IF NOT EXISTS "BackgroundResultDelivery_project_visible_idx" ON "BackgroundResultDelivery"("projectId", "updatedAt" DESC, "id") WHERE "state" IN ('waiting-result', 'pending', 'claimed', 'dispatching', 'needs-attention')`,
@@ -1129,6 +1369,9 @@ const RUNTIME_SCHEMA_TARGET_SQL = [
 
 const RUNTIME_SCHEMA_TABLES = [
   'Project',
+  'bookmarks',
+  'pdf_annotations',
+  'pdf_annotation_imports',
   'SessionNumberSequence',
   'Session',
   'SessionProjectionState',
@@ -1141,6 +1384,8 @@ const RUNTIME_SCHEMA_TABLES = [
   'PermissionGrant',
   'PermissionGrantSeed',
   'ProjectPreviewState',
+  'SessionReplayProgress',
+  'SessionDiscussionSnapshot',
   'UnreadTaskSession',
   'NotificationInboxItem',
   'Review',
@@ -1186,7 +1431,18 @@ const RUNTIME_SCHEMA_TABLES = [
   'MemoryCategory',
   'MemoryEntry',
   'BackgroundResultDelivery',
-  'LiteratureMetadataCommitReceipt'
+  'LiteratureMetadataCommitReceipt',
+  'LiteratureSmartCollection',
+  'LiteratureSmartAssessment',
+  'LiteratureSmartOverride',
+  'LiteratureSmartRun',
+  'ClassificationUsage',
+  'LiteratureSmartRuleRevision',
+  'LiteratureSmartRunItem',
+  'Journal',
+  'JournalDataset',
+  'JournalDatasetEntry',
+  'JournalItemBinding'
 ] as const
 
 export {

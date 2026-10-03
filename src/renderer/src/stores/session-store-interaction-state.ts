@@ -44,7 +44,6 @@ export type SessionActionabilityProjection = Readonly<{
     startTurn: SessionActionAvailability
     revise: SessionActionAvailability
     branchFromMessage: SessionActionAvailability
-    startSideChat: SessionActionAvailability
     changeAgentControls: SessionActionAvailability
     changeAutoReview: SessionActionAvailability
     changeSpecialist: SessionActionAvailability
@@ -54,6 +53,7 @@ export type SessionActionabilityProjection = Readonly<{
 }>
 
 type SessionInteractionSource = Readonly<{
+  packageOrigin?: ChatSession['packageOrigin']
   status: SessionStatus
   interactionState?: SessionInteractionState
   runtimeContext?: ChatSession['runtimeContext']
@@ -150,7 +150,11 @@ export const projectSessionActionability = (
   const interactionState = inferSessionInteractionState(session)
   const status = resolveSessionInteractionStatus(session, interactionState)
   const waitReason = isSessionWaitReason(status) ? status : facts.presentedWaitReason
-  const running = !waitReason && (status === 'running' || facts.hasRunningWork === true)
+  // Durable transcript updates can lag Main's live prompt ownership. Keep foreground actions
+  // locked until that ownership settles, while preserving actionable user waits above it.
+  const running =
+    !waitReason &&
+    (status === 'running' || session.agentPromptInFlight === true || facts.hasRunningWork === true)
   const durableRootPermissionPending = session.runtimeContext?.permission?.state === 'pending'
   const permissionPending =
     durableRootPermissionPending || (facts.rootPermissionPending ?? interactionState.permission)
@@ -168,9 +172,12 @@ export const projectSessionActionability = (
           : undefined
   const interactionDisabledReason = disabledReasonForInteraction(blockingInteraction)
   const historyReplayPending = Boolean(session.pendingHistoryReplay)
-  const sessionPending = Boolean(session.isPending) || historyReplayPending
+  // A failed creation keeps isPending until retry binds the provider. It no longer owns
+  // initialization: allow the user to repair its configuration and submit that retry.
+  const creationPending = Boolean(session.isPending) && session.status !== 'error'
+  const sessionPending = creationPending || historyReplayPending
   const turnDisabledReason =
-    session.isPending && !facts.allowPendingSessionRetry
+    creationPending && !facts.allowPendingSessionRetry
       ? 'session-pending'
       : running
         ? 'session-running'
@@ -186,12 +193,18 @@ export const projectSessionActionability = (
           : 'plan-approval-pending'
       : undefined)
   const replayOrPendingReason = sessionPending ? 'session-pending' : undefined
+  // These settings can persist or reset runtime context; keep transient Session IDs
+  // out of those paths even after creation fails.
   const replayIndependentChangeDisabledReason = session.isPending
     ? 'session-pending'
     : running
       ? 'session-running'
       : (attentionDisabledReason ?? interactionDisabledReason)
   const activity = waitReason ? 'waiting' : running ? 'running' : 'inactive'
+  const executionAvailability = (
+    reason: SessionActionDisabledReason | undefined
+  ): SessionActionAvailability =>
+    session.packageOrigin ? { allowed: false } : actionAvailability(reason)
 
   return {
     presentedStatus: waitReason ?? (running ? 'running' : status),
@@ -200,24 +213,23 @@ export const projectSessionActionability = (
     waitReason,
     blockingInteraction,
     actions: {
-      startTurn: actionAvailability(turnDisabledReason),
-      revise: actionAvailability(revisionDisabledReason),
-      branchFromMessage: actionAvailability(
+      startTurn: executionAvailability(turnDisabledReason),
+      revise: executionAvailability(revisionDisabledReason),
+      branchFromMessage: executionAvailability(
         session.isPending
           ? 'session-pending'
           : running
             ? 'session-running'
             : attentionDisabledReason
       ),
-      startSideChat: actionAvailability(replayOrPendingReason ?? attentionDisabledReason),
-      changeAgentControls: actionAvailability(
+      changeAgentControls: executionAvailability(
         replayOrPendingReason ??
           (running ? 'session-running' : (attentionDisabledReason ?? interactionDisabledReason))
       ),
       // Replay-independent settings may change while the provider still awaits transcript replay.
-      changeAutoReview: actionAvailability(replayIndependentChangeDisabledReason),
-      changeSpecialist: actionAvailability(replayIndependentChangeDisabledReason),
-      changeMemory: actionAvailability(replayIndependentChangeDisabledReason),
+      changeAutoReview: executionAvailability(replayIndependentChangeDisabledReason),
+      changeSpecialist: executionAvailability(replayIndependentChangeDisabledReason),
+      changeMemory: executionAvailability(replayIndependentChangeDisabledReason),
       archive: actionAvailability(running ? 'session-running' : attentionDisabledReason)
     }
   }

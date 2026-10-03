@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest'
+import {
+  getOfficialVendorModelIds,
+  resolveVendorModelApiEndpoints
+} from '../../../../shared/provider-registry'
 
 import {
+  LOCAL_MODEL_PRESETS,
   PROVIDER_KINDS,
   createEmptyProviderFormValue,
   defaultCustomApiEndpoint,
   defaultProviderKindKey,
   getProviderFormErrors,
   hasProviderFormErrors,
+  localModelPresetPatch,
   providerFormApiEndpoints,
   providerFormModelForFramework,
   providerKindPatch,
@@ -31,6 +37,52 @@ describe('defaultCustomApiEndpoint', () => {
 
   it('falls back to the legacy Messages API while framework capabilities are unavailable', () => {
     expect(defaultCustomApiEndpoint([])).toBe('anthropic')
+  })
+})
+
+describe('localModelPresetPatch', () => {
+  const ollama = LOCAL_MODEL_PRESETS[0]
+
+  it('seeds only the base URL and format when the user already typed a name and model', () => {
+    // Local model ids depend on what the user has pulled, so nothing is guessed for them.
+    expect(
+      localModelPresetPatch(
+        ollama,
+        createEmptyProviderFormValue({
+          type: 'custom',
+          name: 'My own name',
+          model: 'my-own-model'
+        }),
+        'anthropic'
+      )
+    ).toEqual({ baseUrl: 'http://localhost:11434', apiEndpoint: 'openai' })
+  })
+
+  it('seeds the preset name too when the name field is still empty', () => {
+    expect(
+      localModelPresetPatch(ollama, createEmptyProviderFormValue({ type: 'custom' }), 'anthropic')
+    ).toEqual({
+      baseUrl: 'http://localhost:11434',
+      apiEndpoint: 'openai',
+      name: 'Ollama'
+    })
+  })
+
+  it('reverts exactly what it filled when the active preset is tapped again', () => {
+    // The format falls back to the caller's framework default; a user-typed model is never touched.
+    expect(
+      localModelPresetPatch(
+        ollama,
+        createEmptyProviderFormValue({
+          type: 'custom',
+          baseUrl: 'http://localhost:11434',
+          name: 'Ollama',
+          model: 'my-own-model',
+          apiEndpoint: 'openai'
+        }),
+        'anthropic'
+      )
+    ).toEqual({ baseUrl: '', apiEndpoint: 'anthropic', name: '' })
   })
 })
 
@@ -64,6 +116,20 @@ describe('getProviderFormErrors', () => {
 
     expect(errors).toEqual({})
     expect(hasProviderFormErrors(errors)).toBe(false)
+  })
+
+  it('drops the key requirement for a loopback custom gateway', () => {
+    // Local model servers (Ollama, LM Studio, …) serve without a key; only the base URL and model
+    // stay required.
+    const errors = getProviderFormErrors(
+      createEmptyProviderFormValue({
+        type: 'custom',
+        baseUrl: 'http://localhost:11434',
+        model: 'qwen3:14b'
+      })
+    )
+
+    expect(errors).toEqual({})
   })
 
   it.each([
@@ -245,8 +311,12 @@ describe('provider-kind helpers', () => {
   it('chooses a directly compatible official model before onboarding validation', () => {
     const zen = createEmptyProviderFormValue({ type: 'official', vendorId: 'opencode' })
 
-    expect(providerFormModelForFramework(zen, ['anthropic'])).toBe('claude-fable-5')
-    expect(providerFormModelForFramework(zen, ['responses'])).toBe('gpt-5.6-sol')
+    const anthropicModel = providerFormModelForFramework(zen, ['anthropic'])!
+    expect(getOfficialVendorModelIds('opencode')).toContain(anthropicModel)
+    expect(resolveVendorModelApiEndpoints('opencode', anthropicModel)).toContain('anthropic')
+    const responsesModel = providerFormModelForFramework(zen, ['responses'])!
+    expect(getOfficialVendorModelIds('opencode')).toContain(responsesModel)
+    expect(resolveVendorModelApiEndpoints('opencode', responsesModel)).toContain('responses')
     expect(providerFormModelForFramework(zen, ['anthropic', 'openai'])).toBe('kimi-k2.7-code')
 
     const minimax = createEmptyProviderFormValue({
@@ -255,6 +325,19 @@ describe('provider-kind helpers', () => {
       region: 'global'
     })
     expect(providerFormModelForFramework(minimax, ['openai'])).toBe('MiniMax-M3')
+  })
+
+  it('defaults SenseNova to China and selects the Global model for every API path', () => {
+    expect(providerKindPatch('official:sensenova')).toMatchObject({ region: 'china', model: '' })
+    const value = createEmptyProviderFormValue({
+      type: 'official',
+      vendorId: 'sensenova',
+      region: 'global'
+    })
+    expect(providerFormApiEndpoints(value)).toEqual(['anthropic', 'openai'])
+    for (const endpoint of ['anthropic', 'openai', 'responses'] as const) {
+      expect(providerFormModelForFramework(value, [endpoint])).toBe('sensenova-6.8-flash-lite')
+    }
   })
 
   it('groups each subscription on its own, official vendors under API, and custom under Other', () => {
@@ -276,6 +359,14 @@ describe('provider-kind helpers', () => {
     expect(groupKeys('claude')).toEqual(['claude-subscription'])
     expect(apiKeys).not.toContain('claude-subscription')
     expect(groupKeys('other')).toEqual(['custom'])
+  })
+
+  it('defaults new xAI subscriptions to Grok 4.7', () => {
+    expect(providerKindPatch('xai-subscription')).toMatchObject({
+      type: 'xai-subscription',
+      model: 'grok-4.7',
+      apiEndpoint: 'responses'
+    })
   })
 
   it('uses one provider kind while keeping the auth mode in the form value', () => {

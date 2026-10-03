@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 
 import type {
+  SkillReplacementPreview,
   SkillBundlePreview,
   SkillBundlePreviewResult,
   SkippedSkill
@@ -20,12 +21,14 @@ import {
   type ScannedSkill
 } from './github-import'
 import { parseSkillDocument } from './frontmatter'
+
 import { canonicalSkillDocument } from './skill-document-name'
 import { selectSkillManifestRoots } from './skill-bundle-paths'
 import { inspectSkillPackage } from './skill-package-inspection'
 import { extractZip, extractZipLenient } from './zip-extract'
 import type { SkillPackageTransactionOwner } from './skill-package-transaction-owner'
 import type { ImportOutcome, ParsedSkillPreview } from './user-skill-import-contracts'
+
 import { UserSkillStore, normalizeSkillName, parseUserSkillId } from './user-skill-store'
 
 type SkillRoot = { subPath: string; files: FetchedSkillFile[] }
@@ -260,9 +263,26 @@ export class SkillBundleImportOwner {
     const fetcher = fetchImpl ?? (globalThis.fetch as unknown as FetchLike | undefined)
     if (!fetcher) throw new Error('No fetch implementation available.')
 
-    const { skillMd, files } = await fetchSkillPreview(location, fetcher, options)
     const fallbackName = location.path.split('/').filter(Boolean).pop() ?? location.repo
-    return parsedSkillPreview(skillMd.toString('utf8'), files, fallbackName)
+    const existing = await this.transactions.runRecovered(() =>
+      this.findImportedDirectoryNameByUrl(url)
+    )
+    if (!existing) {
+      const { skillMd, files } = await fetchSkillPreview(location, fetcher, options)
+      return parsedSkillPreview(skillMd.toString('utf8'), files, fallbackName)
+    }
+    // Updating needs actual bytes, including resources; a directory listing cannot identify edits.
+    const files = await fetchSkillFiles(location, fetcher, options)
+    assertOrdinarySkillFiles(files)
+    const skillMd = files.find((file) => file.relativePath.toLowerCase() === 'skill.md')!
+    return this.transactions.runRecovered(async () => ({
+      ...parsedSkillPreview(
+        skillMd.content.toString('utf8'),
+        files.map((file) => file.relativePath),
+        fallbackName
+      ),
+      replacement: await this.replacementPreview(existing, files)
+    }))
   }
 
   async previewZip(zip: Buffer): Promise<SkillBundlePreviewResult> {
@@ -287,7 +307,11 @@ export class SkillBundleImportOwner {
           const existing = await this.findImportedDirectoryNameBySignature(signatureOf(root.files))
           const alreadyImported =
             existing !== undefined && (await this.installedMatches(existing, root.files))
-          const replaceableId = alreadyImported ? undefined : await this.replaceableImportedId(name)
+          const replaceableId = alreadyImported
+            ? undefined
+            : existing
+              ? `imported-${existing}`
+              : await this.replaceableImportedId(name)
 
           if (!previewContentUnavailable) previewContentBytes += skillMd.content.length
           previews.push({
@@ -301,6 +325,14 @@ export class SkillBundleImportOwner {
             files: root.files.map((file) => file.relativePath).sort(),
             alreadyImported,
             replaceableId,
+            ...(replaceableId
+              ? {
+                  replacement: await this.replacementPreview(
+                    parseUserSkillId(replaceableId)!.directoryName,
+                    root.files
+                  )
+                }
+              : {}),
             subPath: root.subPath
           })
         } catch (error) {
@@ -485,7 +517,8 @@ export class SkillBundleImportOwner {
   ): Promise<boolean> {
     try {
       const installed = await inspectSkillPackage(
-        this.store.skillDirectory('imported', directoryName)
+        this.store.skillDirectory('imported', directoryName),
+        { storageRoot: this.store.runtimeStorageRoot() }
       )
       if (installed.length !== files.length) return false
       const byPath = new Map(installed.map((file) => [file.relativePath, file]))
@@ -508,14 +541,65 @@ export class SkillBundleImportOwner {
     }
   }
 
+  private async replacementPreview(
+    directoryName: string,
+    files: readonly FetchedSkillFile[]
+  ): Promise<SkillReplacementPreview> {
+    const source = await this.transactions.readImportedSource(directoryName)
+    const location = source?.url ? parseGitHubSkillUrl(source.url) : undefined
+    const preview: SkillReplacementPreview = {
+      targetId: `imported-${directoryName}`,
+      ...(location
+        ? {
+            sourceLabel: `github.com/${location.owner}/${location.repo}${location.ref ? `@${location.ref}` : ''}/${location.path}`
+          }
+        : {}),
+      added: [],
+      modified: [],
+      removed: []
+    }
+    try {
+      const installed = await inspectSkillPackage(
+        this.store.skillDirectory('imported', directoryName),
+        { storageRoot: this.store.runtimeStorageRoot() }
+      )
+      const byPath = new Map(installed.map((file) => [file.relativePath, file]))
+      for (const file of files) {
+        const target = byPath.get(file.relativePath)
+        if (!target) preview.added.push(file.relativePath)
+        else {
+          const expected =
+            file.relativePath.toLowerCase() === 'skill.md'
+              ? canonicalImportedSkillDocument(file.content, directoryName)
+              : file.content
+          if (
+            target.size !== expected.length ||
+            !(await readFile(target.absolutePath)).equals(expected)
+          ) {
+            preview.modified.push(file.relativePath)
+          }
+          byPath.delete(file.relativePath)
+        }
+      }
+      preview.removed = [...byPath.keys()]
+      preview.added.sort()
+      preview.modified.sort()
+      preview.removed.sort()
+      return preview
+    } catch {
+      return { ...preview, added: [], modified: [], removed: [], comparisonUnavailable: true }
+    }
+  }
+
   private async writeImported(
     directoryName: string,
     files: FetchedSkillFile[],
     url: string,
     signature: string
   ): Promise<void> {
-    await this.store.assertOrdinaryReplacement('imported', directoryName)
-    const dir = this.store.skillDirectory('imported', directoryName)
+    const source = 'imported'
+    await this.store.assertOrdinaryReplacement(source, directoryName)
+    const dir = this.store.skillDirectory(source, directoryName)
     const root = resolve(dir)
     const seen = new Set<string>()
     for (const file of files) {
@@ -539,7 +623,7 @@ export class SkillBundleImportOwner {
       }
     }
 
-    const staged = await this.transactions.stage('imported', directoryName, async (staging) => {
+    const staged = await this.transactions.stage(source, directoryName, async (staging) => {
       for (const file of files) {
         const target = join(staging, file.relativePath)
         await mkdir(dirname(target), { recursive: true })
@@ -560,8 +644,17 @@ export class SkillBundleImportOwner {
           throw error
         }
       }
-      await this.transactions.writeSourceManifest(staging, { url, signature })
+
+      await this.transactions.writeSourceManifest(staging, {
+        url,
+        signature
+      })
     })
-    await this.transactions.promote(staged)
+    try {
+      await this.transactions.promote(staged)
+    } catch (error) {
+      await this.transactions.discard(staged)
+      throw error
+    }
   }
 }

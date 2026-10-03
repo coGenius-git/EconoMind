@@ -3,7 +3,7 @@ import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ReviewRunRequest, ReviewRunResult } from '../../shared/reviewer'
+import type { ReviewRunRequest, ReviewRunResult, ReviewWithChecks } from '../../shared/reviewer'
 import { REVIEWER_IPC } from '../../shared/reviewer'
 import type { PersistedChatSession } from '../../shared/session-persistence'
 import type { AcpRuntime } from '../acp/runtime'
@@ -70,6 +70,18 @@ vi.mock('../projects/prisma-client', () => ({
 const sessionRepositoryRoots: string[] = []
 const sessionLoadAll = vi.fn().mockResolvedValue({ sessions: [] })
 const sessionLoadOne = vi.fn().mockResolvedValue({ id: 'session-1' })
+const sessionLoadAllDiagnostics = vi.fn(async (_options?: { mode?: string }) => {
+  void _options // Mock accepts options param for signature compatibility but doesn't use it
+  const sessions = await sessionLoadAll()
+  return { result: sessions, isComplete: true }
+})
+const sessionLoadOneDiagnostics = vi.fn(
+  async (projectId: string, sessionId: string, _options?: { mode?: string }) => {
+    void _options // Mock accepts options param for signature compatibility but doesn't use it
+    const session = await sessionLoadOne(projectId, sessionId)
+    return session ? { status: 'found' as const, session } : { status: 'missing' as const }
+  }
+)
 vi.mock('../session-persistence/repository', () => ({
   SessionRepository: class {
     constructor(root: string) {
@@ -77,6 +89,10 @@ vi.mock('../session-persistence/repository', () => ({
     }
     loadAll = sessionLoadAll
     loadSession = sessionLoadOne
+    // Fallback reader uses *WithDiagnostics variants with mode: 'read-only'. Expose spies so tests
+    // can verify the mode parameter is passed through.
+    loadAllWithDiagnostics = sessionLoadAllDiagnostics
+    loadSessionWithDiagnostics = sessionLoadOneDiagnostics
   },
   // storage-root imports these names from the same module in production; keep them defined.
   DEV_SESSION_DIR_NAME: 'dev',
@@ -136,6 +152,49 @@ beforeEach(() => {
 afterEach(() => clearMigrationPending())
 
 describe('reviewer IPC handlers', () => {
+  it('rejects Session export conflicts before admitting a model or background review', async () => {
+    const modelRuntime = {
+      admit: vi.fn(async () => ({ model: 'reviewer', release: async () => undefined }))
+    }
+    const owner = createReviewerCommandOwner({
+      acpRuntime,
+      modelRuntime,
+      admitSessionWork: () => {
+        throw new Error('Session locked for export')
+      }
+    })
+    await expect(owner.run(createRequest())).rejects.toThrow('locked for export')
+    expect(modelRuntime.admit).not.toHaveBeenCalled()
+    expect(runReview).not.toHaveBeenCalled()
+  })
+  it('rejects manual review of imported history before resolving or admitting a model', async () => {
+    sessionLoadOne.mockResolvedValue({
+      id: 'session-1',
+      packageOrigin: {
+        importId: 'import-1',
+        sourceProjectId: 'source-project',
+        sourceSessionId: 'source-session',
+        importedAt: 1,
+        manifestChecksum: 'a'.repeat(64)
+      }
+    })
+    const modelRuntime = {
+      admit: vi.fn(async () => ({ model: 'reviewer', release: async () => undefined }))
+    }
+    const resolveSessionAgentTarget = vi.fn()
+    const owner = createReviewerCommandOwner({
+      acpRuntime,
+      modelRuntime,
+      resolveSessionAgentTarget
+    })
+    await expect(owner.run({ ...createRequest(), origin: 'manual' })).resolves.toEqual({
+      started: false,
+      reason: 'run-failed'
+    })
+    expect(resolveSessionAgentTarget).not.toHaveBeenCalled()
+    expect(modelRuntime.admit).not.toHaveBeenCalled()
+    expect(runReview).not.toHaveBeenCalled()
+  })
   it('waits for startup recovery before exposing persisted reviews', async () => {
     let finishRecovery!: (count: number) => void
     recoverInterruptedReviews.mockImplementationOnce(
@@ -1167,5 +1226,197 @@ describe('reviewer IPC handlers', () => {
       expect(loadAllSpy).toHaveBeenCalled()
       await vi.waitFor(() => expect(runReview).toHaveBeenCalledTimes(1))
     })
+
+    it('fallback session reader pins mode: read-only to prevent quarantine', async () => {
+      // The fallback (used when no sessionReader is injected) must never quarantine corrupt files:
+      // reviewer is not the owner that repairs session files. Verify that both read paths call
+      // *WithDiagnostics variants with mode: 'read-only' explicitly set.
+      sessionLoadAllDiagnostics.mockClear()
+      sessionLoadOneDiagnostics.mockClear()
+      sessionLoadOne.mockResolvedValue({ id: 'session-1', projectId: 'project-1' })
+      sessionLoadAll.mockResolvedValue({ sessions: [{ id: 'session-1', projectId: 'project-1' }] })
+
+      runReview.mockClear()
+      registerReviewerIpcHandlers({ acpRuntime })
+
+      const runHandler = handlers.get(REVIEWER_IPC.RUN)
+
+      // Trigger the loadSession path (projectId present)
+      await runHandler?.(
+        {},
+        { projectId: 'project-1', sessionId: 'session-1', turnMessageId: 'message-1' }
+      )
+      expect(sessionLoadOneDiagnostics).toHaveBeenCalledWith(
+        'project-1',
+        'session-1',
+        expect.objectContaining({ mode: 'read-only' })
+      )
+
+      sessionLoadOneDiagnostics.mockClear()
+      sessionLoadAllDiagnostics.mockClear()
+
+      // Trigger the findSessionById path (projectId absent)
+      await runHandler?.({}, { sessionId: 'session-1', turnMessageId: 'message-2' })
+      expect(sessionLoadAllDiagnostics).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'read-only' })
+      )
+    })
+  })
+})
+
+describe('Main correction completion ownership', () => {
+  const fixture = async (): Promise<{
+    session: PersistedChatSession
+    review: ReviewWithChecks
+    resolveTurnScope: typeof import('./scope').resolveTurnScope
+  }> => {
+    const { materializeSessionConversationGraph } = await import('../../shared/session-persistence')
+    const { resolveTurnScope } = await import('./scope')
+    const msg = (
+      id: string,
+      role: 'user' | 'agent',
+      responseToMessageId?: string
+    ): PersistedChatSession['messages'][number] => ({
+      id,
+      role,
+      responseToMessageId,
+      status: 'complete' as const,
+      content: id,
+      eventIds: [],
+      createdAt: 1,
+      updatedAt: 1
+    })
+    const original = materializeSessionConversationGraph({
+      id: 'session-1',
+      projectId: 'project-1',
+      cwd: '/tmp',
+      title: 'Task',
+      status: 'idle',
+      createdAt: 1,
+      updatedAt: 1,
+      messages: [msg('user', 'user'), msg('answer', 'agent', 'user')]
+    })
+    const review: ReviewWithChecks = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      model: '',
+      createdAt: 1,
+      updatedAt: 1,
+      outcome: 'flagged',
+      reviewerLog: [],
+      id: 'review',
+      turnMessageId: 'answer',
+      scope: resolveTurnScope(original, 'answer'),
+      lifecycle: 'complete',
+      checks: [
+        {
+          id: 'finding',
+          reviewId: 'review',
+          status: 'fail',
+          resolution: 'unaddressed',
+          claim: 'Issue',
+          evidence: 'Evidence',
+          sortIndex: 0,
+          reflagCount: 0
+        }
+      ]
+    }
+    const session = materializeSessionConversationGraph({
+      ...original,
+      conversationGraph: undefined,
+      autoReviewEnabled: true,
+      runtimeTranscriptLastRun: { promptMessageId: 'correction', startedAt: 20 },
+      messages: [
+        ...original.messages,
+        {
+          ...msg('correction', 'user'),
+          attribution: {
+            kind: 'application',
+            feature: 'reviewer',
+            purpose: 'correction',
+            causeReviewId: 'review',
+            continuation: { round: 1, maxRounds: 3, findingIds: ['finding'] }
+          }
+        },
+        msg('recovered', 'agent', 'correction')
+      ]
+    })
+    sessionLoadOne.mockResolvedValue(session)
+    getReviewsForSession.mockResolvedValue([review])
+    return { session, review, resolveTurnScope }
+  }
+
+  it('waits for the aborted chain to settle, joins duplicate completion hints, and never uses stale snapshots', async () => {
+    const { session, review, resolveTurnScope } = await fixture()
+    type Run = Parameters<typeof import('./orchestrator').runReview>[0]
+    let releaseOld!: () => void
+    let releaseNew!: () => void
+    runReview
+      .mockImplementationOnce(async (options: Run) => {
+        options.onStarted?.()
+        await options.onFixLoopStart?.()
+        await new Promise<void>((resolve) => {
+          releaseOld = resolve
+        })
+        options.onFixLoopEnd?.()
+      })
+      .mockImplementationOnce(async (options: Run) => {
+        await options.onFixLoopStart?.()
+        options.onStarted?.()
+        await new Promise<void>((resolve) => {
+          releaseNew = resolve
+        })
+        getReviewsForSession.mockResolvedValue([
+          review,
+          { ...review, id: 'assessment', scope: resolveTurnScope(session, 'recovered') }
+        ])
+        options.onFixLoopEnd?.()
+      })
+    const owner = createReviewerCommandOwner({ acpRuntime })
+    await owner.run({
+      ...createRequest(),
+      turnMessageId: 'answer',
+      mainSessionId: 'session-1',
+      origin: 'manual'
+    })
+    await vi.waitFor(() => expect(releaseOld).toBeTypeOf('function'))
+    owner.abortFixLoop({ projectId: 'project-1', appSessionId: 'session-1' })
+    const completion = owner.onSessionUpdated(session)
+    await owner.onSessionUpdated(session)
+    expect(runReview).toHaveBeenCalledTimes(1)
+    releaseOld()
+    await completion
+    expect(runReview).toHaveBeenCalledTimes(2)
+    expect(runReview.mock.calls[1][0].correctionResume.resumeCorrection).toEqual({
+      promptMessageId: 'correction',
+      turnMessageId: 'recovered',
+      round: 1
+    })
+    const duplicate = owner.onSessionUpdated(session)
+    releaseNew()
+    await duplicate
+    await owner.onSessionUpdated(session)
+    expect(runReview).toHaveBeenCalledTimes(2)
+  })
+
+  it('ignores an old completion after a new Stop or disabling auto-review in durable storage', async () => {
+    const { session } = await fixture()
+    const owner = createReviewerCommandOwner({ acpRuntime })
+    for (const current of [
+      { ...session, autoReviewEnabled: false },
+      {
+        ...session,
+        resumeRecovery: {
+          kind: 'resume-required',
+          cause: 'cancelled',
+          promptMessageId: 'correction'
+        }
+      },
+      { ...session, activeRun: { promptMessageId: 'correction', startedAt: 30 } }
+    ]) {
+      sessionLoadOne.mockResolvedValue(current)
+      await owner.onSessionUpdated(session)
+    }
+    expect(runReview).not.toHaveBeenCalled()
   })
 })

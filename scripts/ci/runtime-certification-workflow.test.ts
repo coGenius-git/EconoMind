@@ -40,7 +40,7 @@ const step = (job: Job, name: string): Step => {
 }
 
 describe('runtime certification workflow', () => {
-  it('provides one reusable, manually dispatchable, read-only Linux source lane', () => {
+  it('provides native reusable, manually dispatchable, read-only Linux source lanes', () => {
     const runtime = workflow('runtime-certification.yml')
     const source = runtime.jobs.source
 
@@ -52,8 +52,25 @@ describe('runtime certification workflow', () => {
       'cancel-in-progress': true
     })
     expect(source).toMatchObject({
-      'continue-on-error': '${{ inputs.allow_failure }}',
-      'runs-on': 'ubuntu-latest',
+      strategy: {
+        matrix: {
+          include: [
+            { subdir: 'linux-64', os: 'ubuntu-latest' },
+            { subdir: 'linux-aarch64', os: 'ubuntu-24.04-arm' }
+          ]
+        }
+      }
+    })
+    expect(step(source, 'Test real Linux filesystem and network isolation').run).toContain(
+      'network-enforcement.integration.test.ts'
+    )
+    expect(step(source, 'Install Linux sandbox dependency').run).not.toContain(
+      'apparmor_restrict_unprivileged_userns=0'
+    )
+    expect(source).toMatchObject({
+      // workflow_dispatch has no allow_failure input; an explicit comparison must yield false.
+      'continue-on-error': '${{ inputs.allow_failure == true }}',
+      'runs-on': '${{ matrix.os }}',
       'timeout-minutes': 20
     })
   })
@@ -66,13 +83,51 @@ describe('runtime certification workflow', () => {
     const verify = step(source, 'Verify runtime prerequisites')
 
     expect(install.run).toBe('node scripts/ci/npm-ci.mjs')
-    expect(fetch.run).toContain('scripts/fetch-micromamba.mjs linux-64')
-    expect(create.run).toContain('python=3.12 matplotlib-base nomkl')
-    expect(create.run).toContain('r-base=4.4 r-jsonlite r-ggplot2')
+    expect(fetch.run).toContain('scripts/fetch-micromamba.mjs "${{ matrix.subdir }}"')
+    expect(create.run).toContain('python=3.12 matplotlib-base numpy pandas nomkl')
+    expect(create.run).toContain('r-base=4.4 r-jsonlite r-ggplot2 r-renv r-mass')
     expect(create.run).toContain('OPEN_SCIENCE_TEST_PY_ENV=')
     expect(create.run).toContain('OPEN_SCIENCE_TEST_R_ENV=')
-    expect(verify.run).toContain('library(jsonlite)')
-    expect(verify.run).toContain('library(ggplot2)')
+    expect(create.run).toContain('OPEN_SCIENCE_TEST_RENV_LIBRARY=$r_prefix/lib/R/library')
+    expect(create.run).toContain('OPEN_SCIENCE_TEST_RESTORE_PY_ENV=$python_prefix')
+    expect(create.run).toContain('OPEN_SCIENCE_TEST_PYTHON=$python_prefix/bin/python')
+    expect(create.run).toContain('OPEN_SCIENCE_TEST_MICROMAMBA=$MICROMAMBA_BIN')
+    expect(create.run).toContain('OPEN_SCIENCE_TEST_SCIENTIFIC_RESTORE=1')
+    expect(step(source, 'Prepare local restoration archives').run).toContain(
+      'OPEN_SCIENCE_TEST_CONDA_ARCHIVES='
+    )
+    for (const name of ['matplotlib', 'numpy', 'pandas', 'openpyxl', 'pycirclize']) {
+      expect(create.run).toContain(name === 'matplotlib' ? 'matplotlib-base' : name)
+      expect(verify.run).toContain(name)
+    }
+    // The real replay fixtures need workbook, plotting, and data-transformation packages too.
+    for (const name of [
+      'jsonlite',
+      'ggplot2',
+      'renv',
+      'MASS',
+      'circlize',
+      'dplyr',
+      'ggrepel',
+      'ggVennDiagram',
+      'magrittr',
+      'openxlsx',
+      'patchwork',
+      'ragg',
+      'RColorBrewer',
+      'readxl',
+      'scales',
+      'showtext',
+      'sysfonts',
+      'systemfonts',
+      'tidyr',
+      'venn',
+      'VennDiagram'
+    ]) {
+      expect(create.run?.split(/\s+/)).toContain(`r-${name.toLowerCase()}`)
+      expect(verify.run).toContain(`"${name}"`)
+    }
+    expect(verify.run).toContain('loadNamespace(package)')
   })
 
   it('activates the explicit real runtime suites without package or publication side effects', () => {
@@ -80,13 +135,22 @@ describe('runtime certification workflow', () => {
     const test = step(source, 'Test real source runtime chain')
     const allRuns = source.steps?.map(({ run }) => run ?? '').join('\n') ?? ''
 
-    expect(test.env).toEqual({ RUN_KERNEL: '1' })
+    expect(test.env).toEqual({ RUN_KERNEL: '1', RUN_REPRODUCTION_SMOKE: '1' })
     for (const file of [
       'repl-loop.integration.test.ts',
       'host-compute.integration.test.ts',
       'host-mcp.integration.test.ts',
       'python-loop.integration.test.ts',
       'r-loop.integration.test.ts',
+      'reproduction-runtime.integration.test.ts',
+      'native-lock-restoration.test.ts',
+      'environment-lock.test.ts',
+      'restored-environment-verification.test.ts',
+      'artifact-reproducibility-execution.test.ts',
+      'environment-state-tracker.test.ts',
+      'package-manager.test.ts',
+      'cross-turn-input-repro.integration.test.ts',
+      'input-resource-repro.integration.test.ts',
       'e2e.certification.test.ts',
       'agents-repl.integration.test.ts',
       'agents-repl.mutations.integration.test.ts',
@@ -108,12 +172,19 @@ describe('runtime certification workflow', () => {
 
     expect(dispatch.inputs?.dry_run).toMatchObject({
       default: 'full',
-      options: ['full', 'runtime-source', 'macos-x64']
+      options: [
+        'full',
+        'runtime-source',
+        'macos-x64',
+        'linux-cli',
+        'linux-arm64',
+        'windows-package'
+      ]
     })
     expect(nightly.jobs.build.if).toContain("inputs.dry_run != 'runtime-source'")
     expect(runtime).toMatchObject({
       needs: 'plan',
-      if: "needs.plan.outputs.should_build == 'true' && inputs.dry_run != 'macos-x64'",
+      if: "needs.plan.outputs.should_build == 'true' && inputs.dry_run != 'macos-x64' && inputs.dry_run != 'linux-cli' && inputs.dry_run != 'linux-arm64' && inputs.dry_run != 'windows-package'",
       uses: './.github/workflows/runtime-certification.yml',
       with: { allow_failure: "${{ github.event_name != 'workflow_dispatch' }}" }
     })

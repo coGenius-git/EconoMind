@@ -9,12 +9,27 @@ export type ConnectorCredentials = {
 export type ToolContext = {
   signal?: AbortSignal
   fetchJson(url: string): Promise<unknown>
-  fetchText(url: string): Promise<string>
+  // Disable automatic retries for APIs whose polling interval exceeds the call budget.
+  fetchText(url: string, accept?: string, options?: { retry?: false }): Promise<string>
   // GET JSON plus the response headers — for APIs that report totals/pagination in headers rather than
   // the body (e.g. PRIDE Archive's `total_records`), which fetchJson alone would drop.
-  fetchJsonWithHeaders(url: string): Promise<{ body: unknown; headers: Headers }>
+  // Opt into reading selected HTTP error bodies and inspect status before treating them as success.
+  // Unlisted statuses still throw; response size limits, deadlines, and cancellation still apply.
+  fetchJsonWithHeaders(
+    url: string,
+    options?: { allowHttpStatuses?: readonly number[] }
+  ): Promise<{ body: unknown; headers: Headers; status: number }>
   // POST a JSON body and parse the JSON response — for GraphQL / POST-only APIs (e.g. gnomAD).
-  postJson(url: string, body: unknown): Promise<unknown>
+  // POST a JSON body and parse the JSON response. Set retry:false for submissions where a
+  // lost response leaves the provider job outcome unknown and replaying could create a duplicate.
+  postJson(url: string, body: unknown, options?: { retry?: false }): Promise<unknown>
+  // Submit multipart data once and parse JSON; never retry a potentially created job.
+  postForm(url: string, body: FormData): Promise<unknown>
+  // Submit multipart data once and return the raw response; useful for APIs whose JSON is
+  // technically non-standard (for example, Enrichr may emit bare Infinity values).
+  postFormText?: (url: string, body: FormData) => Promise<string>
+  // Submit URL-encoded form data once and return the raw response.
+  postUrlEncodedText?: (url: string, body: URLSearchParams) => Promise<string>
   credentials: ConnectorCredentials
 }
 

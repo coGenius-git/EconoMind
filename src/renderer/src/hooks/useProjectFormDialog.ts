@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { Project, ProjectCategory } from '../../../shared/projects'
@@ -21,10 +21,16 @@ type ProjectFormDialogProps = {
   isSubmitting: boolean
   error: string | undefined
   errorDetail?: string
+  conflictProject?: Project
+  onLoadLatest?: () => void
+  onKeepDraft?: () => void
   onNameChange: (value: string) => void
   onDescriptionChange: (value: string) => void
   onAgentContextChange: (value: string) => void
   onCategoryChange: (value: ProjectCategory) => void
+  discardConfirmationOpen: boolean
+  onKeepEditing: () => void
+  onDiscardChanges: () => void
   onCancel: () => void
   onConfirm: (event: React.FormEvent<HTMLFormElement>) => void
 }
@@ -37,6 +43,7 @@ type UseProjectFormDialogResult = {
 
 type UseProjectFormDialogOptions = {
   onCreated?: (project: Project) => void
+  onCreateCancelled?: () => void
 }
 
 // Owns the create/edit Project form state machine shared by the Home page and the Workspace sidebar
@@ -57,12 +64,28 @@ const useProjectFormDialog = (
   const [categoryDraft, setCategoryDraft] = useState<ProjectCategory>('general')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [errorDetail, setErrorDetail] = useState<string>()
+  const [conflictProject, setConflictProject] = useState<Project>()
   const [formError, setFormError] = useState<string | undefined>(undefined)
+  const [discardConfirmationOpen, setDiscardConfirmationOpen] = useState(false)
+  const initialDraft = useRef({
+    name: '',
+    description: '',
+    agentContext: '',
+    category: 'general' as ProjectCategory
+  })
 
   const openCreateDialog = useCallback((): void => {
     // A submission is in flight: ignore reopens so the pending mutation keeps its drafts.
     if (isSubmitting) return
 
+    initialDraft.current = {
+      name: '',
+      description: '',
+      agentContext: '',
+      category: 'general' as ProjectCategory
+    }
+    setDiscardConfirmationOpen(false)
+    setConflictProject(undefined)
     setFormState({ mode: 'create' })
     setNameDraft('')
     setDescriptionDraft('')
@@ -77,6 +100,14 @@ const useProjectFormDialog = (
       // A submission is in flight: ignore reopens so the pending mutation keeps its drafts.
       if (isSubmitting) return
 
+      initialDraft.current = {
+        name: project.name,
+        description: project.description,
+        agentContext: project.agentContext ?? '',
+        category: project.category ?? 'general'
+      }
+      setDiscardConfirmationOpen(false)
+      setConflictProject(undefined)
       setFormState({
         mode: 'edit',
         projectId: project.id,
@@ -93,9 +124,24 @@ const useProjectFormDialog = (
   )
 
   const closeFormDialog = (): void => {
-    if (isSubmitting) return
+    if (isSubmitting || !formState) return
 
+    setDiscardConfirmationOpen(false)
+    if (formState.mode === 'create') options.onCreateCancelled?.()
     setFormState(null)
+  }
+  const requestCloseFormDialog = (): void => {
+    if (isSubmitting || !formState) return
+    if (
+      nameDraft !== initialDraft.current.name ||
+      descriptionDraft !== initialDraft.current.description ||
+      agentContextDraft !== initialDraft.current.agentContext ||
+      categoryDraft !== initialDraft.current.category
+    ) {
+      setDiscardConfirmationOpen(true)
+      return
+    }
+    closeFormDialog()
   }
 
   // Creates or renames a project. On create, navigate into the new (empty) workspace. Failures keep
@@ -105,7 +151,7 @@ const useProjectFormDialog = (
 
     const name = nameDraft.trim()
 
-    if (!formState || !name || isSubmitting) return
+    if (!formState || !name || isSubmitting || conflictProject || discardConfirmationOpen) return
 
     const description = descriptionDraft.trim()
     const agentContext = agentContextDraft.trim()
@@ -149,11 +195,25 @@ const useProjectFormDialog = (
           else openProject(project.id, 'user')
         }
       })
-      .catch((error: unknown) => {
+      .catch(async (error: unknown) => {
         setErrorDetail(error instanceof Error ? error.message : String(error))
+        if (
+          error instanceof Error &&
+          error.message === 'Project changed elsewhere.' &&
+          formState.mode === 'edit'
+        ) {
+          try {
+            const latest = await window.api.projects.get(formState.projectId)
+            if (latest) setConflictProject(latest)
+          } catch {
+            // Keep the stale revision: retry remains conditional if the latest read fails.
+          }
+        }
         setFormError(
           error instanceof Error && error.message === 'Project changed elsewhere.'
-            ? t('Project changed elsewhere. Reopen Project Settings and try again.')
+            ? t(
+                'Project changed elsewhere. Your draft is kept. Compare the latest values before saving again.'
+              )
             : t('Could not save project. Please try again.')
         )
       })
@@ -187,11 +247,34 @@ const useProjectFormDialog = (
       isSubmitting,
       error: formError,
       errorDetail,
+      conflictProject,
+      onLoadLatest: conflictProject ? () => openEditDialog(conflictProject) : undefined,
+      onKeepDraft: conflictProject
+        ? () => {
+            initialDraft.current = {
+              name: conflictProject.name,
+              description: conflictProject.description,
+              agentContext: conflictProject.agentContext ?? '',
+              category: conflictProject.category ?? 'general'
+            }
+            setFormState({
+              mode: 'edit',
+              projectId: conflictProject.id,
+              expectedUpdatedAt: conflictProject.updatedAt
+            })
+            setConflictProject(undefined)
+            setFormError(undefined)
+            setErrorDetail(undefined)
+          }
+        : undefined,
       onNameChange: setNameDraft,
       onDescriptionChange: setDescriptionDraft,
       onAgentContextChange: setAgentContextDraft,
       onCategoryChange: setCategoryDraft,
-      onCancel: closeFormDialog,
+      discardConfirmationOpen,
+      onKeepEditing: () => setDiscardConfirmationOpen(false),
+      onDiscardChanges: closeFormDialog,
+      onCancel: requestCloseFormDialog,
       onConfirm: confirmForm
     }
   }

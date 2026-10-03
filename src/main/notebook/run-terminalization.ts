@@ -1,9 +1,11 @@
+import { notebookErrorRecovery } from '../../shared/notebook-execution-error'
 import type {
   NotebookEnvironmentManifest,
   NotebookHelperModuleEvidence,
   NotebookHelperEvidenceStatus,
   NotebookOutput,
   NotebookRunEnvironmentCapture,
+  NotebookRunEnvironmentLockCapture,
   NotebookRunRecord,
   NotebookRunStatus,
   NotebookWorkingFile
@@ -12,6 +14,8 @@ import type { ExecutionFileEvidenceSummary } from '../../shared/execution-file-e
 import type { NotebookRunRepository } from './repository'
 import { notebookLaneKey, type NotebookLaneIdentity } from './lane-identity'
 import { limitNotebookTerminalContent } from './content-limits'
+import { notebookPromptInputPath } from './prompt-input-materialization'
+import { reportNotebookEvidence } from './evidence-diagnostics'
 
 type NotebookRunIdentity = Readonly<{
   runId: string
@@ -29,15 +33,21 @@ type NotebookRunTerminalResult = {
   stdout: string
   stderr: string
   traceback: string
+  cwdBefore?: string
   cwdAfter?: string
   outputs: NotebookOutput[]
   truncated?: boolean
   exitCode?: number | null
+  runtimeStatus?: NotebookRunRecord['shellRuntimeStatus']
+  errorCode?: NotebookRunRecord['shellErrorCode']
+  recovery?: NotebookRunRecord['recovery']
   workingFiles?: NotebookWorkingFile[]
   fileEvidence?: ExecutionFileEvidenceSummary
+  confirmedReadPaths?: string[]
   environmentManifest?: NotebookEnvironmentManifest
   environmentManifestChecksum?: string
   environmentCapture?: NotebookRunEnvironmentCapture
+  environmentLock?: NotebookRunEnvironmentLockCapture
   kernelDispatched?: boolean
   helperModules?: NotebookHelperModuleEvidence[]
   helperEvidenceStatus?: NotebookHelperEvidenceStatus
@@ -85,6 +95,21 @@ const outputPlainText = (stdout: string, stderr: string): string[] =>
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
+
+const inputsWithConfirmedAccess = (
+  run: NotebookRunRecord,
+  result: NotebookRunTerminalResult
+): NotebookRunRecord['inputFiles'] => {
+  const inputs = run.inputFiles ?? []
+  if (result.status !== 'completed' || !result.confirmedReadPaths?.length) return inputs
+  const reads = new Set(result.confirmedReadPaths)
+  return inputs.map((input) => ({
+    ...input,
+    ...(reads.has(`data/${notebookPromptInputPath(input.filename, input.checksum)}`)
+      ? { accessEvidence: 'file-evidence' as const }
+      : {})
+  }))
+}
 
 const unavailableFileEvidence = (activityId: string): ExecutionFileEvidenceSummary => ({
   schemaVersion: 1,
@@ -200,6 +225,7 @@ class NotebookRunTerminalizationOwner {
           status: 'interrupted',
           stdout: '',
           stderr: errorMessage(error),
+          ...(notebookErrorRecovery(error) ? { recovery: notebookErrorRecovery(error) } : {}),
           traceback: '',
           cwdAfter: runningRun.cwdBefore,
           outputs: [],
@@ -282,14 +308,53 @@ class NotebookRunTerminalizationOwner {
     const { session, runningRun } = request
     const lane = session.lane
     let liveResult: NotebookRunTerminalResult | undefined
+    const inheritedInputs = new Set<NonNullable<NotebookRunRecord['inputFiles']>[number]>()
+    const retainReadInputs = (result: NotebookRunTerminalResult): void => {
+      const inputs = runningRun.inputFiles
+      if (!inputs || inheritedInputs.size === 0) return
+      const reads = new Set(result.status === 'completed' ? result.confirmedReadPaths : [])
+      const retained = inputs.filter(
+        (input) =>
+          !inheritedInputs.has(input) ||
+          reads.has(`data/${notebookPromptInputPath(input.filename, input.checksum)}`)
+      )
+      inputs.splice(0, inputs.length, ...retained)
+    }
     try {
       await this.reconcilePending(session)
-      await this.options.repository.appendRun({
+      const document = await this.options.repository.appendRun({
         projectId: session.projectId,
         sessionId: session.sessionId,
         lane,
         run: runningRun
       })
+      // Prior immutable registrations remain usable by later messages in this Notebook lane.
+      // Offer them to the file observer, which checks frozen bytes against their checksum.
+      // Keep the lease-owned array live, but persist inherited inputs only after a confirmed read.
+      const inputs = (runningRun.inputFiles ??= [])
+      const identities = new Set(
+        inputs.map((input) => `${input.sourceKind}\0${input.inputFileVersionId}`)
+      )
+      for (const previous of document.runs) {
+        if (
+          previous.runId === runningRun.runId ||
+          previous.startedAt > runningRun.startedAt ||
+          previous.messageBranchId !== runningRun.messageBranchId
+        )
+          continue
+        for (const input of previous.inputFiles ?? []) {
+          const identity = `${input.sourceKind}\0${input.inputFileVersionId}`
+          if (input.sourceProjectId !== session.projectId || identities.has(identity)) continue
+          identities.add(identity)
+          const inherited = {
+            ...input,
+            association: 'turn-attached' as const,
+            accessEvidence: undefined
+          }
+          inputs.push(inherited)
+          inheritedInputs.add(inherited)
+        }
+      }
       this.options.notifyChanged(session)
 
       let result: Result
@@ -312,10 +377,12 @@ class NotebookRunTerminalizationOwner {
           status: 'interrupted',
           stdout: '',
           stderr: errorMessage(error),
+          ...(notebookErrorRecovery(error) ? { recovery: notebookErrorRecovery(error) } : {}),
           traceback: '',
           cwdAfter: runningRun.cwdBefore,
           outputs: []
         }
+        retainReadInputs(liveResult)
         await this.commitOrRememberTerminalRun(
           session,
           this.buildTerminalRun(runningRun, liveResult, 'execution-error')
@@ -323,6 +390,7 @@ class NotebookRunTerminalizationOwner {
         throw error
       }
       liveResult = result
+      retainReadInputs(result)
       const terminalRun = this.buildTerminalRun(runningRun, result)
       const run = await this.commitOrRememberTerminalRun(session, terminalRun)
 
@@ -332,6 +400,7 @@ class NotebookRunTerminalizationOwner {
         status: 'interrupted',
         stdout: '',
         stderr: errorMessage(error),
+        ...(notebookErrorRecovery(error) ? { recovery: notebookErrorRecovery(error) } : {}),
         traceback: '',
         cwdAfter: runningRun.cwdBefore,
         outputs: []
@@ -394,6 +463,7 @@ class NotebookRunTerminalizationOwner {
       ...runningRun,
       status: limitedResult.status,
       endedAt: this.now(),
+      cwdBefore: limitedResult.cwdBefore ?? runningRun.cwdBefore,
       cwdAfter: limitedResult.cwdAfter,
       text: {
         stdout: limitedResult.stdout,
@@ -406,9 +476,14 @@ class NotebookRunTerminalizationOwner {
       outputs: limitedResult.outputs,
       workingFiles: limitedResult.workingFiles ?? [],
       fileEvidence: limitedResult.fileEvidence ?? unavailableFileEvidence(runningRun.runId),
+      inputFiles: inputsWithConfirmedAccess(runningRun, limitedResult),
       ...(limitedResult.truncated ? { truncated: true } : {}),
       ...(limitedResult.exitCode !== undefined ? { exitCode: limitedResult.exitCode } : {}),
+      ...(limitedResult.runtimeStatus ? { shellRuntimeStatus: limitedResult.runtimeStatus } : {}),
+      ...(limitedResult.errorCode ? { shellErrorCode: limitedResult.errorCode } : {}),
+      ...(limitedResult.recovery ? { recovery: limitedResult.recovery } : {}),
       environmentCapture,
+      ...(limitedResult.environmentLock ? { environmentLock: limitedResult.environmentLock } : {}),
       ...(limitedResult.kernelDispatched !== undefined
         ? { kernelDispatched: limitedResult.kernelDispatched }
         : {}),
@@ -424,6 +499,7 @@ class NotebookRunTerminalizationOwner {
         ? { environmentManifestChecksum: limitedResult.environmentManifestChecksum }
         : {})
     }
+    reportNotebookEvidence(terminalRun)
     return terminalRun
   }
 

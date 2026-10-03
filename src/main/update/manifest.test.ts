@@ -16,6 +16,17 @@ const valid = {
 }
 
 describe('parseManifest', () => {
+  it('retains both Linux ARM64 installer entries from the published manifest', () => {
+    const downloads = {
+      'linux-arm64-appimage': {
+        url: 'https://cdn/app-linux-arm64.AppImage',
+        size: 20,
+        sha256: 'a'.repeat(64)
+      },
+      'linux-arm64-deb': { url: 'https://cdn/app_arm64.deb', size: 10, sha256: 'b'.repeat(64) }
+    }
+    expect(parseManifest({ ...valid, downloads }).downloads).toEqual(downloads)
+  })
   it('accepts a well-formed manifest', () => {
     expect(parseManifest(valid)).toMatchObject({
       version: '0.3.0',
@@ -27,6 +38,30 @@ describe('parseManifest', () => {
       }
     })
   })
+  it('ignores future platforms without weakening known-platform validation', () => {
+    const downloads = { ...valid.downloads, 'linux-arm64': null, solaris: { format: 2 } }
+    expect(parseManifest({ ...valid, downloads }).downloads).toEqual(valid.downloads)
+    expect(parseManifest({ ...valid, downloads: { solaris: null } }).downloads).toEqual({})
+    for (const key of [
+      'mac-arm64',
+      'mac-x64',
+      'win-x64',
+      'linux-x64-appimage',
+      'linux-x64-deb',
+      'linux-arm64-appimage',
+      'linux-arm64-deb'
+    ]) {
+      for (const invalid of [{ url: 'http://cdn/a' }, { size: 0 }, { sha256: 'bad' }]) {
+        expect(() =>
+          parseManifest({
+            ...valid,
+            downloads: { ...downloads, [key]: { ...valid.downloads['mac-arm64'], ...invalid } }
+          })
+        ).toThrow(`Invalid download entry: ${key}`)
+      }
+    }
+  })
+
   it('defaults missing releaseDate/notes to empty strings', () => {
     const m = parseManifest({ version: '1.0.0', downloads: {} })
     expect(m.releaseDate).toBe('')
@@ -36,7 +71,9 @@ describe('parseManifest', () => {
     expect(() => parseManifest({ downloads: {} })).toThrow()
   })
   it('throws on a malformed download entry', () => {
-    expect(() => parseManifest({ version: '1.0.0', downloads: { x: { url: 1 } } })).toThrow()
+    expect(() =>
+      parseManifest({ version: '1.0.0', downloads: { 'mac-arm64': { url: 1 } } })
+    ).toThrow()
   })
   it('ignores unsupported localized notes without dropping supported locales', () => {
     const manifest = parseManifest({
@@ -58,7 +95,6 @@ describe('parseManifest', () => {
     ['an empty version', { ...valid, version: '' }],
     ['a partial numeric version', { ...valid, version: '1.2.3broken' }],
     ['an array downloads value', { ...valid, downloads: [] }],
-    ['an unknown platform key', { ...valid, downloads: { solaris: valid.downloads['mac-arm64'] } }],
     [
       'a relative download URL',
       {

@@ -1,3 +1,4 @@
+import { Tabs } from 'radix-ui'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Download, LoaderCircle, X } from 'lucide-react'
@@ -23,17 +24,8 @@ import type {
   NotebookRunHistorySummary,
   NotebookRunRecord
 } from '../../../../shared/notebook'
-import { NotebookCodeBlock } from './notebook-code'
-import { NotebookRunOutputs } from './NotebookRunOutputs'
-import { NotebookInputDataStrip } from './NotebookInputDataStrip'
-import {
-  isProblemRunStatus,
-  kernelKindLabel,
-  kernelOriginLabel,
-  notebookRunStatusLabel,
-  resolveRunErrorLine,
-  resolveRunKernelKind
-} from './notebook-cell-utils'
+import { kernelKindLabel, resolveRunKernelKind } from './notebook-cell-utils'
+import { NotebookRecordCell as NotebookDialogCell } from './NotebookRecordCell'
 import { loadSessionNotebookData } from './session-notebook-data'
 import {
   createNotebookFrameFilterOptions,
@@ -53,68 +45,6 @@ const HISTORY_SUMMARY_CACHE_LIMIT = 20
 // Turns an IPC rejection into displayable text without losing non-Error values.
 const getErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
-
-// One persisted run rendered as a notebook cell: header badges, code, and split stdout/stderr. The
-// zero-based index is the cell number shown in [n], aligning the display with a notebook's cells.
-const NotebookDialogCell = ({
-  run,
-  index,
-  showInputData = false
-}: {
-  run: NotebookRunRecord
-  index: number
-  showInputData?: boolean
-}): React.JSX.Element => {
-  const { t } = useTranslation()
-  const isProblem = isProblemRunStatus(run.status)
-  const statusLabel = notebookRunStatusLabel(run.status)
-  const errorLine = isProblem ? resolveRunErrorLine(run) : undefined
-  const kind = resolveRunKernelKind(run)
-  const originLabel = kernelOriginLabel(kind)
-
-  return (
-    <div className="px-4 py-3" data-testid="session-notebook-cell">
-      <div className="mb-2 flex items-center justify-between text-xs">
-        <div className="flex items-center gap-2">
-          <span className="font-mono text-text-300">[{index}]</span>
-          <span className="rounded bg-bg-300 px-1.5 py-0.5 text-text-200">{kind}</span>
-          {isProblem ? (
-            errorLine ? (
-              <span className="rounded bg-danger-000 px-1.5 py-0.5 font-medium text-white">
-                {t('error (line {{line}})', { line: errorLine })}
-              </span>
-            ) : (
-              <span className="rounded bg-danger-900 px-1.5 py-0.5 text-danger-000">
-                {t('error')}
-              </span>
-            )
-          ) : statusLabel ? (
-            <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
-              {t(statusLabel)}
-            </span>
-          ) : null}
-        </div>
-        {originLabel ? (
-          <span className="font-mono text-text-300" data-testid="session-notebook-cell-origin">
-            {originLabel}
-          </span>
-        ) : null}
-      </div>
-      {showInputData ? (
-        <NotebookInputDataStrip
-          inputFiles={run.inputFiles ?? []}
-          className="mb-2 rounded-md border border-border bg-muted px-2 py-1.5"
-        />
-      ) : null}
-      <NotebookCodeBlock
-        code={run.script}
-        language={kind === 'repl' ? 'javascript' : kind}
-        highlightLine={errorLine}
-      />
-      <NotebookRunOutputs run={run} />
-    </div>
-  )
-}
 
 type SessionNotebookContentProps = {
   sessionId: string
@@ -347,7 +277,15 @@ const SessionNotebookContent = ({
   const exportAllCount = dataKernelsWithRuns.length
 
   return (
-    <>
+    <Tabs.Root
+      value={effectiveActiveKind}
+      activationMode="manual"
+      className="contents"
+      onValueChange={(value) => {
+        setActiveKind(value as NotebookKernelKind)
+        setExportSuccess(undefined)
+      }}
+    >
       <div className="flex shrink-0 items-center justify-between border-b border-border-300/90 px-5 py-3.5">
         <h2 className="flex min-w-0 items-center gap-3 text-lg font-semibold text-foreground">
           <span>{t('Session notebook')}</span>
@@ -410,7 +348,7 @@ const SessionNotebookContent = ({
                 <span>{t('Failed to load earlier runs.')}</span>
                 <button
                   type="button"
-                  className="h-8 shrink-0 rounded-md px-2.5 text-xs text-foreground hover:bg-bg-200 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 active:translate-y-px"
+                  className="h-8 shrink-0 rounded-md px-2.5 text-xs text-foreground hover:bg-bg-200 focus-visible:keyboard-focus focus-visible:-outline-offset-2 active:translate-y-px"
                   onClick={onLoadEarlier}
                 >
                   {t('Retry')}
@@ -419,7 +357,7 @@ const SessionNotebookContent = ({
             ) : historyPage?.hasEarlierRuns && !supportsAutomaticHistoryLoading ? (
               <button
                 type="button"
-                className="flex h-9 w-full items-center justify-center border-b border-border bg-muted px-4 text-xs text-foreground hover:bg-bg-200 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-inset focus-visible:ring-ring/50 active:translate-y-px"
+                className="flex h-9 w-full items-center justify-center border-b border-border bg-muted px-4 text-xs text-foreground hover:bg-bg-200 focus-visible:keyboard-focus focus-visible:-outline-offset-2 active:translate-y-px"
                 onClick={onLoadEarlier}
               >
                 {t('Load earlier runs')}
@@ -477,24 +415,22 @@ const SessionNotebookContent = ({
                 </SelectContent>
               </Select>
             </div>
-            <div
-              role="tablist"
+            <Tabs.List
+              aria-label={t('Session notebook')}
               data-testid="session-kernel-switcher"
               className="flex shrink-0 items-center gap-1 border-y border-border bg-muted px-3 py-1.5"
             >
               {visibleKinds.map((kind) => (
-                <button
+                <Tabs.Trigger
                   key={kind}
-                  type="button"
-                  role="tab"
-                  aria-selected={effectiveActiveKind === kind}
-                  data-testid={`session-notebook-tab-${kind}`}
+                  value={kind}
                   onClick={() => {
                     setActiveKind(kind)
                     setExportSuccess(undefined)
                   }}
+                  data-testid={`session-notebook-tab-${kind}`}
                   className={cn(
-                    'flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50',
+                    'flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors focus-visible:keyboard-focus focus-visible:-outline-offset-2',
                     effectiveActiveKind === kind
                       ? 'bg-card text-foreground'
                       : 'text-muted-foreground hover:bg-card/70 hover:text-foreground'
@@ -505,10 +441,17 @@ const SessionNotebookContent = ({
                     {historySummary?.kernelCounts[kind] ??
                       projectedRuns.filter((run) => resolveRunKernelKind(run) === kind).length}
                   </span>
-                </button>
+                </Tabs.Trigger>
               ))}
-            </div>
-            <div
+            </Tabs.List>
+            {visibleKinds
+              .filter((kind) => kind !== effectiveActiveKind)
+              .map((kind) => (
+                <Tabs.Content key={kind} value={kind} />
+              ))}
+            <Tabs.Content
+              value={effectiveActiveKind}
+              tabIndex={-1}
               className="divide-y divide-border-100"
               data-testid={`session-notebook-kernel-${effectiveActiveKind}`}
             >
@@ -529,7 +472,7 @@ const SessionNotebookContent = ({
                   </div>
                 ))
               )}
-            </div>
+            </Tabs.Content>
           </>
         )}
       </div>
@@ -562,15 +505,18 @@ const SessionNotebookContent = ({
                       aria-label={t('Download separate notebooks by kernel ({{count}})', {
                         count: exportAllCount
                       })}
+                      aria-busy={Boolean(exportingAll)}
                     >
-                      {exportingAll ? (
-                        <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
-                      ) : (
-                        <Download className="size-3.5" aria-hidden="true" />
-                      )}
-                      {exportingAll
-                        ? t('Exporting…')
-                        : t('All ({{count}})', { count: exportAllCount })}
+                      <span key={String(exportingAll)} className="button-feedback">
+                        {exportingAll ? (
+                          <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Download className="size-3.5" aria-hidden="true" />
+                        )}
+                        {exportingAll
+                          ? t('Exporting…')
+                          : t('All ({{count}})', { count: exportAllCount })}
+                      </span>
                     </button>
                   </span>
                 </TooltipTrigger>
@@ -598,13 +544,16 @@ const SessionNotebookContent = ({
                         ? t('Download {{kernel}} as .ipynb', { kernel: resolvedDataKernel })
                         : t('Download as .ipynb')
                     }
+                    aria-busy={Boolean(exporting)}
                   >
-                    {exporting ? (
-                      <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
-                    ) : (
-                      <Download className="size-3.5" aria-hidden="true" />
-                    )}
-                    {exporting ? t('Exporting…') : t('.ipynb')}
+                    <span key={String(exporting)} className="button-feedback">
+                      {exporting ? (
+                        <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <Download className="size-3.5" aria-hidden="true" />
+                      )}
+                      {exporting ? t('Exporting…') : t('.ipynb')}
+                    </span>
                   </button>
                 </span>
               </TooltipTrigger>
@@ -623,7 +572,7 @@ const SessionNotebookContent = ({
           </TooltipProvider>
         </div>
       </div>
-    </>
+    </Tabs.Root>
   )
 }
 

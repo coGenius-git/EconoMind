@@ -7,6 +7,9 @@ test('refocuses the open find overlay and follows app language changes', async (
   app
 }, testInfo) => {
   const page = await app.completeOnboarding()
+  await page.evaluate(async () => {
+    await window.api.locale.setPreference({ preference: 'en' })
+  })
   await page.getByRole('button', { name: 'New project' }).click()
   const dialog = page.getByRole('dialog', { name: 'New project' })
   await dialog.getByLabel('Name').fill('Find overlay project')
@@ -52,6 +55,14 @@ test('refocuses the open find overlay and follows app language changes', async (
   await expect(input).toHaveAttribute('placeholder', '検索')
   await expect(overlay.locator('html')).toHaveAttribute('lang', 'ja')
   await overlay.screenshot({ path: testInfo.outputPath('find-overlay-ja.png') })
+  await input.fill('overlay query')
   await overlay.getByRole('button', { name: '検索を閉じる' }).click()
+  await expect.poll(() => app.findOverlayIsVisible()).toBe(false)
+
+  await app.pressMainWindowShortcut('F', [...modifiers])
+  await expect.poll(() => app.findOverlayIsVisible()).toBe(true)
+  await expect(input).toBeFocused()
+  await expect(input).toHaveValue('overlay query')
+  await input.press('Escape')
   await expect.poll(() => app.findOverlayIsVisible()).toBe(false)
 })

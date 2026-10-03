@@ -72,7 +72,7 @@ export function ScreeningWordPreview({
           name,
           container,
           signal: controller.signal,
-          fitToWidth: false
+          reviewControls: false
         })
         if (controller.signal.aborted) {
           await cleanup()

@@ -1,3 +1,5 @@
+import { NETWORK_APPROVAL_REQUIRED, NETWORK_POLICY_BLOCKED } from './recovery-context.js'
+
 const MAX_EVENTS_PER_COMMAND = 32
 
 const clean = (value: string): string =>
@@ -7,10 +9,40 @@ const clean = (value: string): string =>
     .trim()
     .slice(0, 1000)
 
-const pathNear = (stderr: string, failure: string): string | undefined => {
+const diagnosticLines = function* (output: string, failure: RegExp): Generator<string> {
+  for (const line of output.split(/\r?\n/)) {
+    // Unicode escapes can also encode the error phrase itself in a JSON message.
+    if (!failure.test(line) && !line.includes('\\u')) continue
+    // CLI JSON envelopes escape Windows separators. Decode complete JSON strings only;
+    // replacing backslashes in ordinary output would corrupt UNC paths and escape sequences.
+    // Advance monotonically: an unterminated string must not retry at every escaped quote.
+    let index = 0
+    while (index < line.length) {
+      if (line[index] !== '"') {
+        index += 1
+        continue
+      }
+      const start = index++
+      while (index < line.length && line[index] !== '"') {
+        index += line[index] === '\\' ? 2 : 1
+      }
+      if (index >= line.length) break
+      const literal = line.slice(start, ++index)
+      try {
+        yield JSON.parse(literal) as string
+      } catch {
+        // Quoted prose is not necessarily JSON; retain the original line below.
+      }
+    }
+    yield line
+  }
+}
+
+const pathNear = (output: string, failure: string): string | undefined => {
   const path = String.raw`([A-Za-z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]+|\/[^\s'"\x60:]+)`
-  for (const line of stderr.split(/\r?\n/)) {
-    const failureMatch = new RegExp(failure, 'i').exec(line)
+  const failurePattern = new RegExp(failure, 'i')
+  for (const line of diagnosticLines(output, failurePattern)) {
+    const failureMatch = failurePattern.exec(line)
     if (!failureMatch) continue
     const before = [...line.slice(0, failureMatch.index).matchAll(new RegExp(path, 'gi'))].at(
       -1
@@ -19,7 +51,7 @@ const pathNear = (stderr: string, failure: string): string | undefined => {
       .slice(failureMatch.index + failureMatch[0].length)
       .match(new RegExp(path, 'i'))?.[1]
     const candidate = before ?? after
-    if (candidate) return clean(candidate)
+    if (candidate) return clean(candidate).replace(/['"`]$/, '')
   }
   return undefined
 }
@@ -41,12 +73,14 @@ class ViolationLog {
   attach(
     commandId: string,
     stderr: string,
-    hiddenBySandbox: (path: string) => boolean = () => false
+    hiddenBySandbox: (path: string) => boolean = () => false,
+    stdout = ''
   ): string {
     const events = this.#events.get(commandId)
     this.#events.delete(commandId)
-    const permissionDenied = new RegExp(permissionFailure, 'i').test(stderr)
-    const missing = missingPath(stderr)
+    const diagnostics = `${stderr}\n${stdout}`
+    const permissionDenied = new RegExp(permissionFailure, 'i').test(diagnostics)
+    const missing = missingPath(diagnostics)
     const hiddenMissingPath = missing && hiddenBySandbox(missing) ? missing : undefined
     const lines = [...(events ?? [])]
     if (
@@ -54,15 +88,23 @@ class ViolationLog {
         (line) => line.startsWith('deny network-outbound ') && line.endsWith('(not approved)')
       )
     ) {
-      lines.unshift(
-        'OPEN_SCIENCE_NETWORK_DOMAIN_BLOCKED: This domain is not in Settings > Network > Allowed domains.'
-      )
+      lines.unshift(NETWORK_APPROVAL_REQUIRED)
     }
-    if (permissionDenied || hiddenMissingPath) {
-      const path = permissionDenied ? deniedPath(stderr) : hiddenMissingPath
+    if (
+      lines.some(
+        (line) => line.startsWith('deny network-outbound ') && !line.endsWith('(not approved)')
+      )
+    ) {
+      lines.unshift(NETWORK_POLICY_BLOCKED)
+    }
+    const path = (permissionDenied ? deniedPath(diagnostics) : undefined) ?? hiddenMissingPath
+    if (path) {
       lines.push(
         `OPEN_SCIENCE_FILESYSTEM_ACCESS_BLOCKED${path ? `: ${path}` : ''} ` +
-          '(grant the folder in the Files view and retry)'
+          'Filesystem access failed; native permissions, read-only mounts, or the sandbox may be responsible. ' +
+          'Check the path and required read/write access. Use a writable project path for output. ' +
+          'If access outside the project is needed, ask the user to grant that specific folder and access mode in the Files view; retry only after access changes. ' +
+          'request_network_access cannot grant filesystem access. Do not use sudo or disable the sandbox.'
       )
     }
     if (lines.length === 0) return stderr

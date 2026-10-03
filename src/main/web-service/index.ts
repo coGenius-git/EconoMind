@@ -11,7 +11,7 @@ import { FileTaskRunJournal, type TaskRunJournal } from '../tasks/task-run-journ
 import type { TaskAgentPort, TaskComputePreferencePort } from '../tasks/task-runner'
 import { resolveConfigRoot } from '../storage-root'
 import { loadOrCreateWebToken } from './auth'
-import { startWebHttpServer, type ExternalWebAccess, type RunningWebServer } from './http-server'
+import { startWebHttpServer, type RunningWebServer } from './http-server'
 import { projectTaskRuntimeEvents } from './application-event-projections'
 import { HeadlessTaskApi } from './task-api'
 import { removeWebServiceState, writeWebServiceState, type WebServiceState } from './state-file'
@@ -33,7 +33,7 @@ export type WebServiceController = {
   // Permanently closes the service and its Task adapter. Used only by application shutdown.
   dispose: () => Promise<void>
   // Invalidates retained replay access and closes remote sockets without disturbing local clients.
-  closeExternalConnections: (principalId?: string) => void
+
   // Subscribes to actual server stops, including attached shutdown requests from the CLI.
   onStopped: (listener: () => void) => () => void
   isRunning: () => boolean
@@ -72,7 +72,7 @@ const createWebServiceController = (
   {
     applicationCommands,
     requestQuit,
-    externalAccess,
+
     applicationEvents,
     permissionApprovalPresence,
     taskAgent,
@@ -82,7 +82,7 @@ const createWebServiceController = (
   }: {
     applicationCommands: Pick<ApplicationCommandComposition, 'localWeb' | 'remoteWeb' | 'task'>
     requestQuit: () => void
-    externalAccess?: ExternalWebAccess
+
     applicationEvents: ApplicationEventSource
     permissionApprovalPresence?: PermissionApprovalPresence
     taskAgent: TaskAgentPort
@@ -130,7 +130,7 @@ const createWebServiceController = (
   let running:
     | {
         close: () => Promise<void>
-        closeExternalConnections: (principalId?: string) => void
+
         port: number
         configRoot: string
       }
@@ -194,7 +194,7 @@ const createWebServiceController = (
       },
       applicationEvents,
       permissionApprovalPresence,
-      externalAccess,
+
       tasks,
       waitUntilTasksReady: () => tasks.initialize(),
       // Attached: a graceful shutdown request stops only the web service (the app keeps running). A
@@ -212,7 +212,7 @@ const createWebServiceController = (
     running = {
       port: server.port,
       configRoot,
-      closeExternalConnections: server.closeExternalConnections,
+
       close: async () => {
         try {
           await server.close()
@@ -270,7 +270,7 @@ const createWebServiceController = (
     ensureStarted,
     close,
     dispose,
-    closeExternalConnections: (principalId) => running?.closeExternalConnections(principalId),
+
     onStopped: (listener) => {
       stoppedListeners.add(listener)
       return () => stoppedListeners.delete(listener)

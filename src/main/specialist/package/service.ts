@@ -24,9 +24,11 @@ import {
   validateSpecialistSystemPrompt
 } from '../../../shared/specialist'
 import { parseSkillDocument } from '../../../shared/skill-frontmatter'
+import type { SkillSource } from '../../../shared/settings'
 import { createLogger } from '../../logger'
 import type { SpecialistOrigin, StoredSpecialist, StoredSpecialists } from '../types'
 import { SpecialistRepository } from '../repository'
+import type { SettingsRepository } from '../../settings/repository'
 import { validateSpecialistZip } from './zip-adapter'
 import { compareSemver } from './semver'
 import { buildDeterministicSpecialistZip } from './contribution-template'
@@ -41,7 +43,6 @@ import {
   SpecialistPackageTransaction
 } from './transaction'
 import type { SpecialistPackageSkillPort, SpecialistPackageSkillSnapshot } from './skill-port'
-import type { MarketplaceOperationCoordinator } from '../marketplace/operation-coordinator'
 
 const CANDIDATE_TTL_MS = 10 * 60 * 1000
 const log = createLogger('specialist.package.service')
@@ -76,7 +77,8 @@ type SpecialistPackageServiceOptions = {
   onSpecialistDeleted?: (specialistId: string) => Promise<void>
   onSkillsDeleted?: (skillIds: readonly string[]) => Promise<void>
   onResourcesDeleted?: (specialistId: string, skillIds: readonly string[]) => Promise<void>
-  marketplaceOperationCoordinator?: MarketplaceOperationCoordinator
+
+  skillSettings?: Pick<SettingsRepository, 'getSettings' | 'setSkillsEnabled'>
   skillPort?: SpecialistPackageSkillPort
 }
 
@@ -211,7 +213,8 @@ export class SpecialistPackageService {
       options.repository,
       randomUUID,
       options.skillPort,
-      (specialistId, skillIds) => this.cleanupDeletedRelationships(specialistId, skillIds)
+      (specialistId, skillIds) => this.cleanupDeletedRelationships(specialistId, skillIds),
+      options.skillSettings
     )
     this.token = options.token ?? randomUUID
     this.now = options.now ?? (() => new Date())
@@ -308,7 +311,11 @@ export class SpecialistPackageService {
     return preview
   }
 
-  async assertSkillDeletionAllowed(skillId: string): Promise<void> {
+  async assertSkillDeletionAllowed(
+    skillId: string,
+    source?: Extract<SkillSource, 'imported' | 'personal'>,
+    directoryName?: string
+  ): Promise<void> {
     if (typeof skillId !== 'string' || !skillId.trim()) {
       throw new Error('Skill id must be a non-empty string.')
     }
@@ -316,7 +323,13 @@ export class SpecialistPackageService {
       this.options.repository.getAll(),
       this.options.catalog()
     ])
-    const skill = catalog.skills.find((candidate) => candidate.id === skillId)
+    const skill = catalog.skills.find(
+      (candidate) =>
+        candidate.id === skillId &&
+        (source === undefined || candidate.source === source || candidate.source === undefined) &&
+        (directoryName === undefined || candidate.name === directoryName)
+    )
+    if (source !== undefined && (!skill || skill.builtin || skill.source === 'featured')) return
     if (!skill) return
     if (skill.builtin) throw new SpecialistSkillDeletionProtectedError(skillId, [], 'builtin')
     const owners = [...(skill.ownerIds ?? [])].sort()
@@ -378,9 +391,7 @@ export class SpecialistPackageService {
 
   async deleteSpecialist(request: SpecialistDeleteRequest): Promise<SpecialistDeleteResult> {
     const operation = (): Promise<SpecialistDeleteResult> => this.deleteSpecialistExclusive(request)
-    return this.options.marketplaceOperationCoordinator
-      ? this.options.marketplaceOperationCoordinator.runExclusive(operation)
-      : operation()
+    return operation()
   }
 
   private async deleteSpecialistExclusive(
@@ -488,17 +499,6 @@ export class SpecialistPackageService {
         (specialist) => specialist.id === result.plan?.specialistId
       )
       if (existing) {
-        if (existing.origin === 'marketplace' && origin !== 'marketplace') {
-          diagnostics.push({
-            severity: 'error',
-            code: 'specialist.overwrite-marketplace-managed',
-            message:
-              'Marketplace-managed Specialists can only be updated from their Marketplace source.',
-            relatedId: existing.id
-          })
-          installable = false
-          governanceBlocked = true
-        }
         overwrite = {
           id: existing.id,
           target: 'custom',
@@ -631,11 +631,12 @@ export class SpecialistPackageService {
     }))
     const connectorIds = effectiveSpecialistConnectorIds(specialist, catalog)
     const diagnostics: PackageDiagnostic[] = []
-    if (selectedSkills.some((skill) => skill.kind === 'referenced')) {
+    if (selectedSkills.some((skill) => !skill.selected)) {
       diagnostics.push({
         severity: 'info',
         code: 'specialist.export-unbundled-skills',
-        message: 'Unchecked Skills are omitted. Capabilities are selected locally after import.'
+        message:
+          'Unchecked Skills are not copied into the ZIP. Their name references are retained and must resolve on the destination.'
       })
     }
     if (

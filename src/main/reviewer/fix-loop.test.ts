@@ -25,6 +25,10 @@ import { AcpRuntime } from '../acp/runtime.test-utils'
 import { ReviewRepository } from './repository'
 import { createProjectDbClient, migrateApplicationDatabase } from '../projects/prisma-client'
 import { runReview } from './orchestrator'
+import { runReviewerFixLoop } from './reviewer-fix-loop-owner'
+import { resolveTurnScope } from './scope'
+import type { ReviewerAcpRuntime } from './acp-runtime'
+import type { ReviewCheck } from '../../shared/reviewer'
 import { callSubmitFindingsAfterReadingEvidence as callSubmitFindings } from './reviewer-mcp-test-client'
 import type { PersistedChatSession, PersistedChatMessage } from '../../shared/session-persistence'
 
@@ -532,136 +536,151 @@ describe('fix loop: all-pass on re-review ends the loop (resolved)', () => {
     await client.$disconnect()
   })
 
-  it('resolves all checks when re-review passes; exactly 1 [Auditor] injection for 1 round', async () => {
-    const process = new FakeAgentProcess()
-    const shared = makeSharedSession(
-      makeSession({
-        memoryEnabled: false,
-        specialistId: 'specialist-new',
-        specialistBindingPending: true
-      })
-    )
-
-    const correctionPrompts: string[] = []
-
-    const agentState = startFixLoopFakeAgent(
-      process,
-      {
-        mainSessionId: 'main-session-1',
-        initialChecks: [
-          {
-            status: 'fail',
-            claim: 'Agent claimed 42 results',
-            evidence: 'Tool output shows 0 results',
-            locator: { blockRef: { blockIndex: 1 }, contentHash: 'abc123' }
-          }
-        ],
-        // Re-review round 1: all pass
-        reReviewChecksByRound: [
-          [
-            {
-              status: 'pass',
-              claim: 'Agent claimed 42 results',
-              evidence: 'Correction confirmed: results now correct'
-            }
-          ]
-        ],
-        onCorrectionPrompt: (text) => {
-          correctionPrompts.push(text)
-        }
-      },
-      shared
-    )
-
-    let activityActive = false
-    const runtime = createFixLoopRuntime(process, shared, () => {
-      expect(activityActive).toBe(true)
-    })
-    const originalWithActivity = runtime.withActivity.bind(runtime)
-    const originalBuildReviewerSession = runtime.buildReviewerSession.bind(runtime)
-    const activitySpy = vi.spyOn(runtime, 'withActivity').mockImplementation((options, work) =>
-      originalWithActivity(options, async (scopedRuntime) => {
-        activityActive = true
-        try {
-          return await work(scopedRuntime)
-        } finally {
-          activityActive = false
-        }
-      })
-    )
-    vi.spyOn(runtime, 'buildReviewerSession').mockImplementation((request) => {
-      expect(activityActive).toBe(true)
-      return originalBuildReviewerSession(request)
-    })
-
-    await runtime.createSession({ cwd: '/workspace' })
-
-    const client = createProjectDbClient(temporaryRoot!)
-    await migrateApplicationDatabase(client)
-    const repository = new ReviewRepository(() => Promise.resolve(client))
-
-    await runReview({
-      sessionId: 'session-1',
-      turnMessageId: 'msg-2',
-      projectId: 'project-1',
-      getSession: () => shared.getSession(),
-      reviewRepository: repository,
-      acpRuntime: runtime,
-      artifactStorageRoot: temporaryRoot!,
-      mainSessionId: 'main-session-1',
-      agentTarget: {
-        frameworkId: 'codex',
-        providerId: 'provider-1',
-        model: 'model-1',
-        reasoningEffort: 'high'
-      }
-    })
-
-    // Exactly 1 [Auditor] injection for 1 round.
-    expect(correctionPrompts).toHaveLength(1)
-    expect(correctionPrompts[0]).toMatch(/\[Auditor\]/)
-
-    // Exactly 2 reviewer sessions: initial + 1 re-review.
-    const reviewerSessions = agentState.sessions.filter((s) =>
-      s.sessionId.startsWith('reviewer-session')
-    )
-    expect(reviewerSessions).toHaveLength(2)
-    expect(activitySpy).toHaveBeenCalledOnce()
-    expect(activitySpy).toHaveBeenCalledWith(
-      {
-        session: expect.objectContaining({
+  it.each([false, true])(
+    'resolves checks through ACP and durable re-review; Plan feedback=%s',
+    async (withFeedback) => {
+      const process = new FakeAgentProcess()
+      const shared = makeSharedSession(
+        makeSession({
           memoryEnabled: false,
           specialistId: 'specialist-new',
-          specialistBindingPending: true,
-          agentTarget: {
-            frameworkId: 'codex',
-            providerId: 'provider-1',
-            model: 'model-1',
-            reasoningEffort: 'high'
+          specialistBindingPending: true
+        })
+      )
+
+      if (withFeedback)
+        shared._session.messages.splice(1, 0, {
+          id: 'plan-feedback',
+          role: 'user',
+          content: 'Use the approved acquisition fallback.',
+          responseToMessageId: 'msg-1',
+          status: 'complete',
+          eventIds: [],
+          createdAt: 1500,
+          updatedAt: 1500
+        })
+
+      const correctionPrompts: string[] = []
+
+      const agentState = startFixLoopFakeAgent(
+        process,
+        {
+          mainSessionId: 'main-session-1',
+          initialChecks: [
+            {
+              status: 'fail',
+              claim: 'Agent claimed 42 results',
+              evidence: 'Tool output shows 0 results',
+              locator: { blockRef: { blockIndex: 1 }, contentHash: 'abc123' }
+            }
+          ],
+          // Re-review round 1: all pass
+          reReviewChecksByRound: [
+            [
+              {
+                status: 'pass',
+                claim: 'Agent claimed 42 results',
+                evidence: 'Correction confirmed: results now correct'
+              }
+            ]
+          ],
+          onCorrectionPrompt: (text) => {
+            correctionPrompts.push(text)
+          }
+        },
+        shared
+      )
+
+      let activityActive = false
+      const runtime = createFixLoopRuntime(process, shared, () => {
+        expect(activityActive).toBe(true)
+      })
+      const originalWithActivity = runtime.withActivity.bind(runtime)
+      const originalBuildReviewerSession = runtime.buildReviewerSession.bind(runtime)
+      const activitySpy = vi.spyOn(runtime, 'withActivity').mockImplementation((options, work) =>
+        originalWithActivity(options, async (scopedRuntime) => {
+          activityActive = true
+          try {
+            return await work(scopedRuntime)
+          } finally {
+            activityActive = false
           }
         })
-      },
-      expect.any(Function)
-    )
+      )
+      vi.spyOn(runtime, 'buildReviewerSession').mockImplementation((request) => {
+        expect(activityActive).toBe(true)
+        return originalBuildReviewerSession(request)
+      })
 
-    // The original review's warn/fail check must now be resolved.
-    const reviews = await repository.getReviewsForSession('session-1')
-    // 2 Review rows: initial + re-review
-    expect(reviews.length).toBeGreaterThanOrEqual(2)
+      await runtime.createSession({ cwd: '/workspace' })
 
-    // The initial review (original turnMessageId = msg-2) should have resolution = resolved.
-    const initialReview = reviews.find((r) =>
-      r.checks.some((c) => c.claim === 'Agent claimed 42 results' && c.resolution === 'resolved')
-    )
-    expect(initialReview).toBeDefined()
-    const reReview = reviews.find((review) => review.id !== initialReview?.id)
-    expect(reReview?.checks).toEqual([])
-    await expect(
-      repository.getFindingDispositions(initialReview!.checks[0]!.id)
-    ).resolves.toHaveLength(1)
+      const client = createProjectDbClient(temporaryRoot!)
+      await migrateApplicationDatabase(client)
+      const repository = new ReviewRepository(() => Promise.resolve(client))
 
-    await client.$disconnect()
-  })
+      await runReview({
+        sessionId: 'session-1',
+        turnMessageId: 'msg-2',
+        projectId: 'project-1',
+        getSession: () => shared.getSession(),
+        reviewRepository: repository,
+        acpRuntime: runtime,
+        artifactStorageRoot: temporaryRoot!,
+        mainSessionId: 'main-session-1',
+        agentTarget: {
+          frameworkId: 'codex',
+          providerId: 'provider-1',
+          model: 'model-1',
+          reasoningEffort: 'high'
+        }
+      })
+
+      // Exactly 1 [Auditor] injection for 1 round.
+      expect(correctionPrompts).toHaveLength(1)
+      expect(correctionPrompts[0]).toMatch(/\[Auditor\]/)
+
+      // Exactly 2 reviewer sessions: initial + 1 re-review.
+      const reviewerSessions = agentState.sessions.filter((s) =>
+        s.sessionId.startsWith('reviewer-session')
+      )
+      expect(reviewerSessions).toHaveLength(2)
+      expect(activitySpy).toHaveBeenCalledOnce()
+      expect(activitySpy).toHaveBeenCalledWith(
+        {
+          session: expect.objectContaining({
+            memoryEnabled: false,
+            specialistId: 'specialist-new',
+            specialistBindingPending: true,
+            agentTarget: {
+              frameworkId: 'codex',
+              providerId: 'provider-1',
+              model: 'model-1',
+              reasoningEffort: 'high'
+            }
+          })
+        },
+        expect.any(Function)
+      )
+
+      // The original review's warn/fail check must now be resolved.
+      const reviews = await repository.getReviewsForSession('session-1')
+      // 2 Review rows: initial + re-review
+      expect(reviews.length).toBeGreaterThanOrEqual(2)
+
+      // The initial review (original turnMessageId = msg-2) should have resolution = resolved.
+      const initialReview = reviews.find((r) =>
+        r.checks.some((c) => c.claim === 'Agent claimed 42 results' && c.resolution === 'resolved')
+      )
+      expect(initialReview).toBeDefined()
+      const reReview = reviews.find((review) => review.id !== initialReview?.id)
+      expect(reReview?.checks).toEqual([])
+      await expect(
+        repository.getFindingDispositions(initialReview!.checks[0]!.id)
+      ).resolves.toHaveLength(1)
+
+      await client.$disconnect()
+    }
+  )
 
   it('waits for a complete correction message before starting re-review', async () => {
     const process = new FakeAgentProcess()
@@ -1188,4 +1207,116 @@ describe('fix loop: distinct Review rows per iteration', () => {
 
     await client.$disconnect()
   })
+})
+
+describe('reopened correction interruption lifecycle', () => {
+  it.each(['live Stop', 'startup recovery'] as const)(
+    'records a new aborted disposition after %s, resumed reflag, and another correction Stop',
+    async (firstInterruption) => {
+      const client = createProjectDbClient(temporaryRoot!)
+      await migrateApplicationDatabase(client)
+      const repository = new ReviewRepository(() => Promise.resolve(client))
+      try {
+        const session = makeSession()
+        const source = await repository.createReview({
+          projectId: session.projectId,
+          sessionId: session.id,
+          turnMessageId: 'msg-2',
+          scope: resolveTurnScope(session, 'msg-2')
+        })
+        await repository.addChecks(source.id, [
+          { status: 'fail', claim: 'Incorrect result', evidence: 'Needs correction', sortIndex: 0 }
+        ])
+        const loadFinding = async (): Promise<ReviewCheck> =>
+          (await repository.getReviewsForProjectSession(session.projectId, session.id)).find(
+            (review) => review.id === source.id
+          )!.checks[0]
+        const stopOwner = async (retry = false): Promise<void> => {
+          const cancellation = new AbortController()
+          if (retry) cancellation.abort()
+          const sendApplicationPrompt = vi.fn<ReviewerAcpRuntime['sendApplicationPrompt']>(
+            async (_request, _attribution, options) => {
+              await options?.onPromptAdmitted?.()
+              cancellation.abort()
+              return { stopReason: 'cancelled' }
+            }
+          )
+          await runReviewerFixLoop({
+            sessionId: session.id,
+            projectId: session.projectId,
+            mainSessionId: session.id,
+            originalTurnMessageId: 'msg-2',
+            correctionScope: source.scope,
+            reviewedSession: session,
+            openChecks: [await loadFinding()],
+            getSession: async () => session,
+            reviewRepository: repository,
+            acpRuntime: {
+              sendApplicationPrompt,
+              sendPrompt: vi.fn<ReviewerAcpRuntime['sendPrompt']>(),
+              buildReviewerSession: vi.fn<ReviewerAcpRuntime['buildReviewerSession']>(),
+              disposeReviewerSession: vi.fn<ReviewerAcpRuntime['disposeReviewerSession']>()
+            },
+            artifactStorageRoot: temporaryRoot!,
+            model: 'test',
+            reviewerTimeoutMs: 100,
+            reviewerMaxUpdates: 10,
+            maxRounds: 3,
+            sessionRefreshTimeoutMs: 0,
+            abortSignal: cancellation.signal
+          })
+          expect(sendApplicationPrompt).toHaveBeenCalledTimes(retry ? 0 : 1)
+        }
+        if (firstInterruption === 'startup recovery') await repository.recoverInterruptedReviews()
+        else await stopOwner()
+        const finding = await loadFinding()
+        expect(finding.resolution).toBe('unaddressed')
+        const first = (await repository.getFindingDispositions(finding.id))[0]
+        expect(first).toMatchObject({ sequence: 1, trigger: 'aborted', outcome: 'unaddressed' })
+
+        const assessment = await repository.createReview({
+          projectId: session.projectId,
+          sessionId: session.id,
+          turnMessageId: 'msg-2',
+          scope: source.scope
+        })
+        await repository.commitScopedSubmission({
+          mode: 'tracked',
+          reviewId: assessment.id,
+          expectedSourceFindingIds: [finding.id],
+          resumedSourceFindingIds: [finding.id],
+          checks: [
+            {
+              sourceFindingId: finding.id,
+              status: 'fail',
+              claim: 'Still incorrect',
+              evidence: 'Recovered answer still needs correction'
+            }
+          ]
+        })
+        expect(await loadFinding()).toMatchObject({ resolution: 'open', reflagCount: 1 })
+
+        // The real owner dispatches the next correction and receives Stop while it is in flight.
+        // Startup's different note must not collide with this new interruption's audit event.
+        await stopOwner()
+        expect(await loadFinding()).toMatchObject({ resolution: 'unaddressed', reflagCount: 1 })
+        const dispositions = await repository.getFindingDispositions(finding.id)
+        expect(
+          dispositions.map(({ sequence, trigger, outcome }) => ({ sequence, trigger, outcome }))
+        ).toEqual([
+          { sequence: 1, trigger: 'aborted', outcome: 'unaddressed' },
+          { sequence: 2, trigger: 'review_submission', outcome: 'still_open' },
+          { sequence: 3, trigger: 'aborted', outcome: 'unaddressed' }
+        ])
+        expect(dispositions[2].id).not.toBe(first.id)
+        expect(dispositions[2].note).toBe('The fix loop was aborted by the user.')
+        if (firstInterruption === 'startup recovery')
+          expect(first.note).not.toBe(dispositions[2].note)
+        await stopOwner(true)
+        expect(await repository.getFindingDispositions(finding.id)).toEqual(dispositions)
+      } finally {
+        await client.$disconnect()
+      }
+    }
+  )
 })

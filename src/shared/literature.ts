@@ -1,7 +1,26 @@
+import { SMART_RULE_STORAGE_MAX_LENGTH, serializedSmartRuleSchema } from './smart-collection-rule'
+import {
+  smartCollectionCommandSchemas,
+  smartHistorySchema,
+  smartRunProgressSchema,
+  smartCollectionPreviewSchema,
+  smartCollectionViewSchema,
+  smartCollectionRowSchema,
+  smartEvidenceModeSchema,
+  smartScopeSchema
+} from './literature-smart-collections'
+import {
+  LITERATURE_ATTACHMENT_VERSION_REFERENCE_PREFIX,
+  createLiteratureAttachmentVersionReference,
+  parseLiteratureAttachmentVersionReference
+} from './literature-attachment-reference'
+import { pdfAnnotationSchema } from './pdf-annotations'
+import { literatureFailureSchema } from './literature-failure'
 import { z } from 'zod'
 
 import { defineApplicationCommandContract, validationCodec } from './application-command-contract'
-import { uploadedAttachmentSchema, type UploadedAttachment } from './uploads'
+import { uploadedAttachmentSchema } from './uploads'
+import { JOURNAL_ATTRIBUTE_FILTER_MAX, journalAttributeFilterSchema } from './journal-attributes'
 
 const LITERATURE_ITEM_TYPES = [
   'journalArticle',
@@ -79,6 +98,7 @@ const LITERATURE_IMPORT_WARNINGS = [
 ] as const
 const LITERATURE_METADATA_FIELDS = [
   'title',
+  'abstract',
   'authors',
   'identifiers',
   'publicationDate',
@@ -93,8 +113,7 @@ const LITERATURE_METADATA_FIELDS = [
   'language',
   'url'
 ] as const
-const LITERATURE_METADATA_PROVIDERS = ['crossref', 'pubmed'] as const
-const LITERATURE_ATTACHMENT_VERSION_REFERENCE_PREFIX = 'literature-attachment-version:'
+const LITERATURE_METADATA_PROVIDERS = ['crossref', 'pubmed', 'europe-pmc', 'datacite'] as const
 
 type LiteratureIdentifierScheme = (typeof LITERATURE_IDENTIFIER_SCHEMES)[number]
 
@@ -176,7 +195,11 @@ const literatureFilterSchema = z
     itemTypes: z.array(z.enum(LITERATURE_ITEM_TYPES)).max(LITERATURE_ITEM_TYPES.length).optional(),
     hasFullText: z.boolean().optional(),
     collectionId: optionalTextSchema,
-    projectId: optionalTextSchema
+    projectId: optionalTextSchema,
+    journalAttributes: z
+      .array(journalAttributeFilterSchema)
+      .max(JOURNAL_ATTRIBUTE_FILTER_MAX)
+      .optional()
   })
   .strict()
   .refine(
@@ -330,6 +353,7 @@ const literatureItemViewSchema = z
     createdAt: z.number().int().nonnegative(),
     updatedAt: z.number().int().nonnegative(),
     deletedAt: z.number().int().nonnegative().optional(),
+    smartDecision: smartCollectionRowSchema.optional(),
     mergedIntoItemId: nonEmptyTextSchema.optional()
   })
   .strict()
@@ -372,10 +396,14 @@ const LITERATURE_COLLECTION_REVISION_CONFLICT = 'literature_collection_revision_
 
 const literatureCollectionViewSchema = z
   .object({
+    smart: z.boolean().optional(),
+    smartScope: smartScopeSchema.optional(),
+    smartEvidenceMode: smartEvidenceModeSchema.optional(),
+    smartAutoUpdate: z.boolean().optional(),
     revision: z.number().int().positive(),
     id: nonEmptyTextSchema,
     name: nonEmptyTextSchema.max(LITERATURE_COLLECTION_NAME_MAX_LENGTH),
-    description: z.string().max(LITERATURE_COLLECTION_DESCRIPTION_MAX_LENGTH),
+    description: z.string().max(SMART_RULE_STORAGE_MAX_LENGTH),
     parentId: nonEmptyTextSchema.optional(),
     itemCount: z.number().int().nonnegative(),
     createdAt: z.number().int().nonnegative(),
@@ -403,15 +431,28 @@ export type LiteratureDuplicateGroup = z.infer<typeof literatureDuplicateGroupSc
 
 const literatureCatalogSearchRequestSchema = z
   .object({
-    scope: z.enum(['library', 'inbox', 'collections', 'project-counts', 'duplicates']),
+    scope: z.enum([
+      'library',
+      'inbox',
+      'collections',
+      'project-counts',
+      'duplicates',
+      'global-search'
+    ]),
     refreshDuplicates: z.boolean().optional(),
+    updatedAfter: z.number().int().nonnegative().optional(),
+    searchSort: z.enum(['relevance', 'recent']).optional(),
+    entryKind: z.enum(['paper', 'collection', 'pdf', 'note']).optional(),
     allItemIds: z.boolean().optional(),
     countOnly: z.boolean().optional(),
     itemIds: z.array(nonEmptyTextSchema).max(200).optional(),
     query: optionalTextSchema,
     projectId: optionalTextSchema,
     collectionId: optionalTextSchema,
+    smartFilter: z.enum(['match', 'review', 'no-match', 'pending']).optional(),
+    smartDecisionSource: z.enum(['all', 'ai', 'manual']).optional(),
     parentId: optionalTextSchema,
+    itemId: optionalTextSchema,
     inboxState: z.enum(LITERATURE_INBOX_STATES).optional(),
     lifecycle: z.enum(LITERATURE_LIFECYCLE_STATES).optional(),
     sortBy: z.enum(LITERATURE_SORT_FIELDS).optional(),
@@ -428,9 +469,22 @@ const literatureCatalogSearchRequestSchema = z
   .refine((request) => request.itemIds === undefined || request.scope === 'library', {
     message: 'Selected item membership is only available for the library.'
   })
-  .refine((request) => !request.countOnly || (request.scope === 'library' && !request.allItemIds), {
-    message: 'Count-only queries require the library and cannot request item membership.'
+  .refine(
+    (request) =>
+      !request.countOnly ||
+      ((request.scope === 'library' || request.scope === 'global-search') && !request.allItemIds),
+    {
+      message: 'Count-only queries require the library and cannot request item membership.'
+    }
+  )
+
+export const literatureAnnotationSearchViewSchema = z
+  .object({
+    id: nonEmptyTextSchema,
+    annotation: pdfAnnotationSchema
   })
+  .strict()
+export type LiteratureAnnotationSearchView = z.infer<typeof literatureAnnotationSearchViewSchema>
 
 const literatureCatalogSearchPageSchema = z
   .object({
@@ -440,7 +494,8 @@ const literatureCatalogSearchPageSchema = z
         literatureInboxCandidateViewSchema,
         literatureCollectionViewSchema,
         literatureProjectCountViewSchema,
-        literatureDuplicateGroupSchema
+        literatureDuplicateGroupSchema,
+        literatureAnnotationSearchViewSchema
       ])
     ),
     itemIds: z.array(nonEmptyTextSchema).optional(),
@@ -476,6 +531,7 @@ const mergeGroupPreviewSchema = z
   .strict()
 
 const literatureCatalogCommandSchema = z.discriminatedUnion('kind', [
+  ...smartCollectionCommandSchemas,
   z
     .object({
       kind: z.literal('delete-attachment'),
@@ -551,12 +607,22 @@ const literatureCatalogCommandSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('update-collection'),
+      smartScope: smartScopeSchema.optional(),
+      smartEvidenceMode: smartEvidenceModeSchema.optional(),
+      smartAutoUpdate: z.boolean().optional(),
       expectedRevision: z.number().int().positive(),
       collectionId: nonEmptyTextSchema,
       name: nonEmptyTextSchema.max(LITERATURE_COLLECTION_NAME_MAX_LENGTH),
-      description: z.string().trim().max(LITERATURE_COLLECTION_DESCRIPTION_MAX_LENGTH)
+      description: z.string().trim().max(SMART_RULE_STORAGE_MAX_LENGTH)
     })
-    .strict(),
+    .strict()
+    .refine(
+      (value) =>
+        serializedSmartRuleSchema.safeParse(value.description).success ||
+        (!value.smartScope &&
+          value.description.length <= LITERATURE_COLLECTION_DESCRIPTION_MAX_LENGTH),
+      { path: ['description'], message: 'Invalid collection description.' }
+    ),
   z
     .object({
       kind: z.literal('delete-collection'),
@@ -624,6 +690,16 @@ const literatureCatalogCommandSchema = z.discriminatedUnion('kind', [
 
 const literatureCatalogReceiptSchema = z
   .object({
+    smartHistory: smartHistorySchema.optional(),
+    smartRunProgress: smartRunProgressSchema.optional(),
+    smart: smartCollectionViewSchema.optional(),
+    smartPreview: smartCollectionPreviewSchema.optional(),
+    smartRefreshFailed: z.boolean().optional(),
+    smartDecisions: z.array(smartCollectionRowSchema).max(100).optional(),
+    smartDecisionBatch: z
+      .object({ saved: z.array(z.string()).max(100), failed: z.array(z.string()).max(100) })
+      .strict()
+      .optional(),
     cleanupPending: z.boolean().optional(),
     kind: z.enum(['candidate', 'collection', 'item']),
     id: nonEmptyTextSchema,
@@ -680,11 +756,26 @@ const literatureCatalogReceiptSchema = z
 const literaturePdfImportRequestSchema = z
   .object({
     itemId: nonEmptyTextSchema,
-    attachment: uploadedAttachmentSchema
+    attachment: uploadedAttachmentSchema,
+    operationId: nonEmptyTextSchema.optional()
   })
   .strict()
 
-const literaturePdfImportReceiptSchema = z.object({ item: literatureItemViewSchema }).strict()
+const literaturePdfImportReceiptSchema = z
+  .object({
+    item: literatureItemViewSchema,
+    nativeAnnotations: z
+      .object({
+        importedCount: z.number().int().nonnegative(),
+        unsupportedCount: z.number().int().nonnegative(),
+        truncated: z.boolean()
+      })
+      .optional()
+  })
+  .strict()
+const literaturePdfCancelImportRequestSchema = z
+  .object({ operationId: nonEmptyTextSchema })
+  .strict()
 
 const literatureFormatReferencesRequestSchema = z
   .object({
@@ -893,6 +984,11 @@ const literatureMetadataConflictSchema = literatureMetadataValueSchema
   .extend({ currentValue: nonEmptyTextSchema })
   .strict()
 
+// Review versions describe replay semantics, not provider wire formats. V2 commits the
+// normalized proposal; source payloads are provenance only. Provider additions and optional,
+// defaulted fields should retain v2 when existing snapshots keep their meaning. Preserve
+// conflict choices, identifier replacement, revision checks and idempotency when evolving it.
+// New readers must keep reading earlier v2 snapshots; this is not a downgrade guarantee.
 const literatureMetadataCompletionResultSchema = z
   .object({
     mode: z.enum(['preview', 'commit']),
@@ -902,7 +998,10 @@ const literatureMetadataCompletionResultSchema = z
     filled: z.array(literatureMetadataValueSchema),
     conflicts: z.array(literatureMetadataConflictSchema),
     reviewToken: z.string().uuid().optional(),
-    reviewVersion: z.literal(1).optional(),
+    reviewVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+    proposal: literatureItemInputSchema.extend({ title: z.string() }).optional(),
+    sources: z.array(literatureSourceInputSchema).max(8).optional(),
+    failures: z.array(literatureFailureSchema).max(10).optional(),
     source: literatureSourceInputSchema.optional()
   })
   .strict()
@@ -988,6 +1087,7 @@ const literatureFullTextResultSchema = z.discriminatedUnion('mode', [
     .object({
       mode: z.literal('search'),
       candidates: z.array(literatureFullTextCandidateSchema).max(10),
+      failures: z.array(literatureFailureSchema).max(10).optional(),
       notices: z.array(
         z.enum([
           'missing-identifiers',
@@ -1051,7 +1151,7 @@ const literatureApplicationCommandContracts = Object.freeze({
           .trim()
           .min(1)
           .max(2048)
-          .regex(/^10\.\d{4,9}\/\S+$/u)
+          .regex(/^(?:10\.\d{4,9}\/\S+|pmid:\d+)$/u)
       ])
     ),
     validationCodec(literatureItemInputSchema)
@@ -1067,6 +1167,10 @@ const literatureApplicationCommandContracts = Object.freeze({
   importPdf: defineApplicationCommandContract(
     validationCodec(z.tuple([literaturePdfImportRequestSchema])),
     validationCodec(literaturePdfImportReceiptSchema)
+  ),
+  cancelPdfImport: defineApplicationCommandContract(
+    validationCodec(z.tuple([literaturePdfCancelImportRequestSchema])),
+    validationCodec(z.object({ cancelled: z.boolean() }).strict())
   ),
   transact: defineApplicationCommandContract(
     validationCodec(z.tuple([literatureCatalogCommandSchema])),
@@ -1127,8 +1231,9 @@ type LiteratureCatalogSearchRequest = z.infer<typeof literatureCatalogSearchRequ
 type LiteratureCatalogSearchPage = z.infer<typeof literatureCatalogSearchPageSchema>
 type LiteratureCatalogCommand = z.infer<typeof literatureCatalogCommandSchema>
 type LiteratureCatalogReceipt = z.infer<typeof literatureCatalogReceiptSchema>
-type LiteraturePdfImportRequest = Readonly<{ itemId: string; attachment: UploadedAttachment }>
+type LiteraturePdfImportRequest = z.infer<typeof literaturePdfImportRequestSchema>
 type LiteraturePdfImportReceipt = z.infer<typeof literaturePdfImportReceiptSchema>
+type LiteraturePdfCancelImportRequest = z.infer<typeof literaturePdfCancelImportRequestSchema>
 type LiteratureCitationStyle = string
 type LiteratureCitationLocale = (typeof LITERATURE_CITATION_LOCALES)[number]
 type LiteratureCitationStyleView = z.infer<typeof literatureCitationStyleViewSchema>
@@ -1150,24 +1255,6 @@ type LiteratureMetadataCompletionRequest = z.infer<typeof literatureMetadataComp
 type LiteratureMetadataValue = z.infer<typeof literatureMetadataValueSchema>
 type LiteratureMetadataConflict = z.infer<typeof literatureMetadataConflictSchema>
 type LiteratureMetadataCompletionResult = z.infer<typeof literatureMetadataCompletionResultSchema>
-
-const createLiteratureAttachmentVersionReference = (versionId: string): string => {
-  const normalized = versionId.trim()
-  if (!normalized) throw new Error('Literature Attachment Version id is required.')
-  return `${LITERATURE_ATTACHMENT_VERSION_REFERENCE_PREFIX}${encodeURIComponent(normalized)}`
-}
-
-const parseLiteratureAttachmentVersionReference = (reference: string): string | undefined => {
-  if (!reference.startsWith(LITERATURE_ATTACHMENT_VERSION_REFERENCE_PREFIX)) return undefined
-  const encoded = reference.slice(LITERATURE_ATTACHMENT_VERSION_REFERENCE_PREFIX.length)
-  if (!encoded) return undefined
-  try {
-    const versionId = decodeURIComponent(encoded)
-    return versionId && !versionId.includes('/') ? versionId : undefined
-  } catch {
-    return undefined
-  }
-}
 
 export {
   literatureFullTextCandidateSchema,
@@ -1223,6 +1310,7 @@ export {
   literatureMetadataCompletionRequestSchema,
   literatureMetadataCompletionResultSchema,
   literaturePdfImportReceiptSchema,
+  literaturePdfCancelImportRequestSchema,
   createLiteratureIdentifierUrl,
   createLiteratureAttachmentVersionReference,
   literaturePdfImportRequestSchema,
@@ -1278,6 +1366,7 @@ export type {
   LiteratureRecordImportResult,
   LiteraturePdfImportReceipt,
   LiteraturePdfImportRequest,
+  LiteraturePdfCancelImportRequest,
   LiteratureSourceInput
 }
 
@@ -1288,3 +1377,9 @@ export type LiteratureChangedEvent = Readonly<{
   collectionIds?: readonly string[]
   candidateIds?: readonly string[]
 }>
+
+// Provider names are product identifiers, shared by the single and batch review surfaces.
+export const literatureMetadataProviderLabel = (provider: string): string =>
+  ({ crossref: 'Crossref', pubmed: 'PubMed', 'europe-pmc': 'Europe PMC', datacite: 'DataCite' })[
+    provider
+  ] ?? provider

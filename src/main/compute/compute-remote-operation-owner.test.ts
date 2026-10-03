@@ -1,5 +1,16 @@
-import { execFileSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { execFileSync, spawnSync } from 'node:child_process'
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
@@ -118,6 +129,43 @@ const makeOwner = (
   )
 
 describe('ComputeRemoteOperationOwner.callCommand', () => {
+  it('distinguishes failure to acquire a connection from an unconfirmed command', async () => {
+    const acquire = vi.fn(async () => {
+      throw new ComputeConnectionError('host_unreachable')
+    })
+    const { repo } = makeRepo()
+    const service = new ComputeRemoteOperationOwner({ acquire }, repo, makeApprovalBroker('once'))
+    const error = await service.callCommand('ssh:biowulf', 'echo hi', 'probe').catch((e) => e)
+    expect(error.computeCallError.message).toContain('command was not sent for execution')
+    expect(error.computeCallError.message).not.toContain('side effects are unconfirmed')
+    expect(error.computeCallError.retry_after_user_action).toBe(true)
+  })
+
+  it.each(['Error', 'AbortError'])(
+    'preserves uncertain execution when run rejects with %s and bounds safe diagnostics',
+    async (name) => {
+      const runner: SshRunner = {
+        run: vi.fn(async () => {
+          const error = new Error(`password=synthetic-secret\n${'x'.repeat(2000)}`)
+          error.name = name
+          throw error
+        })
+      }
+      const { repo } = makeRepo()
+      const service = makeOwner(runner, repo, makeApprovalBroker('once'))
+      const error = await service.callCommand('ssh:biowulf', 'echo hi', 'probe').catch((e) => e)
+      expect(error.name).toBe(name)
+      const delivered = JSON.parse(JSON.stringify(error.computeCallError))
+      expect(delivered.message).toContain('side effects are unconfirmed')
+      expect(delivered.message).toContain('retry only if repeating the command is safe')
+      expect(delivered.message).toContain('diagnostic truncated')
+      expect(delivered.message).not.toContain('synthetic-secret')
+      expect(delivered.message.length).toBeLessThan(1600)
+      expect(delivered.retry_after_user_action).toBe(false)
+      expect(error.message).toBe(delivered.message)
+    }
+  )
+
   it('binds request cancellation to connection acquisition and SSH execution', async () => {
     const run = vi.fn(async () => ({
       exitCode: 0,
@@ -165,11 +213,14 @@ describe('ComputeRemoteOperationOwner.callCommand', () => {
       .callCommand('ssh:biowulf', 'echo hi', 'intent')
       .catch((error) => error)
 
-    expect(failure.computeCallError).toEqual({
+    expect(failure.computeCallError).toMatchObject({
       error_code: 'authentication_failed',
-      message: 'Authentication failed. Verify the username and password.',
-      retry_after_user_action: true
+      retry_after_user_action: false
     })
+    expect(failure.computeCallError.message).toContain(
+      'Remote execution and side effects are unconfirmed'
+    )
+    expect(failure.computeCallError.message).toContain('Authentication failed')
   })
 
   it('returns ExecResult on success with correct fields', async () => {
@@ -312,9 +363,14 @@ describe('ComputeRemoteOperationOwner.callCommand', () => {
     expect(err).toBeInstanceOf(Error)
     expect(err.computeCallError?.error_code).toBe('approval_denied')
     expect(err.computeCallError?.retry_after_user_action).toBe(false)
+    expect(err.computeCallError?.message).toContain('command was not sent for execution')
+    expect(err.computeCallError?.message).toContain(
+      'Do not repeat the request or bypass the denial'
+    )
+    expect(runner.run).not.toHaveBeenCalled()
   })
 
-  it('throws host_unreachable on ssh exit 255', async () => {
+  it('keeps SSH exit 255 execution ambiguous', async () => {
     const runner = makeFakeRunner({
       exitCode: 255,
       stdout: '',
@@ -328,7 +384,9 @@ describe('ComputeRemoteOperationOwner.callCommand', () => {
     const err = await service.callCommand('ssh:biowulf', 'echo hi', 'intent').catch((e) => e)
 
     expect(err.computeCallError?.error_code).toBe('host_unreachable')
-    expect(err.computeCallError?.retry_after_user_action).toBe(true)
+    expect(err.computeCallError?.retry_after_user_action).toBe(false)
+    expect(err.computeCallError?.message).toContain('SSH failure or the remote command exit status')
+    expect(err.computeCallError?.message).toContain('side effects are unconfirmed')
   })
 
   it('throws timeout when the runner times out', async () => {
@@ -346,6 +404,8 @@ describe('ComputeRemoteOperationOwner.callCommand', () => {
 
     expect(err.computeCallError?.error_code).toBe('timeout')
     expect(err.computeCallError?.retry_after_user_action).toBe(false)
+    expect(err.computeCallError?.message).toContain('side effects are unconfirmed')
+    expect(err.computeCallError?.message).toContain('No Job receipt exists')
   })
 
   it('passes truncated=true when output is capped', async () => {
@@ -426,7 +486,146 @@ const findRecord = (type: string, size: number, mtime: number, name: string): st
 const buildListDirStdout = (resolvedPath: string, home: string, findOutput: string): string =>
   `${resolvedPath}\n${home}\n${findOutput}`
 
+const nativeListingRunner = (path = '/usr/bin:/bin'): SshRunner => ({
+  run: async (_target, command, options) => {
+    // Execute the production command verbatim. Restrict PATH so Homebrew GNU tools
+    // cannot hide a failure on macOS's default BSD utilities.
+    const result = spawnSync('/bin/sh', ['-c', command], {
+      env: { ...process.env, PATH: path },
+      encoding: 'utf8',
+      timeout: options.timeoutMs,
+      maxBuffer: options.maxOutputBytes
+    })
+    if (result.error) throw result.error
+    return {
+      exitCode: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      timedOut: false,
+      truncated: false
+    }
+  }
+})
+
 describe('ComputeRemoteOperationOwner.listDir', () => {
+  it.skipIf(process.platform !== 'darwin' && process.platform !== 'linux').each([false, true])(
+    'lists a real directory with native system tools (populated=%s)',
+    async (populated) => {
+      const root = await mkdtemp(join(tmpdir(), 'compute-list-native-'))
+      const scratch = join(root, "scratch user's data")
+      try {
+        await mkdir(scratch)
+        if (populated) {
+          await mkdir(join(scratch, 'results'))
+          await writeFile(join(scratch, 'sample data.csv'), 'a,b\n1,2\n')
+        }
+        const runner = nativeListingRunner()
+        const { repo } = makeRepo(sampleHost({ scratchRoot: scratch }))
+        const result = await makeOwner(runner, repo).listDir('ssh:biowulf', scratch)
+
+        expect(result.entries.map((entry) => entry.name)).toEqual(
+          populated ? ['results', 'sample data.csv'] : []
+        )
+        if (populated) {
+          expect(result.entries[0]?.isDirectory).toBe(true)
+          expect(result.entries[1]).toMatchObject({ isDirectory: false, size: 8 })
+        }
+        expect(result.truncated).toBe(false)
+        expect(result.roots.scratch).toBe(scratch)
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it.skipIf(process.platform !== 'darwin' && process.platform !== 'linux')(
+    'preserves native filenames, timestamps and symlink directory classification',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'compute-list-native-'))
+      const names = ['.hidden', '-leading', `quote'"$();*.txt`, 'tab\tline\n.txt']
+      try {
+        await mkdir(join(root, 'results'))
+        for (const name of names) {
+          await writeFile(join(root, name), 'data')
+          await utimes(join(root, name), 1704067200.125, 1704067200.125)
+        }
+        await symlink('results', join(root, 'directory link'))
+        await symlink('.hidden', join(root, 'file link'))
+        await symlink('missing', join(root, 'broken link'))
+        const { repo } = makeRepo()
+        const result = await makeOwner(nativeListingRunner(), repo).listDir('ssh:biowulf', root)
+        const fileNames = [...names, 'file link', 'broken link'].sort((a, b) => a.localeCompare(b))
+
+        expect(result.entries.map((entry) => entry.name)).toEqual([
+          'directory link',
+          'results',
+          ...fileNames
+        ])
+        for (const entry of result.entries) {
+          const metadata = await lstat(join(root, entry.name))
+          expect(entry.isDirectory).toBe(['directory link', 'results'].includes(entry.name))
+          expect(entry.size).toBe(metadata.size)
+          expect(entry.mtimeMs).toBe(Math.round(metadata.mtimeMs))
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it.skipIf(process.platform !== 'darwin')(
+    'propagates a BSD stat failure through find',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'compute-list-bsd-error-'))
+      try {
+        const bin = join(root, 'bin')
+        const scratch = join(root, 'scratch')
+        await mkdir(bin)
+        await mkdir(scratch)
+        await writeFile(join(scratch, 'data.csv'), 'data')
+        await writeFile(
+          join(bin, 'stat'),
+          '#!/bin/sh\necho "stat: Permission denied" >&2\nexit 1\n',
+          {
+            mode: 0o755
+          }
+        )
+        const { repo } = makeRepo()
+
+        await expect(
+          makeOwner(nativeListingRunner(`${bin}:/usr/bin:/bin`), repo).listDir(
+            'ssh:biowulf',
+            scratch
+          )
+        ).rejects.toMatchObject({
+          remoteFsError: {
+            remoteKind: 'permission',
+            detail: expect.stringContaining('Permission denied')
+          }
+        })
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it('rejects a failed listing even when the remote command emits no stderr', async () => {
+    const runner = makeFakeRunner({
+      exitCode: 1,
+      stdout: buildListDirStdout('/scratch/data', '/home/user', ''),
+      stderr: '',
+      truncated: false,
+      timedOut: false
+    })
+    const { repo } = makeRepo()
+
+    await expect(
+      makeOwner(runner, repo).listDir('ssh:biowulf', '/scratch/data')
+    ).rejects.toMatchObject({
+      remoteFsError: { remoteKind: 'other' }
+    })
+  })
+
   it('quotes a ~/ suffix so shell expansions cannot run while browsing', async () => {
     const runMock = vi.fn(() =>
       Promise.resolve({

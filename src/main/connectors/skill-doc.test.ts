@@ -1,3 +1,5 @@
+// Modified by EconoMind contributors: protect compact literature documentation and evidence caveats.
+// Based on AIPOCH Open Science; see LICENSE and NOTICE.
 import { describe, it, expect } from 'vitest'
 import { Tiktoken } from 'js-tiktoken/lite'
 import cl100kBase from 'js-tiktoken/ranks/cl100k_base'
@@ -61,6 +63,24 @@ describe('renderConnectorInstructions', () => {
 })
 
 describe('renderSkillDoc', () => {
+  it('publishes discovery, version and file-access contracts in the generated skill', () => {
+    const doc = renderSkillDoc('zenodo')
+    for (const contract of [
+      'name: mcp-zenodo',
+      '### search_records',
+      '### get_record',
+      'next_page',
+      'pagination_limited',
+      '(page - 1) * page_size',
+      'all_versions',
+      'concept_record_id',
+      'No uploads or file downloads',
+      'not sanitized',
+      'empty file list does not establish'
+    ])
+      expect(doc).toContain(contract)
+  })
+
   it('renders a compact self-contained catalog without repeating the shared conventions', () => {
     const md = renderSkillDoc('literature')
     expect(md).toContain('name: mcp-literature')
@@ -143,7 +163,9 @@ describe('renderSkillDoc', () => {
     expect(md).toContain('persistent')
     expect(md).toContain('native JavaScript')
     expect(md).toMatch(/instead of running the call again/)
-    expect(md).toMatch(/never re-(issue|call)/i)
+    expect(md).toContain(
+      'Reuse existing results to inspect/process them instead of running the call again'
+    )
   })
   it('keeps planned connector work in fewer model round trips and bounds returned context', () => {
     const baseline = renderConnectorInstructions(['mcp-literature'])

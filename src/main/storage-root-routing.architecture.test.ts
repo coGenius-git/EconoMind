@@ -17,9 +17,12 @@ const projectRoot = resolve(__dirname, '../..')
 const source = (path: string): string => readFileSync(resolve(projectRoot, path), 'utf8')
 
 const referencesIdentifier = (path: string, name: string): boolean => {
+  const contents = readFileSync(path, 'utf8')
+  // Escaped identifiers still require parsing even when the literal name is absent.
+  if (!contents.includes(name) && !contents.includes('\\')) return false
   const file = createSourceFile(
     path,
-    readFileSync(path, 'utf8'),
+    contents,
     ScriptTarget.Latest,
     true,
     path.endsWith('.tsx') ? ScriptKind.TSX : ScriptKind.TS
@@ -73,11 +76,11 @@ describe('storage root routing architecture', () => {
     const uploads = source('src/main/uploads/ipc.ts')
     expect(uploads).toContain('new UploadRepository(resolveDataRoot(), {')
     expect(uploads).toContain('getProjectDbClient(resolveConfigRoot())')
-    expect(source('src/main/uploads/repository.ts')).toContain(
-      'constructor(dataRoot: string, options: UploadRepositoryOptions = {})'
+    expect(source('src/main/uploads/repository.ts')).toMatch(
+      /constructor\(\s*dataRoot: string,\s*private readonly options: UploadRepositoryOptions = \{\}/
     )
 
-    const notebookComposition = source('src/main/ipc.ts')
+    const notebookComposition = source('src/main/composition/notebook-runtime.ts')
     expect(notebookComposition).toMatch(
       /configRoot: resolveConfigRoot\(\),\s+dataRoot: resolveDataRoot\(\)/
     )

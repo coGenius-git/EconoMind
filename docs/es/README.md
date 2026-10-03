@@ -2,7 +2,7 @@
 
 EconoMind es una aplicación de escritorio de apoyo a la investigación en economía, gestión, finanzas, contabilidad y políticas públicas. La interfaz web local necesita el backend de la aplicación.
 
-Este repositorio adapta AIPOCH Open Science. El código fuente usa la versión 0.27.2; un instalador personalizado independiente lleva la etiqueta 3.0.0. Las publicaciones y los registros DOI del proyecto original no pertenecen a este repositorio.
+Este repositorio adapta AIPOCH Open Science. El código fuente usa la versión 0.34.1; un instalador personalizado independiente lleva la etiqueta 3.0.0. Las publicaciones y los registros DOI del proyecto original no pertenecen a este repositorio.
 
 ## Documentación e inicio
 
@@ -11,7 +11,7 @@ Este repositorio adapta AIPOCH Open Science. El código fuente usa la versión 0
 - [Docs](../README.md)
 - [Startup](../DEPLOY.md)
 
-`Node.js 22` + `npm`:
+`Node.js 24` + `npm`:
 
 ```bash
 git clone https://github.com/coGenius-git/EconoMind.git

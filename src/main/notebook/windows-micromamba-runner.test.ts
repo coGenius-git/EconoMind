@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
 
@@ -187,6 +187,82 @@ describe('createMicromambaRunnerResolver', () => {
     expect(preflight).toHaveBeenCalledTimes(1)
   })
 
+  it('accepts signed bundled bytes after verifying Authenticode instead of comparing the raw digest', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'os-mm-runner-'))
+    const signed = {
+      ...fixture(root, 'primary', 'signed-primary', sha256('official-primary')),
+      verifySignature: true
+    }
+    const verifySignature = vi.fn(async () => undefined)
+
+    const selected = await createMicromambaRunnerResolver({
+      candidates: [signed],
+      toolsDir: join(root, 'local-tools'),
+      verifySignature,
+      preflight: async () => undefined
+    }).resolve()
+
+    expect(contentsOf(selected)).toBe('signed-primary')
+    expect(verifySignature).toHaveBeenCalledTimes(2)
+    expect(selected).toContain(sha256('signed-primary'))
+  })
+
+  it('rejects changed bundled bytes when Authenticode verification fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'os-mm-runner-'))
+    const signed = {
+      ...fixture(root, 'primary', 'changed-primary', sha256('official-primary')),
+      verifySignature: true
+    }
+    const compatibility = fixture(root, 'compat', 'compat')
+    const verifySignature = vi.fn(async () => {
+      throw new Error('invalid Authenticode status: NotSigned')
+    })
+    const attempted: string[] = []
+
+    const selected = await createMicromambaRunnerResolver({
+      candidates: [signed, compatibility],
+      toolsDir: join(root, 'local-tools'),
+      verifySignature,
+      preflight: async (path) => {
+        attempted.push(contentsOf(path))
+      }
+    }).resolve()
+
+    expect(contentsOf(selected)).toBe('compat')
+    expect(verifySignature).toHaveBeenCalledOnce()
+    expect(attempted).toEqual(['compat'])
+  })
+
+  it('revalidates the signature when reusing a cached signed selection', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'os-mm-runner-'))
+    const signed = {
+      ...fixture(root, 'primary', 'signed-primary', sha256('official-primary')),
+      verifySignature: true
+    }
+    const verifySignature = vi.fn(async () => undefined)
+    const toolsDir = join(root, 'local-tools')
+
+    await createMicromambaRunnerResolver({
+      candidates: [signed],
+      toolsDir,
+      verifySignature,
+      preflight: async () => undefined
+    }).resolve()
+    verifySignature.mockClear()
+    const preflight = vi.fn(async () => undefined)
+
+    const selected = await createMicromambaRunnerResolver({
+      candidates: [signed],
+      toolsDir,
+      verifySignature,
+      preflight
+    }).resolve()
+
+    expect(contentsOf(selected)).toBe('signed-primary')
+    expect(preflight).toHaveBeenCalledOnce()
+    expect(verifySignature).toHaveBeenCalledOnce()
+  })
+
   it('tries each candidate once and reports every bounded failure', async () => {
     const root = mkdtempSync(join(tmpdir(), 'os-mm-runner-'))
     const candidates = [fixture(root, 'primary', 'primary'), fixture(root, 'compat', 'compat')]
@@ -328,3 +404,96 @@ describe('createProductionMicromambaRunner', () => {
     }
   })
 })
+
+it.each([
+  { packaged: false, suffix: 'override' },
+  { packaged: true, suffix: 'local/EconoMind' }
+])(
+  'uses the same brand config rules for actual tool writes ($packaged)',
+  async ({ packaged, suffix }) => {
+    const root = mkdtempSync(join(tmpdir(), 'brand-tools-call-'))
+    try {
+      const binary = fixture(root, 'explicit', 'isolated-executable')
+      const runner = createProductionMicromambaRunner({
+        packaged,
+        platform: 'win32',
+        home: root,
+        resourcesPath: join(root, 'absent'),
+        env: {
+          LOCALAPPDATA: join(root, 'local'),
+          OPEN_SCIENCE_STORAGE_ROOT: `  ${root}/ignored/../override  `,
+          OPEN_SCIENCE_MICROMAMBA_BIN: binary.path
+        },
+        preflight: async () => undefined
+      })
+      const selected = await runner!.resolve()
+      expect(selected.startsWith(join(root, suffix, 'tools', 'micromamba') + sep)).toBe(true)
+      expect(contentsOf(selected)).toBe('isolated-executable')
+      expect(
+        JSON.parse(contentsOf(join(root, suffix, 'tools', 'micromamba', 'selection.json'))).schema
+      ).toBe(1)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+)
+
+it('keeps the development config home separate from a custom research disk', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'brand-tools-home-'))
+  try {
+    const binary = fixture(root, 'explicit', 'isolated-executable')
+    const runner = createProductionMicromambaRunner({
+      packaged: false,
+      platform: 'win32',
+      home: join(root, 'research-disk'),
+      configHome: join(root, 'user-home'),
+      resourcesPath: join(root, 'absent'),
+      env: { LOCALAPPDATA: join(root, 'local'), OPEN_SCIENCE_MICROMAMBA_BIN: binary.path },
+      preflight: async () => undefined
+    })
+    expect(
+      (await runner!.resolve()).startsWith(
+        join(root, 'user-home', '.open-science-project', 'tools', 'micromamba') + sep
+      )
+    ).toBe(true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+it('retains a validated legacy tool selection receipt when no configuration override is supplied', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'brand-tools-receipt-'))
+  try {
+    const binary = fixture(root, 'override', 'isolated-executable')
+    const toolsDir = join(root, 'local', 'OpenScience', 'tools', 'micromamba')
+    const first = await createMicromambaRunnerResolver({
+      candidates: [binary],
+      toolsDir,
+      preflight: async () => undefined
+    }).resolve()
+    const runner = createProductionMicromambaRunner({
+      packaged: true,
+      platform: 'win32',
+      home: root,
+      resourcesPath: join(root, 'absent'),
+      env: { LOCALAPPDATA: join(root, 'local'), OPEN_SCIENCE_MICROMAMBA_BIN: binary.path },
+      preflight: async () => undefined
+    })
+    expect(await runner!.resolve()).toBe(first)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+it.each(['OPEN_SCIENCE_E2E_STORAGE_ROOT', 'OPEN_SCIENCE_CONFIG_ROOT', 'OPEN_SCIENCE_STORAGE_ROOT'])(
+  'rejects a relative %s before creating tool state',
+  (key) => {
+    expect(() =>
+      createProductionMicromambaRunner({
+        packaged: false,
+        platform: 'win32',
+        env: { [key]: '  relative-path  ' }
+      })
+    ).toThrow(`${key} must be an absolute path.`)
+  }
+)

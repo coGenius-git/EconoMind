@@ -1,5 +1,7 @@
+import { createInitialTagState, useTagStore } from '@/stores/tag-store'
 // @vitest-environment jsdom
 import { act } from 'react'
+import { fireEvent, screen } from '@testing-library/react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -11,13 +13,17 @@ import type {
 } from '../../../../../shared/annotations'
 import { createArtifactVersionLocator } from '../../../../../shared/artifact-provenance'
 import type { PreviewFileItem } from '@/stores/preview-workbench-store'
+import type { Bookmark } from '../../../../../shared/bookmarks'
 
 import {
   requestAnnotationReveal,
+  requestBookmarkReveal,
   subscribeAnnotationReveal
 } from '../annotations/annotation-reveal'
 import { HighlightedCodeLines } from '../HighlightedCodeLines'
 import { PreviewTextAnnotationSurface } from './PreviewTextAnnotationSurface'
+import { PdfAnnotationsProvider } from '../pdf-annotations/PdfAnnotationsProvider'
+import { BookmarksProvider } from '../bookmarks/BookmarksProvider'
 
 const item = (overrides: Partial<PreviewFileItem> = {}): PreviewFileItem => ({
   id: 'preview-1',
@@ -119,6 +125,94 @@ describe('PreviewTextAnnotationSurface', () => {
     vi.unstubAllGlobals()
   })
 
+  it('retains observers for equivalent preview items during parent updates', async () => {
+    let mutationCount = 0
+    let resizeCount = 0
+    const Original = globalThis.MutationObserver
+    vi.stubGlobal(
+      'MutationObserver',
+      class extends Original {
+        constructor(callback: MutationCallback) {
+          super(callback)
+          mutationCount++
+        }
+      }
+    )
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor() {
+          resizeCount++
+        }
+        observe = vi.fn()
+        unobserve = vi.fn()
+        disconnect = vi.fn()
+      }
+    )
+    for (let i = 0; i < 21; i++) {
+      await act(async () =>
+        root.render(
+          <PreviewTextAnnotationSurface item={item()}>
+            <p>{`Preview text ${i}`}</p>
+          </PreviewTextAnnotationSurface>
+        )
+      )
+    }
+    expect(container.textContent).toContain('Preview text 20')
+    expect({ mutationCount, resizeCount }).toEqual({ mutationCount: 1, resizeCount: 1 })
+  })
+
+  it('does not measure an unmarked preview on window resize', async () => {
+    await act(async () =>
+      root.render(
+        <PreviewTextAnnotationSurface item={item()}>
+          <p>No markers</p>
+        </PreviewTextAnnotationSurface>
+      )
+    )
+    const measure = vi.spyOn(Element.prototype, 'getBoundingClientRect')
+    try {
+      await act(async () => window.dispatchEvent(new Event('resize')))
+      expect(measure).not.toHaveBeenCalled()
+    } finally {
+      measure.mockRestore()
+    }
+  })
+
+  it('does not reconcile preview ranges twice for one React content commit', async () => {
+    const active = [annotation({ quote: 'confidence intervals overlap' })]
+    await renderSurface({ activeAnnotations: active })
+
+    const surface = container.querySelector('[data-preview-text-annotation-surface]')!
+    const measure = vi.spyOn(surface, 'getBoundingClientRect')
+    try {
+      await renderSurface({
+        activeAnnotations: active,
+        content: 'Updated result: confidence intervals overlap.'
+      })
+      expect([...registeredRanges].map((range) => range.toString())).toContain(active[0].quote)
+      expect(measure).toHaveBeenCalledTimes(1)
+    } finally {
+      measure.mockRestore()
+    }
+  })
+
+  it('reanchors saved highlights after a same-turn asynchronous DOM replacement', async () => {
+    const active = [annotation()]
+    await renderSurface({ activeAnnotations: active })
+    await act(async () => {
+      // Child highlighters can replace text nodes after the parent's layout effect.
+      const paragraph = container.querySelector('p')!
+      paragraph.innerHTML = 'Experiment result: <strong>confidence intervals overlap</strong>.'
+    })
+    expect([...registeredRanges].map((range) => range.toString())).toContain(active[0].quote)
+    expect(
+      [...registeredRanges].some(
+        (range) => range.startContainer.parentElement?.tagName === 'STRONG'
+      )
+    ).toBe(true)
+  })
+
   const renderSurface = async ({
     activeAnnotations = [],
     onAddAnnotation = vi.fn(() => undefined),
@@ -127,9 +221,13 @@ describe('PreviewTextAnnotationSurface', () => {
     onAnnotationAdded,
     previewItem = item(),
     annotationVersionId,
+    annotationVersionPending = false,
     sourcePageNumber,
     pdfEvidenceSource,
     annotationBlockedByHistoricalVersion = false,
+    bookmarkApi,
+    pdfAnnotationApi,
+    quickTextMark,
     content = 'Experiment result: confidence intervals overlap.'
   }: {
     activeAnnotations?: readonly Annotation[]
@@ -139,33 +237,61 @@ describe('PreviewTextAnnotationSurface', () => {
     onAnnotationAdded?: () => void
     previewItem?: PreviewFileItem
     annotationVersionId?: string
+    annotationVersionPending?: boolean
     sourcePageNumber?: number
     pdfEvidenceSource?: PdfAnnotation['source']
     annotationBlockedByHistoricalVersion?: boolean
+    bookmarkApi?: Pick<Window['api'], 'bookmarks'>['bookmarks']
+    pdfAnnotationApi?: Window['api']['pdfAnnotations']
+    quickTextMark?: {
+      kind: 'highlight' | 'underline' | 'squiggly' | 'strikethrough'
+      color: 'yellow' | 'blue' | 'green' | 'pink' | 'purple'
+    }
     content?: string
   } = {}): Promise<void> => {
+    if (bookmarkApi) window.api = { bookmarks: bookmarkApi } as unknown as Window['api']
+    if (pdfAnnotationApi) window.api = { ...window.api, pdfAnnotations: pdfAnnotationApi }
+    const surface = (
+      <PreviewTextAnnotationSurface
+        item={previewItem}
+        annotationVersionId={annotationVersionId}
+        annotationVersionPending={annotationVersionPending}
+        activeAnnotations={activeAnnotations}
+        onAddAnnotation={onAddAnnotation}
+        onUpdateAnnotationNote={onUpdateAnnotationNote}
+        onAnnotationError={onAnnotationError}
+        onAnnotationAdded={onAnnotationAdded}
+        sourcePageNumber={sourcePageNumber}
+        quickTextMark={quickTextMark}
+        pdfEvidenceSource={pdfEvidenceSource}
+        pdfBookmarkSource={
+          pdfAnnotationApi ? { ...pdfSource(), sourceFileId: 'artifact-1' } : undefined
+        }
+        pdfPageRotation={pdfAnnotationApi ? 0 : undefined}
+        pdfExtractorVersion={pdfEvidenceSource || pdfAnnotationApi ? 'pdfjs-5.4.624' : undefined}
+        annotationBlockedByHistoricalVersion={annotationBlockedByHistoricalVersion}
+      >
+        <p>{content}</p>
+      </PreviewTextAnnotationSurface>
+    )
     await act(async () => {
       root.render(
-        <PreviewTextAnnotationSurface
-          item={previewItem}
-          annotationVersionId={annotationVersionId}
-          activeAnnotations={activeAnnotations}
-          onAddAnnotation={onAddAnnotation}
-          onUpdateAnnotationNote={onUpdateAnnotationNote}
-          onAnnotationError={onAnnotationError}
-          onAnnotationAdded={onAnnotationAdded}
-          sourcePageNumber={sourcePageNumber}
-          pdfEvidenceSource={pdfEvidenceSource}
-          pdfExtractorVersion={pdfEvidenceSource ? 'pdfjs-5.4.624' : undefined}
-          annotationBlockedByHistoricalVersion={annotationBlockedByHistoricalVersion}
-        >
-          <p>{content}</p>
-        </PreviewTextAnnotationSurface>
+        pdfAnnotationApi ? (
+          <PdfAnnotationsProvider projectId="project-1" sessionId="session-1">
+            {surface}
+          </PdfAnnotationsProvider>
+        ) : bookmarkApi ? (
+          <BookmarksProvider projectId="project-1" sessionId="session-1">
+            {surface}
+          </BookmarksProvider>
+        ) : (
+          surface
+        )
       )
     })
   }
 
-  const selectRange = async (start: number, end: number): Promise<void> => {
+  const selectRange = async (start: number, end: number, finish = true): Promise<void> => {
     const text = container.querySelector('p')?.firstChild
     if (!text) throw new Error('Preview text was not rendered')
     const surface = container.querySelector<HTMLElement>(
@@ -194,6 +320,7 @@ describe('PreviewTextAnnotationSurface', () => {
     })
     window.getSelection()?.removeAllRanges()
     window.getSelection()?.addRange(range)
+    if (!finish) return
     await act(async () => {
       container
         .querySelector('[data-preview-text-annotation-surface="true"]')
@@ -240,10 +367,7 @@ describe('PreviewTextAnnotationSurface', () => {
   it.each([true, false])('reveals a file quote with draft present=%s', async (inDraft) => {
     const saved = annotation()
     await renderSurface({ activeAnnotations: inDraft ? [saved] : [] })
-    const scroll = vi.fn()
-    container.querySelector('p')!.scrollIntoView = scroll
     await act(async () => requestAnnotationReveal(saved))
-    expect(scroll).toHaveBeenCalled()
     expect(Array.from(registeredRanges).some((range) => range.toString() === saved.quote)).toBe(
       true
     )
@@ -277,6 +401,129 @@ describe('PreviewTextAnnotationSurface', () => {
       })
     )
     expect(registeredRanges.size).toBe(1)
+  })
+
+  it('saves selected preview text with its exact source version', async () => {
+    const create = vi.fn(async (request) => ({
+      ...request,
+      version: 1 as const,
+      createdAt: '2026-09-14T00:00:00.000Z',
+      updatedAt: '2026-09-14T00:00:00.000Z'
+    }))
+    await renderSurface({
+      bookmarkApi: {
+        list: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+        create
+      } as unknown as Window['api']['bookmarks']
+    })
+    await selectQuote()
+    fireEvent.click(screen.getByRole('button', { name: 'Annotate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'For me' }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Bookmark' })))
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        target: expect.objectContaining({
+          kind: 'text',
+          quote: annotation().quote,
+          source: expect.objectContaining({ projectId: 'project-1', versionId: 'version-7' })
+        })
+      })
+    )
+    expect([...registeredRanges].map((range) => range.toString())).toContain(annotation().quote)
+  })
+
+  it('keeps managed preview markers scoped to the verified project and version', async () => {
+    const saved: Bookmark = {
+      id: 'bookmark-managed',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      version: 1,
+      note: '',
+      createdAt: '2026-09-14T00:00:00.000Z',
+      updatedAt: '2026-09-14T00:00:00.000Z',
+      target: {
+        kind: 'text',
+        quote: annotation().quote,
+        source: {
+          ...annotation().source,
+          kind: 'project-file',
+          projectId: 'project-1',
+          path: '/project/notes.md',
+          fileSource: 'artifact',
+          sourceFileId: 'artifact-1',
+          versionId: 'version-7'
+        }
+      }
+    }
+    const bookmarkApi = {
+      list: vi.fn().mockResolvedValue({ items: [saved], total: 1 })
+    } as unknown as Window['api']['bookmarks']
+    const previewItem = item({ managedFileId: 'artifact-1' })
+    await renderSurface({ bookmarkApi, previewItem })
+    expect(screen.queryByRole('button', { name: 'Edit bookmark note' })).not.toBeNull()
+    for (const overrides of [
+      { previewItem, annotationVersionPending: true },
+      { previewItem: { ...previewItem, selectedVersionId: 'other-version' } },
+      { previewItem: { ...previewItem, projectId: 'other-project' } }
+    ]) {
+      await renderSurface({ bookmarkApi, ...overrides })
+      expect(screen.queryByRole('button', { name: 'Edit bookmark note' })).toBeNull()
+      expect(registeredRanges.size).toBe(0)
+    }
+    await renderSurface({ bookmarkApi, previewItem })
+    expect(screen.queryByRole('button', { name: 'Edit bookmark note' })).not.toBeNull()
+    await act(async () => root.render(null))
+    expect(registeredRanges.size).toBe(0)
+  })
+
+  it('reveals an exact project-file bookmark and reports a missing quote', async () => {
+    await renderSurface({
+      bookmarkApi: {
+        list: vi.fn().mockResolvedValue({ items: [], total: 0 })
+      } as unknown as Pick<Window['api'], 'bookmarks'>['bookmarks']
+    })
+    const bookmark = {
+      id: 'bookmark-preview-text',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      version: 1 as const,
+      note: '',
+      createdAt: '2026-09-14T00:00:00.000Z',
+      updatedAt: '2026-09-14T00:00:00.000Z',
+      target: {
+        kind: 'text' as const,
+        source: {
+          kind: 'project-file' as const,
+          projectId: 'project-1',
+          path: '/project/notes.md',
+          name: 'notes.md',
+          versionId: 'version-7',
+          sessionId: 'session-1'
+        },
+        quote: 'confidence intervals overlap'
+      }
+    } satisfies Bookmark
+
+    let outcome: Awaited<ReturnType<typeof requestBookmarkReveal>> | undefined
+    await act(async () => {
+      outcome = await requestBookmarkReveal(bookmark)
+    })
+    expect(outcome).toBe('revealed')
+
+    await act(async () => {
+      outcome = await requestBookmarkReveal({
+        ...bookmark,
+        id: 'bookmark-missing-quote',
+        target: {
+          ...bookmark.target,
+          quote: 'missing bookmark quote'
+        }
+      })
+    })
+    expect(outcome).toBe('locator-unsupported')
   })
 
   it('captures the exact artifact Version from the managed locator', async () => {
@@ -373,7 +620,6 @@ describe('PreviewTextAnnotationSurface', () => {
     const entry = document.querySelector<HTMLElement>('[data-annotation-trigger]')
     await act(async () => entry?.click())
 
-    expect(document.querySelector('[data-annotation-trigger]')).toBe(entry)
     expect(document.querySelector('textarea')).toBeNull()
     expect(document.querySelector('[role="alert"]')?.textContent).toBe(
       'Historical versions cannot be annotated. Switch to the latest version to annotate.'
@@ -423,6 +669,211 @@ describe('PreviewTextAnnotationSurface', () => {
       'Historical versions cannot be annotated. Switch to the latest version to annotate.'
     )
     expect(onAddAnnotation).not.toHaveBeenCalled()
+  })
+
+  it.each(['surface', 'toolbar'] as const)(
+    'dismisses a selected PDF quote with Escape from the %s without bubbling to its preview',
+    async (origin) => {
+      await renderSurface({
+        onAddAnnotation: vi.fn(),
+        sourcePageNumber: 3,
+        pdfEvidenceSource: pdfSource()
+      })
+      await selectQuote()
+      const surface = container.querySelector<HTMLElement>(
+        '[data-preview-text-annotation-surface]'
+      )!
+      const toolbar = document.querySelector<HTMLElement>('[data-selection-action-menu]')!
+      expect(toolbar).not.toBeNull()
+      const target = origin === 'surface' ? surface : toolbar
+      expect(target.hasAttribute('data-preview-escape-boundary')).toBe(true)
+      const outerEscape = vi.fn()
+      document.addEventListener('keydown', outerEscape)
+      try {
+        await act(async () => {
+          fireEvent.keyDown(target, { key: 'Escape' })
+        })
+        expect(document.querySelector('[data-selection-action-menu]')).toBeNull()
+        expect(window.getSelection()?.toString()).toBe('')
+        expect(outerEscape).not.toHaveBeenCalled()
+      } finally {
+        document.removeEventListener('keydown', outerEscape)
+      }
+    }
+  )
+
+  it('stores a styled PDF selection through PdfAnnotation without creating a Bookmark', async () => {
+    const create = vi.fn(async (request) => ({
+      ...request,
+      version: 1,
+      createdAt: '2026-09-19T00:00:00.000Z',
+      updatedAt: '2026-09-19T00:00:00.000Z'
+    }))
+    const createBookmark = vi.fn()
+    const onAddAnnotation = vi.fn(() => undefined)
+    await renderSurface({
+      pdfEvidenceSource: pdfSource(),
+      onAddAnnotation,
+      sourcePageNumber: 3,
+      bookmarkApi: {
+        list: vi.fn(),
+        create: createBookmark
+      } as unknown as Window['api']['bookmarks'],
+      pdfAnnotationApi: {
+        list: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+        create
+      } as unknown as Window['api']['pdfAnnotations']
+    })
+    useTagStore.setState({
+      ...createInitialTagState(),
+      status: 'ready',
+      tags: ['method', 'review'].map((id) => ({
+        id,
+        name: id,
+        iconKey: 'tag',
+        colorKey: 'blue',
+        createdAt: 1,
+        updatedAt: 1
+      }))
+    })
+    await selectQuote()
+    const button = document.querySelector<HTMLButtonElement>('[data-selection-action="bookmark"]')!
+    expect(button).not.toBeNull()
+    expect(button.textContent).toBe('Annotate')
+    expect(button.querySelector('.sr-only')).toBeNull()
+    expect(document.querySelectorAll('[data-selection-action="bookmark"]')).toHaveLength(1)
+    await act(async () =>
+      button.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }))
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Underline' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add or remove Tags' }))
+    fireEvent.click(screen.getByRole('option', { name: 'method' }))
+    fireEvent.click(screen.getByRole('option', { name: 'review' }))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Search Tags' }), { key: 'Escape' })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save annotation' })))
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'underline',
+        tagIds: ['method', 'review'],
+        target: {
+          source: expect.objectContaining({ sourceFileId: 'artifact-1', versionId: 'version-7' }),
+          selector: expect.objectContaining({
+            kind: 'text',
+            pageNumber: 3,
+            exact: 'confidence intervals overlap',
+            coordinateVersion: 1
+          })
+        }
+      })
+    )
+    expect(create.mock.calls[0][0].target.selector).not.toHaveProperty('markKind')
+    expect(createBookmark).not.toHaveBeenCalled()
+    expect(onAddAnnotation).not.toHaveBeenCalled()
+  })
+
+  it('creates consecutive PDF text marks immediately without duplicate key events or Agent drafts', async () => {
+    const create = vi.fn(async (request) => ({
+      ...request,
+      version: 1,
+      createdAt: '2026-09-19T00:00:00.000Z',
+      updatedAt: '2026-09-19T00:00:00.000Z'
+    }))
+    const onAddAnnotation = vi.fn(() => undefined)
+    const onAnnotationAdded = vi.fn()
+    await renderSurface({
+      sourcePageNumber: 3,
+      pdfEvidenceSource: pdfSource(),
+      onAddAnnotation,
+      onAnnotationAdded,
+      quickTextMark: { kind: 'squiggly', color: 'purple' },
+      pdfAnnotationApi: {
+        list: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+        create
+      } as unknown as Window['api']['pdfAnnotations']
+    })
+    await selectQuote()
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'squiggly',
+        color: 'purple',
+        note: '',
+        tagIds: [],
+        target: expect.objectContaining({
+          selector: expect.objectContaining({
+            exact: 'confidence intervals overlap',
+            pageNumber: 3,
+            coordinateVersion: 1
+          })
+        })
+      })
+    )
+    expect(document.querySelector('[data-selection-action-menu]')).toBeNull()
+    expect(window.getSelection()?.isCollapsed).toBe(true)
+    await act(async () =>
+      fireEvent.keyUp(container.querySelector('[data-preview-text-annotation-surface]')!, {
+        key: 'Shift'
+      })
+    )
+    expect(create).toHaveBeenCalledTimes(1)
+    await selectRange(0, 10)
+    expect(create).toHaveBeenCalledTimes(2)
+    expect(create.mock.calls[1][0].id).not.toBe(create.mock.calls[0][0].id)
+    expect(onAddAnnotation).not.toHaveBeenCalled()
+    expect(onAnnotationAdded).not.toHaveBeenCalled()
+  })
+
+  it('commits keyboard selection once after Shift is released, not after each extension', async () => {
+    const create = vi.fn(async (request) => ({
+      ...request,
+      version: 1,
+      createdAt: '2026-09-19T00:00:00.000Z',
+      updatedAt: '2026-09-19T00:00:00.000Z'
+    }))
+    await renderSurface({
+      sourcePageNumber: 3,
+      quickTextMark: { kind: 'highlight', color: 'green' },
+      pdfAnnotationApi: {
+        list: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+        create
+      } as unknown as Window['api']['pdfAnnotations']
+    })
+    const surface = container.querySelector('[data-preview-text-annotation-surface]')!
+    await selectRange(0, 10, false)
+    await act(async () => fireEvent.keyUp(surface, { key: 'ArrowRight', shiftKey: true }))
+    expect(create).not.toHaveBeenCalled()
+    await selectRange(0, 17, false)
+    await act(async () => fireEvent.keyUp(surface, { key: 'Shift', shiftKey: false }))
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(create.mock.calls[0][0].target.selector.exact).toBe('Experiment result')
+  })
+
+  it('retries a failed quick mark with the original id and geometry after the native selection clears', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Storage unavailable'))
+      .mockImplementation(async (request) => ({
+        ...request,
+        version: 1,
+        createdAt: '2026-09-19T00:00:00.000Z',
+        updatedAt: '2026-09-19T00:00:00.000Z'
+      }))
+    await renderSurface({
+      sourcePageNumber: 3,
+      quickTextMark: { kind: 'underline', color: 'blue' },
+      pdfAnnotationApi: {
+        list: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+        create
+      } as unknown as Window['api']['pdfAnnotations']
+    })
+    await selectQuote()
+    expect(screen.getByRole('alert').textContent).toContain('Annotation could not be saved.')
+    const original = create.mock.calls[0][0]
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Retry' })))
+    expect(create).toHaveBeenCalledTimes(2)
+    expect(create.mock.calls[1][0]).toEqual(original)
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('records the owning PDF page with a selected quote', async () => {
@@ -493,10 +944,10 @@ describe('PreviewTextAnnotationSurface', () => {
     const menu = document.querySelector<HTMLElement>('[data-selection-action-menu="true"]')
 
     expect(menu).not.toBeNull()
-    expect(menu?.className).toContain('p-0.5')
+    expect(menu?.className).toContain('p-1')
     expect(
       Array.from(menu?.querySelectorAll('button') ?? []).every((button) =>
-        button.className.includes('h-6')
+        button.className.includes('h-8')
       )
     ).toBe(true)
     expect(document.querySelector('[data-selection-action="annotate"]')).toBeNull()

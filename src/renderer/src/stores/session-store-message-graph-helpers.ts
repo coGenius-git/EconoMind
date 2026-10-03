@@ -49,6 +49,7 @@ export type AppendUserMessageInput = {
   agentModel?: string
   agentConfiguration?: PersistedChatSession['agentConfiguration']
   memoryEnabled?: boolean
+  autoReviewEnabled?: boolean
   delegationPolicy?: DelegationPolicy
   // Resolved send target stamped onto the user Message; drives config-change timeline markers.
   agentTarget?: PersistedChatMessage['agentTarget']
@@ -88,6 +89,7 @@ export type BindPendingSessionInput = {
   agentBackendId?: PersistedChatSession['agentBackendId']
   providerSessionId?: PersistedChatSession['providerSessionId']
   providerContinuityToken?: PersistedChatSession['providerContinuityToken']
+  wslSetup?: true
 }
 
 export type AppendMessageResult = {
@@ -115,6 +117,17 @@ export type AppendRoutedUserMessageInput = {
 }
 
 export type SessionMessageGraphActions = {
+  prepareInterruptedTurnContinuation: (
+    sessionId: string,
+    promptMessageId: string,
+    update:
+      | Pick<
+          PersistedChatSession,
+          'agentFrameworkId' | 'agentBackendId' | 'providerSessionId' | 'providerContinuityToken'
+        >
+      | undefined,
+    contextReset: boolean
+  ) => { runtimeSegmentId?: string } | undefined
   appendUserMessage: (input: AppendUserMessageInput) => AppendMessageResult | undefined
   appendRoutedUserMessage: (input: AppendRoutedUserMessageInput) => AppendMessageResult | undefined
   appendPendingUserMessage: (

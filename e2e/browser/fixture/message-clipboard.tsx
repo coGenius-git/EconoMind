@@ -9,7 +9,9 @@ import {
   MessageScrollerContent
 } from '@/components/ui/message-scroller'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { Button } from '@/components/ui/button'
 import { WorkspaceMessageItem } from '@/pages/workspace/WorkspaceMessageItem'
+import { WorkspaceToolActivityRowButton } from '@/pages/workspace/WorkspaceToolActivityRowButton'
 import { ComposerEditor } from '@/pages/workspace/composer/ComposerEditor'
 import {
   docToText,
@@ -22,12 +24,69 @@ import {
   type ComposerDraft
 } from '@/pages/workspace/workspace-composer-upload-controller'
 import { useSettingsStore } from '@/stores/settings-store'
+import { PreviewFileSurface } from '@/pages/workspace/PreviewFileSurface'
+import { usePreviewWorkbenchStore } from '@/stores/preview-workbench-store'
+import { useNavigationStore } from '@/stores/navigation-store'
+import { createManagedPreviewTestTransport } from '@/pages/workspace/previews/managed-preview-test-support'
 import type { ChatMessage } from '@/stores/session-store'
 import type { Annotation } from '../../../src/shared/annotations'
 import type { SessionPdfContextSource } from '../../../src/shared/session-persistence'
 
 initI18n('en')
+document.documentElement.classList.toggle('dark', new URLSearchParams(location.search).has('dark'))
 useSettingsStore.setState({ skillsLoaded: true })
+useNavigationStore.setState({
+  activeProjectId: new URLSearchParams(location.search).get('project') ?? 'project'
+})
+const transport = createManagedPreviewTestTransport({
+  read: async () => {
+    if (new URLSearchParams(location.search).has('unavailable')) throw new Error('File unavailable')
+    const content = 'gene,log2FoldChange,pValue\nTP53,2.4,0.001\nBRCA1,-1.8,0.008\nEGFR,1.5,0.02'
+    return { content, encoding: 'utf8', size: content.length, truncated: false }
+  }
+})
+const browserFetch = window.fetch.bind(window)
+window.fetch = (input, init) =>
+  String(input).startsWith('open-science-preview:')
+    ? transport.fetch(input, init)
+    : browserFetch(input, init)
+Object.defineProperty(window, 'api', {
+  value: {
+    previewResources: { acquire: transport.acquire, release: transport.release },
+    managedFileVersions: {
+      inspect: async () => ({
+        ok: true,
+        value: {
+          source: 'upload',
+          projectId: 'project',
+          fileId: 'csv-file',
+          sessionId: 'source',
+          displayName: 'volcano-plot.csv',
+          headVersionId: 'csv-version',
+          selectedVersionId: 'csv-version',
+          versions: [
+            {
+              id: 'csv-version',
+              source: 'upload',
+              fileId: 'csv-file',
+              versionNumber: 1,
+              displayName: 'volcano-plot.csv',
+              originKind: 'user_upload',
+              basedOnVersionId: null,
+              contentType: 'text/csv',
+              sizeBytes: 80,
+              checksum: 'fixture',
+              createdAt: '2026-09-09T00:00:00.000Z'
+            }
+          ],
+          canEdit: false,
+          canDiff: false
+        }
+      })
+    },
+    projectFiles: { resolveFile: async () => null }
+  }
+})
 const noop = (): void => undefined
 // Only external effects are stubbed. Copy, paste, rendering and draft undo are production code.
 const unavailable = async (): Promise<never> => {
@@ -49,7 +108,7 @@ const parts: NonNullable<ChatMessage['parts']> = [
     versionId: 'csv-version',
     source: 'upload',
     name: 'volcano-plot.csv',
-    path: 'uploads/plot.csv',
+    path: 'upload-version:project/source/csv-version',
     mimeType: 'text/csv'
   },
   { type: 'text', text: ' ' },
@@ -60,7 +119,7 @@ const parts: NonNullable<ChatMessage['parts']> = [
     versionId: 'xlsx-version',
     source: 'upload',
     name: 'volcano-plot-differential-analysis.xlsx',
-    path: 'uploads/analysis.xlsx'
+    path: 'upload-version:project/source/xlsx-version'
   },
   { type: 'text', text: '\nCreate a volcano plot in R' }
 ]
@@ -84,6 +143,10 @@ const initialDraft: ComposerDraft = {
 
 export function ClipboardFixture(): React.JSX.Element {
   const [doc, setDoc] = useState(emptyDoc)
+  const [toolExpanded, setToolExpanded] = useState(true)
+  const preview = usePreviewWorkbenchStore((state) =>
+    state.items.find((item) => item.id === state.activeItemId)
+  )
   const [caretRequest, setCaretRequest] = useState<{
     key: number
     position: ComposerCaretPosition
@@ -121,7 +184,7 @@ export function ClipboardFixture(): React.JSX.Element {
     <TooltipProvider>
       <main className="mx-auto flex min-h-screen max-w-4xl flex-col gap-12 px-8 py-12">
         <header className="text-sm text-muted-foreground">
-          Open Science · Message clipboard browser test
+          EconoMind · Message clipboard browser test
         </header>
         <MessageScrollerProvider>
           <div className="h-56">
@@ -152,12 +215,61 @@ export function ClipboardFixture(): React.JSX.Element {
             onUndo={controller.actions.undo}
             onRedo={controller.actions.redo}
             caretRequest={caretRequest}
-            mentionPreviewContext={{
-              projectId: new URLSearchParams(location.search).get('project') ?? 'project',
-              sessionId: 'target'
-            }}
+            mentionPreviewContext={
+              new URLSearchParams(location.search).has('new')
+                ? undefined
+                : {
+                    projectId: new URLSearchParams(location.search).get('project') ?? 'project',
+                    sessionId: 'target'
+                  }
+            }
           />
         </section>
+        {new URLSearchParams(location.search).has('keyboard') && (
+          <nav aria-label="Keyboard fixture controls" className="flex items-center gap-4">
+            <Button disabled>Unavailable action</Button>
+            <Button>After composer</Button>
+            <a href="#keyboard">Reference link</a>
+          </nav>
+        )}
+        {new URLSearchParams(location.search).has('keyboard') && (
+          <section aria-label="Tool focus fixture" className="overflow-hidden rounded-xl bg-bg-200">
+            <WorkspaceToolActivityRowButton
+              activity={{
+                id: 'reading',
+                kind: 'tool',
+                title: 'Reading',
+                status: 'completed',
+                eventIds: [],
+                sortIndex: 1,
+                createdAt: 1,
+                updatedAt: 1
+              }}
+              label="Reading"
+              subtitle="Find the conclusion"
+              isExpanded={toolExpanded}
+              panelClassName="relative mx-4 rounded-xl bg-bg-000 p-4 shadow-card"
+              panelTestId="reading-details"
+              onToggle={(_, expanded) => setToolExpanded(expanded)}
+            >
+              Search linked PDFs
+            </WorkspaceToolActivityRowButton>
+          </section>
+        )}
+        {preview?.type === 'file' && (
+          <section
+            className="h-96 overflow-hidden rounded-xl border border-border"
+            data-testid="preview"
+          >
+            <PreviewFileSurface
+              item={preview}
+              onClose={() => usePreviewWorkbenchStore.getState().removeItem(preview.id)}
+            />
+          </section>
+        )}
+        <output hidden data-testid="preview-item">
+          {JSON.stringify(preview)}
+        </output>
         <output hidden data-testid="draft">
           {JSON.stringify(doc)}
         </output>

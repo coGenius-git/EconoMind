@@ -7,6 +7,7 @@ import type {
 } from '../../shared/permission-profiles'
 import type { AgentFrameworkId } from '../../shared/settings'
 import type { CommandShellDialect } from '../agent-framework/types'
+import type { ShellRuntimeBinding } from '../../shared/notebook'
 import {
   ACTIVITY_GROUP_MCP_SERVER_NAME,
   isActivityGroupToolEvent
@@ -19,19 +20,25 @@ import {
 } from '../agent-framework/app-mcp-names'
 
 type PermissionPolicyContext = {
+  permissionPrompts?: 'none'
   profile: PermissionProfileId
   projectId?: string
   // Delegated runtimes have a provider-local Session id, while durable grants belong to the parent
   // app Session. Keep that owner identity separate from the request routing identity.
   permissionGrantSessionId?: string
+  modelRoute?: import('../agent-framework/types').AgentModelRoute
   frameworkId?: AgentFrameworkId
   shellDialect?: CommandShellDialect
+  notebookShellRuntime?: ShellRuntimeBinding['kind']
+  notebookShellRuntimeQualifier?: string
   autoReviewStrategy?: PermissionAutoReviewStrategy
   cwd?: string
   // Canonical MCP server names, so framework-visible tools can resolve to stable policy identities.
   mcpServerNames?: readonly string[]
   // Main-owned identity of the user Message whose provider turn is parked on this request.
   promptMessageId?: string
+  // Captured by Main from the active interaction, never supplied by the provider.
+  interactionSequence?: number
 }
 
 const TRUSTED_MCP_TOOL_IDENTITY = Symbol('trusted-mcp-tool-identity')
@@ -159,10 +166,86 @@ const canConservativelyAutoApprove = (
 const resolveAllowOptionId = (params: RequestPermissionRequest): string | undefined =>
   params.options.find((option) => option.kind.toLowerCase() === 'allow_once')?.optionId
 
-// OpenCode's native Skill tool only reads an app-provisioned skill definition into the model's
-// context. It is framework plumbing rather than a user-authorizable side effect. Older OpenCode
-// sessions can still emit request_permission, so the runtime binds that request to a preceding native
-// tool_call and attaches the process-local identity below. Presentation text alone is never trusted.
+// OpenCode's ACP codec maps only native webfetch to kind=fetch and omits tool-name metadata
+// (opencode/src/acp/{permission,tool}.ts). MCP tools map to other. Claude supplies WebFetch in
+// provider metadata. Do not infer native authority from a URL/title or from another framework's
+// generic fetch kind; Codex Responses/Bridge do not expose this native permission contract.
+const isNativeWebFetchCandidate = (
+  params: RequestPermissionRequest,
+  context: PermissionPolicyContext | undefined
+): boolean => {
+  if (trustedMcpToolIdentity(params) || isMcpTool(params, context?.mcpServerNames ?? []))
+    return false
+  const name = extractProviderToolName(params.toolCall)
+  return (
+    (context?.frameworkId === 'opencode' &&
+      params.toolCall.kind === 'fetch' &&
+      (name === undefined || name === 'webfetch')) ||
+    (context?.frameworkId === 'claude-code' && name === 'WebFetch')
+  )
+}
+
+const isNativeWebFetchPermission = (
+  params: RequestPermissionRequest,
+  context: PermissionPolicyContext | undefined
+): boolean => {
+  if (
+    trustedNativeToolIdentity(params) !== `${context?.frameworkId}/webfetch` ||
+    !isNativeWebFetchCandidate(params, context)
+  )
+    return false
+  const input = params.toolCall.rawInput
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return false
+  const url = (input as Record<string, unknown>).url
+  if (typeof url !== 'string') return false
+  try {
+    const parsed = new URL(url)
+    return ['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password
+  } catch {
+    return false
+  }
+}
+
+// Claude ACP supplies WebSearch in the preceding tool_call metadata, but can omit it on
+// the root request_permission. OpenCode currently maps websearch to other without native
+// metadata; Codex Responses/Bridge expose no corresponding native approval contract.
+const isNativeWebSearchCandidate = (
+  params: RequestPermissionRequest,
+  context: PermissionPolicyContext | undefined
+): boolean =>
+  context?.frameworkId === 'claude-code' &&
+  !trustedMcpToolIdentity(params) &&
+  !isMcpTool(params, context.mcpServerNames ?? []) &&
+  extractProviderToolName(params.toolCall) === 'WebSearch'
+
+const isNativeWebSearchPermission = (
+  params: RequestPermissionRequest,
+  context: PermissionPolicyContext | undefined
+): boolean => {
+  if (
+    trustedNativeToolIdentity(params) !== 'claude-code/websearch' ||
+    !isNativeWebSearchCandidate(params, context)
+  )
+    return false
+  const input = params.toolCall.rawInput
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return false
+  const values = input as Record<string, unknown>
+  return (
+    typeof values.query === 'string' &&
+    values.query.trim().length > 0 &&
+    Object.keys(values).every((key) =>
+      ['query', 'allowed_domains', 'blocked_domains'].includes(key)
+    ) &&
+    ['allowed_domains', 'blocked_domains'].every(
+      (key) =>
+        values[key] === undefined ||
+        (Array.isArray(values[key]) && values[key].every((domain) => typeof domain === 'string'))
+    )
+  )
+}
+
+// Bind the provisioned Skill loader to its observed native call before consulting app grants.
+// Presentation text alone is never sufficient to claim the shared Skill capability.
 const isOpenCodeNativeSkillPermission = (
   params: RequestPermissionRequest,
   context: PermissionPolicyContext | undefined
@@ -200,6 +283,21 @@ const isArtifactSaveTool = (
   )
 }
 
+// Deliberately bounded: new tools do not inherit Auto approval from server membership.
+const LIBRARY_AUTO_TOOL_IDENTITIES: ReadonlySet<string> = new Set([
+  'open-science-library/search_library',
+  'open-science-library/read_library_abstract',
+  'open-science-library/read_library_pdf',
+  'open-science-library/format_references',
+  'open-science-library/format_citation_document',
+  'open-science-library/prepare_latex_bundle',
+  'open-science-library/save_to_inbox',
+  'open-science-library/acquire_pdf',
+  'open-science-literature/read_document',
+  'open-science-literature/list_pdf_elements',
+  'open-science-literature/read_pdf_element'
+])
+
 const APP_INTERACTION_TOOLS = new Set([
   'open-science-notebook/ask_user_question',
   'open-science-notebook/request_network_access'
@@ -228,30 +326,37 @@ const isAppInteractionTool = (
 // user's explicit, dialog-confirmed choice, so it auto-approves everything (for frameworks that delegate
 // permissions rather than bypassing natively — a native-bypass agent sends no requests here at all).
 // Otherwise, only native-less 'auto' conservatively approves workspace-contained low-risk operations.
-const resolveAutomaticPermission = (
+const resolveAutomaticPermissionReason = (
   params: RequestPermissionRequest,
   context: PermissionPolicyContext | undefined
 ): string | undefined => {
   if (context?.profile === 'full') {
-    return resolveAllowOptionId(params)
+    return 'full_access'
   }
 
-  if (isOpenCodeNativeSkillPermission(params, context)) {
-    return resolveAllowOptionId(params)
+  const libraryIdentity = trustedMcpToolIdentity(params)
+  if (
+    context?.profile === 'auto' &&
+    libraryIdentity &&
+    LIBRARY_AUTO_TOOL_IDENTITIES.has(libraryIdentity) &&
+    context.mcpServerNames?.map(canonicalAppMcpServerName).includes(libraryIdentity.split('/')[0])
+  ) {
+    // Single-use provider decision only; no durable grant or resource-policy changes.
+    return 'library_auto'
   }
 
   // Asking the user is itself the authorization boundary: the call cannot execute code or mutate
   // external state, and it remains blocked until the renderer answers or cancels it. Do not insert a
   // redundant permission card before the actual choice card.
   if (isAppInteractionTool(params, context)) {
-    return resolveAllowOptionId(params)
+    return 'app_interaction'
   }
 
   // Saving an already-existing/inline result into the exact app-owned Artifact capability is part
   // of normal turn finalization. It cannot execute code or choose Project/Session ownership, so it
   // receives one call-scoped allow decision under every profile without showing an approval card.
   if (context?.mcpServerNames && isArtifactSaveTool(params, context.mcpServerNames)) {
-    return resolveAllowOptionId(params)
+    return 'artifact_save'
   }
 
   // The declaration exception must be bound to a server-qualified tool identity. rawInput is
@@ -263,7 +368,7 @@ const resolveAutomaticPermission = (
       providerToolName: extractProviderToolName(params.toolCall)
     })
   ) {
-    return resolveAllowOptionId(params)
+    return 'activity_declaration'
   }
 
   if (
@@ -274,10 +379,32 @@ const resolveAutomaticPermission = (
     return undefined
   }
 
-  return resolveAllowOptionId(params)
+  return 'conservative_auto'
 }
 
+const resolveAutomaticPermission = (
+  params: RequestPermissionRequest,
+  context: PermissionPolicyContext | undefined
+): string | undefined =>
+  resolveAutomaticPermissionReason(params, context) ? resolveAllowOptionId(params) : undefined
+
+const isManagedSkillPermission = (
+  params: RequestPermissionRequest,
+  context: PermissionPolicyContext | undefined
+): boolean =>
+  isOpenCodeNativeSkillPermission(params, context) ||
+  ((context?.frameworkId === 'claude-code' || context?.frameworkId === 'codex') &&
+    context.mcpServerNames?.includes('skills') === true &&
+    trustedMcpToolIdentity(params) === 'skills/load_skill')
+
 export {
+  isManagedSkillPermission,
+  resolveAutomaticPermissionReason,
+  LIBRARY_AUTO_TOOL_IDENTITIES,
+  isNativeWebSearchCandidate,
+  isNativeWebSearchPermission,
+  isNativeWebFetchCandidate,
+  isNativeWebFetchPermission,
   canConservativelyAutoApprove,
   isMcpToolName,
   isArtifactSaveTool,

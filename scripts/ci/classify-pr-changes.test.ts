@@ -5,7 +5,13 @@ import { join, relative, resolve } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { classifyChanges, parseNameStatus, toGitHubOutputPlan } from './classify-pr-changes.mjs'
+import {
+  classifyChanges,
+  parseNameStatus,
+  platformExecutionPlan,
+  toGitHubOutputPlan
+} from './classify-pr-changes.mjs'
+import { createAffectedTestPlan } from './module-test-impact.mjs'
 
 const readManifest = (): ReturnType<JSON['parse']> =>
   JSON.parse(readFileSync(resolve('scripts/ci/change-impact.json'), 'utf8'))
@@ -73,7 +79,8 @@ describe('pull request change classification', () => {
         mode: 'selective',
         roots: expect.any(Array),
         lanes: expect.any(Array),
-        bundles: expect.arrayContaining(['policy', 'static', 'unit', 'macos_e2e'])
+        bundles: expect.arrayContaining(['policy', 'static', 'unit', 'macos_e2e']),
+        macosGroups: ['journeys', 'presentation', 'regressions', 'delegation']
       })
       expect(JSON.parse(outputs.plan)).not.toHaveProperty('reasonChains')
       expect(readFileSync(summary, 'utf8')).toContain(
@@ -234,6 +241,92 @@ describe('pull request change classification', () => {
     )
   })
 
+  it.each([
+    ['packages/open-science/CLI.md', 'cli_sdk'],
+    ['packages/open-science/README.md', 'cli_sdk'],
+    ['packages/notebook-network-sandbox/README.md', 'notebook_network_sandbox']
+  ])('keeps documentation and package checks without full fallback for %s', (path, owner) => {
+    const changes = [{ path, status: 'modified' }]
+    const plan = classifyChanges(changes)
+    const manifest = readManifest()
+    manifest.rules = manifest.rules.filter(({ id }: { id: string }) => id !== 'documentation')
+    const packagePlan = classifyChanges(changes, manifest)
+
+    expect(plan.mode).toBe('selective')
+    expect(plan.roots).toEqual(expect.arrayContaining(['documentation', owner]))
+    expect(plan.lanes).toEqual(expect.arrayContaining(['docs', ...packagePlan.lanes]))
+    expect(plan.roots).not.toContain('owner_ambiguity')
+    const tests = createAffectedTestPlan(changes, {
+      status: 'unavailable-manifest-only',
+      testFiles: []
+    })
+    expect(tests.mode).toBe('selective')
+    if (owner === 'cli_sdk') {
+      // CLI tests execute in their dedicated static lane, not the portable module bundle.
+      expect(plan.lanes).toContain('cli_sdk')
+      expect(tests.testFiles).toEqual([])
+    } else {
+      expect(tests.modules).toContain(owner)
+      expect(tests.testFiles.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('retains real package-owner ambiguity when documentation also matches', () => {
+    const manifest = readManifest()
+    const path = 'packages/open-science/README.md'
+    manifest.rules.push({
+      id: 'another_package_owner',
+      role: 'owner',
+      paths: [path],
+      capabilities: ['cli_sdk']
+    })
+
+    const plan = classifyChanges([{ path, status: 'modified' }], manifest)
+    expect(plan.mode).toBe('full')
+    expect(plan.roots).toContain('owner_ambiguity')
+  })
+
+  it.each(['yml', 'yaml'])('keeps issue-template .%s changes on static checks', (extension) => {
+    const changes = [
+      { path: `.github/ISSUE_TEMPLATE/reproducibility_case.${extension}`, status: 'added' },
+      { path: '.github/ISSUE_TEMPLATE/config.yml', status: 'modified' },
+      { path: 'CONTRIBUTING.md', status: 'modified' },
+      { path: 'docs/reproducibility-cases/README.md', status: 'added' },
+      { path: 'docs/reproducibility-cases/index.md', status: 'added' }
+    ]
+    const plan = classifyChanges(changes)
+    expect(plan.mode).toBe('selective')
+    expect(plan.lanes).toEqual(['policy', 'docs', 'format'])
+    expect(plan.bundles).toEqual(['policy', 'static'])
+    for (const event of ['pull_request', 'merge_group']) {
+      expect(platformExecutionPlan(plan, changes, event).bundles).toEqual(['policy', 'static'])
+    }
+    const tests = createAffectedTestPlan(changes, {
+      status: 'unavailable-manifest-only',
+      testFiles: []
+    })
+    expect(tests.mode).toBe('selective')
+    expect(tests.testFiles).toEqual([])
+  })
+
+  it.each([
+    '.github/ISSUE_TEMPLATE/helper.js',
+    '.github/ISSUE_TEMPLATE/nested/form.yml',
+    '.github/unknown.yml',
+    '.github/workflows/pr-gate.yml'
+  ])('does not exempt unknown or executable inputs: %s', (path) => {
+    expect(classifyChanges([{ path, status: 'added' }]).mode).toBe('full')
+  })
+
+  it('retains the full fallback when an issue form accompanies runtime changes', () => {
+    const plan = classifyChanges([
+      { path: '.github/ISSUE_TEMPLATE/bug_report.yml', status: 'modified' },
+      { path: 'src/unknown-runtime.ts', status: 'added' }
+    ])
+    expect(plan.mode).toBe('full')
+    expect(plan.bundles).toEqual(expect.arrayContaining(['unit', 'windows_core', 'windows_e2e']))
+  })
+
   it('uses one specific owner instead of a broad fallback owner', () => {
     const manifest = readManifest()
     manifest.rules.push({
@@ -255,7 +348,12 @@ describe('pull request change classification', () => {
     expect(plan.mode).toBe('selective')
     expect(plan.roots).toContain('notebook_runtime')
     expect(plan.roots).not.toContain('main_runtime')
-    expect(plan.lanes).toEqual(['policy', 'typecheck_node'])
+    expect(plan.lanes).toEqual([
+      'policy',
+      'typecheck_node',
+      'e2e_regressions_macos',
+      'e2e_delegation_macos'
+    ])
   })
 
   it('keeps risk overlays additive after a specific owner replaces a fallback', () => {
@@ -378,8 +476,12 @@ describe('pull request change classification', () => {
     ['PowerShell', 'src/main/notebook/micromamba-cache-powershell.test.ts'],
     ['path handling', 'src/main/acp/workspace-path.ts'],
     ['ACL behavior', 'src/main/notebook/micromamba-cache-acl.integration.test.ts'],
+    ['Windows wheel recovery', 'src/main/notebook/pip-wheel-evidence.ts'],
+    ['Windows wheel regression', 'src/main/notebook/pip-wheel-evidence.test.ts'],
+    ['Windows install evidence', 'src/main/notebook/pip-install-evidence.test.ts'],
     ['storage', 'src/main/storage/ipc.ts'],
     ['session persistence', 'src/main/session-persistence/ipc.ts'],
+    ['delegated process ownership', 'src/main/delegation/process-ownership.ts'],
     ['notebook shell process', 'src/main/notebook/shell-process.ts'],
     ['file save', 'src/main/file-save.ts'],
     ['specialist repository', 'src/main/specialist/repository.ts'],
@@ -390,13 +492,25 @@ describe('pull request change classification', () => {
     ['CodeBuddy detect', 'src/main/settings/codebuddy-detect.ts'],
     ['managed CodeBuddy', 'src/main/settings/managed-codebuddy.ts'],
     ['immutable notebook inputs', 'src/main/immutable-input-authority.ts'],
-    ['notebook package process sandbox', 'src/main/notebook/package-process-sandbox.ts']
+    ['notebook package process sandbox', 'src/main/notebook/package-process-sandbox.ts'],
+    ['WSL setup ownership', 'src/main/wsl/wsl-setup-owner.ts'],
+    ['window shortcuts', 'src/main/window-shortcuts.ts']
   ])('adds native Windows lanes for %s changes', (_category, path) => {
     const plan = classifyChanges([{ path, status: 'modified' }])
 
     expect(plan.roots).toContain('windows_sensitive')
     expect(plan.lanes).toEqual(expect.arrayContaining(['windows_runtime', 'windows_path']))
     expect(plan.reasonChains).toContain(`${path} -> windows_sensitive`)
+  })
+
+  it('requires a live CDN bundle when the immutable runtime version changes', () => {
+    const plan = classifyChanges([
+      { path: 'src/main/notebook/runtime-paths.ts', status: 'modified' }
+    ])
+
+    expect(plan.roots).toEqual(expect.arrayContaining(['main_runtime', 'runtime_bundle']))
+    expect(plan.lanes).toContain('runtime_bundle')
+    expect(plan.reasonChains).toContain('src/main/notebook/runtime-paths.ts -> runtime_bundle')
   })
 
   it('does not add focused Windows lanes for platform-neutral Main changes', () => {
@@ -501,7 +615,9 @@ describe('pull request change classification', () => {
       'typecheck_web',
       'interface_contracts',
       'unit_macos',
-      'build'
+      'build',
+      'e2e_regressions_macos',
+      'e2e_delegation_macos'
     ])
     expect(plan.bundles).toEqual(['policy', 'static', 'unit', 'macos_e2e'])
   })
@@ -550,6 +666,38 @@ describe('pull request change classification', () => {
     expect(plan.mode).toBe('selective')
     expect(plan.lanes).toEqual(['policy', 'docs'])
     expect(plan.bundles).toEqual(['policy', 'static'])
+  })
+
+  it('runs the PR workflow contract without selecting desktop or full suites', () => {
+    const plan = classifyChanges([
+      { path: 'scripts/ci/pr-gate-workflow.test.ts', status: 'modified' }
+    ])
+    expect(plan.mode).toBe('selective')
+    expect(plan.bundles).toEqual(['policy', 'static', 'unit'])
+    expect(plan.roots).toEqual(['ci_workflow_contract_test'])
+  })
+
+  it.each(['deleted', 'renamed', 'type-changed'] as const)(
+    'retains the conservative fallback for a %s workflow contract',
+    (status) => {
+      const plan = classifyChanges([{ path: 'scripts/ci/pr-gate-workflow.test.ts', status }])
+      expect(plan.mode).toBe('full')
+    }
+  )
+
+  it.each([
+    '.github/workflows/pr-gate.yml',
+    'scripts/ci/classify-pr-changes.mjs',
+    'scripts/ci/module-impact.json',
+    'scripts/ci/module-impact/sample.json',
+    'scripts/ci/load-module-impact.mjs'
+  ])('does not let a workflow test hide the changed CI input %s', (path) => {
+    const plan = classifyChanges([
+      { path: 'scripts/ci/pr-gate-workflow.test.ts', status: 'modified' },
+      { path, status: 'modified' }
+    ])
+    expect(plan.mode).toBe('full')
+    expect(plan.roots).toContain('global_gate_input')
   })
 
   it.each([
@@ -602,10 +750,12 @@ describe('pull request change classification', () => {
     expect(plan.lanes).not.toContain('e2e_workspace_windows')
   })
 
-  it('adds Windows GUI consumers only for a Windows-sensitive source change', () => {
-    const plan = classifyChanges([
-      { path: 'src/main/notebook/windows-shell.ts', status: 'modified' }
-    ])
+  it.each([
+    'src/main/notebook/windows-shell.ts',
+    'src/shared/renderer-contract-catalog.ts',
+    'src/shared/renderer-contracts/settings-preferences.ts'
+  ])('adds Windows GUI consumers for Windows-sensitive source %s', (path) => {
+    const plan = classifyChanges([{ path, status: 'modified' }])
 
     expect(plan.lanes).toEqual(
       expect.arrayContaining([

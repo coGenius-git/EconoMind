@@ -15,7 +15,12 @@ import type {
 import type { PersistedChatSession } from '../../shared/session-persistence'
 import { REVIEWER_IPC } from '../../shared/reviewer'
 import { createLogger } from '../logger'
-import { runReview } from './orchestrator'
+import type { runReview as RunReview } from './orchestrator'
+import {
+  resolveCorrectionResume,
+  isCorrectionResumeScopeCurrent,
+  type CorrectionResume
+} from './correction-resume'
 import { flagStaleReviews } from './stale-reviews'
 import { ReviewRepository } from './repository'
 import type { ReviewerAcpRuntime } from './acp-runtime'
@@ -39,6 +44,8 @@ import type { ReviewerPagedContentResolver } from './host-sdk'
 import type { ArtifactProvenanceRepository } from '../artifacts/provenance-repository'
 
 const log = createLogger('reviewer:ipc')
+// Share first-use module loading across concurrent review commands; allow retry on load failure.
+let reviewerExecutor: Promise<typeof RunReview> | undefined
 
 // Sends a review update event to every open renderer window.
 const broadcastReviewUpdate = (event: ReviewUpdateEvent): void => {
@@ -84,6 +91,35 @@ const createDefaultReviewRepository = (
   return new ReviewRepository(() => getProjectDbClient(storageRoot), { snapshotStorageRoot })
 }
 
+// The read-only slice of session persistence that reviewer depends on. Deliberately narrower than
+// SessionRepository: reviewer must not reach mutation or scan-diagnostics APIs.
+type ReviewerSessionReader = Readonly<{
+  loadSession: (projectId: string, sessionId: string) => Promise<PersistedChatSession | undefined>
+  findSessionById: (sessionId: string) => Promise<PersistedChatSession | undefined>
+}>
+
+// Standalone fallback used when no reader is injected. Every read pins `mode: 'read-only'`, which
+// is the only value that disables quarantine: `readSessionFile` treats `undefined` as "quarantine
+// allowed" (`options.quarantineInvalidFiles !== false`), so omitting the mode would let a reviewer
+// read rename a corrupt live session file.
+const createFallbackSessionReader = (storageRoot: string): ReviewerSessionReader => {
+  const repository = new SessionRepository(storageRoot)
+  return {
+    loadSession: async (projectId, sessionId) => {
+      const loaded = await repository.loadSessionWithDiagnostics(projectId, sessionId, {
+        mode: 'read-only'
+      })
+      return loaded.status === 'found' ? loaded.session : undefined
+    },
+    findSessionById: async (sessionId) => {
+      const { sessions } = await repository
+        .loadAllWithDiagnostics({ mode: 'read-only' })
+        .then((scan) => scan.result)
+      return sessions.find((candidate) => candidate.id === sessionId)
+    }
+  }
+}
+
 type ReviewerIpcOptions = {
   // The ACP runtime used to spawn reviewer sessions.
   acpRuntime: ReviewerAcpRuntime
@@ -125,11 +161,19 @@ type ReviewerIpcOptions = {
     >
   }>
   projectRuntime?: Pick<ReviewerProjectRuntimeOwner, 'admit'>
+  admitSessionWork?: (projectId: string, sessionId: string) => () => void
   withProjectAvailable?: <Result>(
     projectId: string,
     operation: () => Promise<Result>
   ) => Promise<Result>
   resolveSessionAgentTarget?: SessionAgentTargetResolver
+  // Read-only session access. Reviewer never owns session files: it reads transcripts to detect
+  // stale verdicts and to refresh the fix loop after each correction turn. The composition root
+  // injects the already-composed session-persistence owner so reviewer reads share that owner's
+  // scheduler and projection. Without it this module would construct a second SessionRepository
+  // over the same tree, whose corrupt-file recovery path (`readSessionFile` quarantines unless
+  // `quarantineInvalidFiles === false`) would rename live files outside the coordinator.
+  sessionReader?: ReviewerSessionReader
   saveSessionAgentConfiguration?: (
     session: PersistedChatSession,
     configuration: SessionAgentConfiguration
@@ -138,6 +182,7 @@ type ReviewerIpcOptions = {
 }
 
 type ReviewerCommandOwner = Readonly<{
+  onSessionUpdated: (session: PersistedChatSession) => Promise<void>
   run: (request: ReviewRunRequest) => Promise<ReviewRunResult>
   triggerReview: (request: ReviewRunRequest) => Promise<ReviewRunResult>
   getForSession: (request: ReviewSessionRequest) => Promise<ReviewWithChecks[]>
@@ -167,6 +212,7 @@ const createInFlightReviewStart = (): InFlightReviewStart => {
 // Owns reviewer arbitration and fix-loop cancellation independently from any command transport.
 // The triggerReview alias preserves the existing direct-call result returned by IPC registration.
 const createReviewerCommandOwner = (options: ReviewerIpcOptions): ReviewerCommandOwner => {
+  const reviewSettlements = new Map<string, Set<Promise<void>>>()
   const storageRoot = options.storageRoot ?? resolveConfigRoot()
   const dataRoot = options.dataRoot ?? resolveDataRoot()
   const artifactProvenanceRepository = options.artifactProvenanceRepository
@@ -191,7 +237,11 @@ const createReviewerCommandOwner = (options: ReviewerIpcOptions): ReviewerComman
     return attempt
   }
   void ensureRecovery()
-  const sessionRepository = new SessionRepository(storageRoot)
+  // Prefer the injected reader (production wires the composed session-persistence owner). The
+  // fallback keeps standalone/test construction working, and pins `mode: 'read-only'` so even that
+  // path cannot quarantine — reviewer is never the owner that repairs a corrupt session file.
+  const sessionReader: ReviewerSessionReader =
+    options.sessionReader ?? createFallbackSessionReader(storageRoot)
   const resolveArtifactVersion: ArtifactVersionContentResolver | undefined =
     options.managedFileVersions
       ? async (request) => {
@@ -268,7 +318,7 @@ const createReviewerCommandOwner = (options: ReviewerIpcOptions): ReviewerComman
     )
     let session: PersistedChatSession | undefined
     try {
-      session = await sessionRepository.loadSession(request.projectId, request.appSessionId)
+      session = await sessionReader.loadSession(request.projectId, request.appSessionId)
     } catch {
       return reviews.map((review) =>
         review.lifecycle === 'complete' ? { ...review, verificationUnavailable: true } : review
@@ -305,7 +355,8 @@ const createReviewerCommandOwner = (options: ReviewerIpcOptions): ReviewerComman
   // of us fabricating a non-retriable error review.
   const triggerAdmittedReview = async (
     request: ReviewRunRequest,
-    projectAdmission: ReviewerProjectAdmission
+    projectAdmission: ReviewerProjectAdmission,
+    correctionResume?: CorrectionResume
   ): Promise<ReviewRunResult> => {
     const {
       sessionId,
@@ -353,7 +404,7 @@ const createReviewerCommandOwner = (options: ReviewerIpcOptions): ReviewerComman
     // store check could only approximate (that check races across processes). If any review already
     // exists for this turn, an auto request is a duplicate → refuse. Manual re-runs (Request review,
     // stale/error Re-run) set origin='manual' and skip this so the user can force a fresh review.
-    if (request.origin === 'auto') {
+    if (request.origin === 'auto' && !correctionResume) {
       try {
         const existing = await reviewRepository.getReviewsForProjectSession(projectId, sessionId)
         if (existing.some((review) => review.turnMessageId === turnMessageId)) {
@@ -377,9 +428,8 @@ const createReviewerCommandOwner = (options: ReviewerIpcOptions): ReviewerComman
     // Direct, repeatable loader used both for the start gate and every fix-loop refresh. The previous
     // closure returned the `session` variable below forever, so a correction turn could never appear.
     const loadCurrentSession = async (): Promise<PersistedChatSession | undefined> => {
-      if (projectId) return sessionRepository.loadSession(projectId, sessionId)
-      const { sessions } = await sessionRepository.loadAll()
-      return sessions.find((candidate) => candidate.id === sessionId)
+      if (projectId) return sessionReader.loadSession(projectId, sessionId)
+      return sessionReader.findSessionById(sessionId)
     }
 
     let session: PersistedChatSession | undefined
@@ -409,6 +459,11 @@ const createReviewerCommandOwner = (options: ReviewerIpcOptions): ReviewerComman
       return finishBeforeBackground({ started: false, reason: 'not-found' })
     }
 
+    if (session.packageOrigin) {
+      log.info('review refused: imported research history is read-only', { sessionId })
+      return finishBeforeBackground({ started: false, reason: 'run-failed' })
+    }
+
     let agentTarget
     try {
       agentTarget = await options.resolveSessionAgentTarget?.(session)
@@ -431,7 +486,45 @@ const createReviewerCommandOwner = (options: ReviewerIpcOptions): ReviewerComman
       return finishBeforeBackground({ started: false, reason: 'run-failed' })
     }
 
+    if (correctionResume) {
+      try {
+        const current = resolveCorrectionResume(
+          session,
+          await reviewRepository.getReviewsForProjectSession(projectId, sessionId)
+        )
+        if (
+          !current ||
+          current.resumeCorrection.turnMessageId !== correctionResume.resumeCorrection.turnMessageId
+        ) {
+          return finishBeforeBackground({ started: false, reason: 'already-reviewed' })
+        }
+        if (!(await isCorrectionResumeScopeCurrent(current, dataRoot, resolveArtifactVersion))) {
+          return finishBeforeBackground({ started: false, reason: 'run-failed' })
+        }
+        correctionResume = current
+      } catch (error) {
+        log.warn('correction resume scope validation failed', {
+          sessionId,
+          error: toErrorMessage(error)
+        })
+        return finishBeforeBackground({ started: false, reason: 'load-failed' })
+      }
+    }
+
     log.info('review triggered', { sessionId, turnMessageId })
+
+    let runReview: typeof RunReview
+    try {
+      runReview = await (reviewerExecutor ??= import('./orchestrator')
+        .then((module) => module.runReview)
+        .catch((error) => {
+          reviewerExecutor = undefined
+          throw error
+        }))
+    } catch (error) {
+      log.error('review start failed: could not load executor', { error: toErrorMessage(error) })
+      return finishBeforeBackground({ started: false, reason: 'run-failed' })
+    }
 
     let modelAdmission: Awaited<
       ReturnType<NonNullable<ReviewerIpcOptions['modelRuntime']>['admit']>
@@ -480,10 +573,18 @@ const createReviewerCommandOwner = (options: ReviewerIpcOptions): ReviewerComman
         activeReviewAbortControllers.get(effectiveMainSessionKey) ?? new Set<() => void>()
       activeControllers.add(projectAdmission.abort)
       activeReviewAbortControllers.set(effectiveMainSessionKey, activeControllers)
+      let settleReview!: () => void
+      const settlement = new Promise<void>((resolve) => {
+        settleReview = resolve
+      })
+      const settlements = reviewSettlements.get(effectiveMainSessionKey) ?? new Set<Promise<void>>()
+      settlements.add(settlement)
+      reviewSettlements.set(effectiveMainSessionKey, settlements)
       let releaseFixLoop: (() => void) | undefined
       let fixLoopBroadcastStarted = false
 
       void runReview({
+        correctionResume,
         sessionId,
         turnMessageId,
         scopeTurnMessageId,
@@ -613,6 +714,9 @@ const createReviewerCommandOwner = (options: ReviewerIpcOptions): ReviewerComman
               })
             })
             projectAdmission.release()
+            settlements.delete(settlement)
+            if (settlements.size === 0) reviewSettlements.delete(effectiveMainSessionKey)
+            settleReview()
           }
         })
     }
@@ -622,27 +726,94 @@ const createReviewerCommandOwner = (options: ReviewerIpcOptions): ReviewerComman
     return await inFlightStart.promise
   }
 
-  const triggerReview = (request: ReviewRunRequest): Promise<ReviewRunResult> => {
+  const triggerReview = (
+    request: ReviewRunRequest,
+    correctionResume?: CorrectionResume
+  ): Promise<ReviewRunResult> => {
     const admitReview = (): Promise<ReviewRunResult> => {
       let projectAdmission: ReviewerProjectAdmission
+      const releases: (() => void)[] = []
       try {
+        for (const sessionId of new Set(
+          [request.sessionId, request.mainSessionId].filter((id): id is string => !!id)
+        )) {
+          const release = options.admitSessionWork?.(request.projectId, sessionId)
+          if (release) releases.push(release)
+        }
         // Admission is acquired synchronously before session/repository/model work begins. Once
         // Project deletion closes it, no new Reviewer operation can slip into the quiescence snapshot.
-        projectAdmission = projectRuntime.admit(request.projectId)
+        const admitted = projectRuntime.admit(request.projectId)
+        projectAdmission = {
+          ...admitted,
+          release: () => {
+            admitted.release()
+            releases.forEach((release) => release())
+          }
+        }
       } catch (error) {
+        releases.forEach((release) => release())
         return Promise.reject(error)
       }
-      return triggerAdmittedReview(request, projectAdmission).catch((error: unknown) => {
-        projectAdmission.release()
-        throw error
-      })
+      return triggerAdmittedReview(request, projectAdmission, correctionResume).catch(
+        (error: unknown) => {
+          projectAdmission.release()
+          throw error
+        }
+      )
     }
     return options.withProjectAvailable
       ? options.withProjectAvailable(request.projectId, admitReview)
       : admitReview()
   }
 
-  return { run: triggerReview, triggerReview, getForSession, abort, abortFixLoop }
+  const pendingCompletions = new Set<string>()
+  const onSessionUpdated = async (hint: PersistedChatSession): Promise<void> => {
+    if (
+      !hint.runtimeTranscriptLastRun ||
+      hint.activeRun ||
+      hint.resumeRecovery ||
+      hint.autoReviewEnabled !== true
+    )
+      return
+    const key = `${hint.projectId}\0${hint.id}`
+    if (pendingCompletions.has(key)) return
+    pendingCompletions.add(key)
+    try {
+      // Normal completion remains owned by its running loop. Stop/Resume may finish before the
+      // aborted owner releases; never let its finally block unlock or erase the new owner.
+      await Promise.all(reviewSettlements.get(key) ?? [])
+      const session = await sessionReader.loadSession(hint.projectId, hint.id)
+      if (!session) return
+      const reviews = await reviewRepository.getReviewsForProjectSession(hint.projectId, hint.id)
+      const resume = resolveCorrectionResume(session, reviews)
+      if (!resume) return
+      await triggerReview(
+        {
+          projectId: session.projectId,
+          sessionId: session.id,
+          mainSessionId: session.id,
+          turnMessageId: resume.sourceReview.turnMessageId,
+          origin: 'auto'
+        },
+        resume
+      )
+    } catch (error) {
+      log.error('correction resume assessment failed to start', {
+        sessionId: hint.id,
+        error: toErrorMessage(error)
+      })
+    } finally {
+      pendingCompletions.delete(key)
+    }
+  }
+  return {
+    run: (request) => triggerReview(request),
+    triggerReview: (request) => triggerReview(request),
+    onSessionUpdated,
+    getForSession,
+    abort,
+    abortFixLoop
+  }
 }
 
 // Registers the legacy Electron adapter against an injectable owner. A future Host command

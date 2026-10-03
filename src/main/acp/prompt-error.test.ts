@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { describePromptError, isProviderPromptError } from './prompt-error'
+import {
+  describePromptError,
+  isProviderPromptError,
+  isOpenCodeSessionServiceFailure
+} from './prompt-error'
 
 // Builds an ACP RequestError-shaped value: an Error carrying the JSON-RPC code + data the agent attaches.
 const agentError = (
@@ -108,6 +112,23 @@ describe('describePromptError', () => {
 })
 
 describe('isProviderPromptError', () => {
+  it.each([
+    [-32603, 'serverOverloaded', true],
+    [-32002, 'serverOverloaded', false],
+    [-32603, 'internalServerError', false],
+    [-32603, undefined, false]
+  ] as const)('classifies Codex code %s with detail %s structurally', (code, detail, expected) => {
+    const error = Object.assign(
+      new Error('Selected model is at capacity. Please try a different model.'),
+      {
+        code,
+        data: { codexErrorInfo: detail },
+        name: 'RequestError'
+      }
+    )
+    expect(isProviderPromptError(error)).toBe(expected)
+  })
+
   it('flags an upstream APIError (auth/rate/quota/5xx all share this tag)', () => {
     expect(isProviderPromptError(agentError('Invalid API key'))).toBe(true)
     expect(isProviderPromptError(agentError('429 Too Many Requests'))).toBe(true)
@@ -212,5 +233,21 @@ describe('isProviderPromptError', () => {
     // An app-layer throw with no agent tag.
     expect(isProviderPromptError(new Error('Agent session could not be created.'))).toBe(false)
     expect(isProviderPromptError('boom')).toBe(false)
+  })
+})
+
+describe('OpenCode session failure classification', () => {
+  it('keeps context overflow on the compaction recovery path', () => {
+    expect(
+      isOpenCodeSessionServiceFailure(
+        agentError('context full', {
+          service: 'session',
+          errorName: 'ContextOverflowError'
+        })
+      )
+    ).toBe(false)
+    expect(
+      isOpenCodeSessionServiceFailure(agentError('session missing', { service: 'session' }))
+    ).toBe(true)
   })
 })

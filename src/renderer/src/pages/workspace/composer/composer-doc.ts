@@ -5,6 +5,7 @@
 import { MAX_COMPOSER_ATTACHMENTS } from '../../../../../shared/uploads'
 
 import { getExtensionPreservingFileNameParts } from '../extension-preserving-file-name'
+import { splitReplayReferenceText } from '../replay-reference-text'
 
 import type { FileReference } from '../../../../../shared/artifacts'
 import {
@@ -241,19 +242,15 @@ export const docToArtifactRefs = (doc: ComposerDoc): FileReference[] => {
   return refs
 }
 
-// `@`-mentioned immutable PDF Versions become send-time Reading candidates. Main verifies the
-// actual page count; this renderer pass only removes obvious non-PDF and compatibility references.
+// Explicit PDF file mentions become send-time Reading candidates. Bibliographic Literature
+// mentions remain message references; Library tools can read their PDFs without a Session binding.
+// Main verifies the actual page count of the explicit file candidates.
 export const docToPdfContextSources = (doc: ComposerDoc): SessionPdfContextSource[] => {
   const sources: SessionPdfContextSource[] = []
   const seen = new Set<string>()
   for (const node of doc.nodes) {
     let source: SessionPdfContextSource | undefined
-    if (node.type === 'literature' && node.attachmentVersionId) {
-      source = {
-        sourceKind: 'literature-attachment-version',
-        sourceVersionId: node.attachmentVersionId
-      }
-    } else if (
+    if (
       node.type === 'artifact' &&
       node.source !== 'linked-folder' &&
       node.versionId &&
@@ -314,6 +311,32 @@ export const appendArtifactMention = (doc: ComposerDoc, reference: FileReference
       { type: 'artifact', ...reference }
     ]
   }
+}
+
+// Append a batch atomically: preserve existing snapshots and reject overflow without a partial add.
+export const appendLiteratureMentions = (
+  doc: ComposerDoc,
+  references: readonly LiteratureReference[]
+): ComposerDoc | undefined => {
+  const seen = new Set(
+    doc.nodes.flatMap((node) => (node.type === 'literature' ? [node.itemId] : []))
+  )
+  const additions = references.filter((reference) => {
+    if (seen.has(reference.itemId)) return false
+    seen.add(reference.itemId)
+    return true
+  })
+  if (additions.length === 0) return doc
+  if (docArtifactCount(doc) + additions.length > MAX_COMPOSER_ARTIFACT_MENTIONS) return undefined
+  const nodes = [...doc.nodes]
+  for (const reference of additions) {
+    const previous = nodes.at(-1)
+    if (previous && (previous.type !== 'text' || !/\s$/.test(previous.text))) {
+      nodes.push({ type: 'text', text: ' ' })
+    }
+    nodes.push(reference)
+  }
+  return { nodes }
 }
 
 // Hydrate a plain-text draft into a single text node; empty text yields the empty doc.
@@ -409,25 +432,93 @@ const artifactNodeFromEl = (el: HTMLElement): ComposerArtifactNode | null => {
   }
 }
 
+const CONTENTEDITABLE_BLOCK_TAGS = new Set([
+  'ADDRESS',
+  'BLOCKQUOTE',
+  'DIV',
+  'H1',
+  'H2',
+  'H3',
+  'H4',
+  'H5',
+  'H6',
+  'LI',
+  'P',
+  'PRE'
+])
+
 // Read a contenteditable root into a doc, mapping chip spans to skill/artifact nodes and collapsing
-// runs of adjacent text into a single text node.
-export const domToDoc = (root: HTMLElement): ComposerDoc => {
+// runs of adjacent text into a single text node. Browsers may represent line breaks as nested divs
+// instead of text containing `\n` (including when Playwright fills a contenteditable), so unknown
+// elements are traversed and block boundaries are restored as newlines.
+const readDom = (
+  root: HTMLElement,
+  selection?: { container: Node; offset: number }
+): { doc: ComposerDoc; caret?: ComposerCaretPosition } => {
   const nodes: ComposerNode[] = []
-  for (const child of Array.from(root.childNodes)) {
+  let caret: ComposerCaretPosition | undefined
+  const appendText = (text: string): void => {
+    if (text === '') return
+    const last = nodes[nodes.length - 1]
+    if (last && last.type === 'text') last.text += text
+    else nodes.push({ type: 'text', text })
+  }
+  const captureCaret = (): void => {
+    if (caret) return
+    const last = nodes.at(-1)
+    caret =
+      last?.type === 'text'
+        ? { nodeIndex: nodes.length - 1, offset: last.text.length }
+        : { nodeIndex: nodes.length, offset: 0 }
+  }
+  const visitChildren = (parent: Node): void => {
+    let previousWasBlock = false
+    const children = Array.from(parent.childNodes)
+    for (let index = 0; index < children.length; index += 1) {
+      const child = children[index]
+      if (selection?.container === parent && selection.offset === index) captureCaret()
+      const isSoleBlockPlaceholder =
+        child.nodeType === Node.ELEMENT_NODE &&
+        (child as HTMLElement).tagName === 'BR' &&
+        parent.nodeType === Node.ELEMENT_NODE &&
+        CONTENTEDITABLE_BLOCK_TAGS.has((parent as HTMLElement).tagName) &&
+        parent.childNodes.length === 1
+      if (isSoleBlockPlaceholder) continue
+      const isBlock =
+        child.nodeType === Node.ELEMENT_NODE &&
+        CONTENTEDITABLE_BLOCK_TAGS.has((child as HTMLElement).tagName)
+      if ((isBlock || previousWasBlock) && (nodes.length > 0 || previousWasBlock)) appendText('\n')
+      visit(child)
+      previousWasBlock = isBlock
+    }
+    if (selection?.container === parent && selection.offset === children.length) captureCaret()
+  }
+  const visit = (child: Node): void => {
     if (child.nodeType === Node.TEXT_NODE) {
       const rawText = child.textContent ?? ''
       const text = isPastedTextCaretHost(child)
         ? rawText.replace(PASTED_TEXT_CARET_MARKER, '')
         : rawText
-      if (text === '') continue
-      const last = nodes[nodes.length - 1]
-      // Merge into a preceding text node so adjacent text collapses.
-      if (last && last.type === 'text') last.text += text
-      else nodes.push({ type: 'text', text })
-      continue
+      if (selection?.container === child) {
+        appendText(text.slice(0, selection.offset))
+        captureCaret()
+        appendText(text.slice(selection.offset))
+      } else {
+        appendText(text)
+      }
+      return
     }
     if (child.nodeType === Node.ELEMENT_NODE) {
       const el = child as HTMLElement
+      const replayText = el.getAttribute('data-replay-reference-text')
+      if (replayText !== null) {
+        appendText(replayText)
+        return
+      }
+      if (el.tagName === 'BR') {
+        appendText('\n')
+        return
+      }
       const mentionType = el.getAttribute('data-mention-type')
       if (mentionType === SKILL_MENTION_TYPE) {
         const id = el.getAttribute('data-skill-id')
@@ -436,36 +527,53 @@ export const domToDoc = (root: HTMLElement): ComposerDoc => {
           const label = el.textContent ?? ''
           nodes.push({ type: 'skill', id, name: label.replace(/^\//, '') })
         }
-        continue
+        return
       }
       if (mentionType === ARTIFACT_MENTION_TYPE) {
         const node = artifactNodeFromEl(el)
         if (node) nodes.push(node)
-        continue
+        return
       }
       if (mentionType === LITERATURE_MENTION_TYPE) {
         const node = literatureByChip.get(el)
         if (node) nodes.push(node)
-        continue
+        return
       }
       if (mentionType === LITERATURE_SCOPE_MENTION_TYPE) {
         const node = literatureScopeByChip.get(el)
         if (node) nodes.push(node)
-        continue
+        return
       }
       if (mentionType === SESSION_MENTION_TYPE) {
         const sessionId = el.getAttribute('data-session-id')
         const title = el.getAttribute('data-session-title')
         if (sessionId && title) nodes.push({ type: 'session', sessionId, title })
-        continue
+        return
       }
       if (el.getAttribute('data-composer-node-type') === PASTED_TEXT_NODE_TYPE) {
         const node = pastedTextByAnchor.get(el)
         if (node) nodes.push({ ...node })
+        return
       }
+      visitChildren(el)
     }
   }
-  return nodes.length === 0 ? emptyDoc : { nodes }
+  visitChildren(root)
+  return { doc: nodes.length === 0 ? emptyDoc : { nodes }, caret }
+}
+
+export const domToDoc = (root: HTMLElement): ComposerDoc => readDom(root).doc
+
+export const domToDocWithCaret = (
+  root: HTMLElement,
+  container: Node,
+  offset: number
+): { doc: ComposerDoc; caret: ComposerCaretPosition } => {
+  const result = readDom(root, { container, offset })
+  return {
+    doc: result.doc,
+    caret: result.caret ?? { nodeIndex: result.doc.nodes.length, offset: 0 }
+  }
 }
 
 // Shared chip base styling; a capped width with truncation keeps a long name from stretching the
@@ -631,8 +739,19 @@ export const syncPastedTextAnchors = (root: HTMLElement, doc: ComposerDoc): void
 export const applyDocToDom = (root: HTMLElement, doc: ComposerDoc): void => {
   root.textContent = ''
   for (const node of doc.nodes) {
-    if (node.type === 'text') root.appendChild(document.createTextNode(node.text))
-    else if (node.type === 'skill') root.appendChild(createSkillChip(node))
+    if (node.type === 'text') {
+      for (const part of splitReplayReferenceText(node.text)) {
+        if (part.kind === 'text') root.appendChild(document.createTextNode(part.text))
+        else {
+          const chip = document.createElement('span')
+          chip.setAttribute('contenteditable', 'false')
+          chip.setAttribute('data-replay-reference-text', part.text)
+          chip.textContent = part.label
+          chip.className = 'rounded-md bg-accent px-1.5 text-accent-foreground'
+          root.appendChild(chip)
+        }
+      }
+    } else if (node.type === 'skill') root.appendChild(createSkillChip(node))
     else if (node.type === 'artifact') root.appendChild(createArtifactChip(node))
     else if (node.type === 'literature') root.appendChild(createLiteratureChip(node))
     else if (node.type === 'literature-scope') root.appendChild(createLiteratureScopeChip(node))

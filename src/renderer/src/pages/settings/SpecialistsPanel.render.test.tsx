@@ -10,7 +10,7 @@ import { i18next } from '@/i18n'
 import { useProjectStore } from '@/stores/project-store'
 import { useSettingsStore } from '@/stores/settings-store'
 import { useSpecialistStore } from '@/stores/specialist-store'
-import { resetMarketplaceStoreForTests, useMarketplaceStore } from '@/stores/marketplace-store'
+
 import { createInitialTagState, useTagStore } from '@/stores/tag-store'
 import type { SpecialistListItem } from '../../../../shared/specialist'
 import type { SpecialistExportPreview } from '../../../../shared/specialist-package'
@@ -107,7 +107,6 @@ const specialistItems: SpecialistListItem[] = [
 ]
 
 beforeEach(() => {
-  resetMarketplaceStoreForTests()
   window.api = {
     specialist: {
       selectPackage: vi.fn().mockResolvedValue({ cancelled: true }),
@@ -194,9 +193,7 @@ describe('SpecialistsPanel', () => {
       })
 
       expect(document.body.textContent).toContain('No Specialists installed yet.')
-      expect(document.body.textContent).toContain(
-        'Browse the Marketplace or create a Specialist to get started.'
-      )
+      expect(document.body.textContent).toContain('New specialist')
       expect(document.body.querySelector('[data-slot="specialists-toolbar"]')).toBeNull()
       expect(useSpecialistStore.getState().isLoaded).toBe(true)
     } finally {
@@ -864,9 +861,7 @@ describe('SpecialistsPanel', () => {
 
     await act(async () => finishSave?.({ saved: true }))
     expect(document.body.textContent).toContain('Template saved')
-    expect(document.body.textContent).toContain(
-      'openscience-specialist-template.zip is ready for contributor editing.'
-    )
+    expect(document.body.textContent).toContain('The Specialist template ZIP is ready for editing.')
   })
 
   it('shows a path-free error and permits retry when saving fails', async () => {
@@ -1011,6 +1006,7 @@ describe('SpecialistsPanel', () => {
 
     // After the install, the Skill catalog must be refreshed so a Skill bundled by the package is
     // recognized as available in the editor instead of showing "Missing · unavailable".
+    useSettingsStore.setState({ skillsLoaded: true, skills: [] })
     window.api.settings.listSkills = vi.fn().mockResolvedValue([
       {
         id: 'analysis-tools',
@@ -1018,12 +1014,12 @@ describe('SpecialistsPanel', () => {
         description: 'Runs analyses.',
         source: 'personal',
         updatedAt: '2026-08-04T00:00:00.000Z',
-        enabled: true
+        enabled: false
       }
     ])
     await act(async () => {
       Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-        .find((button) => button.textContent === 'Next')
+        .find((button) => button.textContent === 'Import and configure')
         ?.click()
     })
     expect(installPackage).toHaveBeenCalledOnce()
@@ -1035,7 +1031,7 @@ describe('SpecialistsPanel', () => {
         description: 'Runs analyses.',
         source: 'personal',
         updatedAt: '2026-08-04T00:00:00.000Z',
-        enabled: true
+        enabled: false
       }
     ])
     expect(onNavigate).toHaveBeenCalledWith({ kind: 'edit', id: 'research-synth' })
@@ -1099,7 +1095,7 @@ describe('SpecialistsPanel', () => {
       })
       await act(async () => {
         Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-          .find((button) => button.textContent === 'Next')
+          .find((button) => button.textContent === 'Import and configure')
           ?.click()
       })
 
@@ -1278,77 +1274,8 @@ describe('SpecialistsPanel', () => {
     expect(onNavigate).toHaveBeenLastCalledWith({ kind: 'builtin', id: 'builtin-curator' })
   })
 
-  it('distinguishes a Marketplace install from a manually imported ZIP', async () => {
-    const installed: SpecialistListItem = {
-      ...(specialistItems[0] as Extract<SpecialistListItem, { kind: 'custom' }>),
-      kind: 'custom',
-      id: 'marketplace-specialist',
-      origin: 'marketplace',
-      packageVersion: '1.0.1',
-      modifiedSinceImport: false,
-      marketplaceProvenance: {
-        sourceId: 'official',
-        publisher: 'EconoMind',
-        version: '1.0.1'
-      },
-      importBaseline: {
-        importedAt: '2026-08-18T10:00:00.000Z',
-        archiveDigest: 'c'.repeat(64),
-        contentDigest: 'd'.repeat(64)
-      }
-    }
-    useSpecialistStore.setState({ items: [installed, { kind: 'reviewer', id: 'reviewer' }] })
-    useTagStore.setState({
-      assignments: [
-        ...useTagStore.getState().assignments,
-        {
-          tagId: 'tag-research',
-          resourceType: 'catalog.specialist',
-          resourceId: installed.id,
-          createdAt: 1
-        }
-      ]
-    })
-    ;(window.api.specialist.list as ReturnType<typeof vi.fn>).mockResolvedValue({
-      items: [installed, { kind: 'reviewer', id: 'reviewer' }],
-      integrity: { status: 'ok' }
-    })
-
-    await act(async () => {
-      root.render(<SpecialistsPanel view={{ kind: 'list' }} onNavigate={vi.fn()} />)
-    })
-
-    const marketplaceGroup = Array.from(document.body.querySelectorAll('div')).find((element) =>
-      element.firstElementChild?.textContent?.includes('Marketplace')
-    )
-    expect(marketplaceGroup?.textContent).toContain('RNA Reviewer')
-    expect(document.body.textContent).toContain('Marketplace')
-    expect(document.body.textContent).toContain('Publisher: EconoMind')
-    expect(document.body.textContent).toContain('Version 1.0.1')
-    expect(document.body.textContent).not.toContain('Unchanged locally')
-    expect(document.body.textContent).not.toContain('Imported ZIP')
-    const metadata = document.body.querySelector(
-      '[data-specialist-metadata-group="marketplace-specialist"]'
-    )
-    expect(metadata?.textContent).toContain('Marketplace')
-    expect(metadata?.querySelector('[title="Research"]')).not.toBeNull()
-  })
-
   it('keeps source groups visible as static hierarchy instead of duplicate disclosure filters', async () => {
-    const marketplace: SpecialistListItem = {
-      ...(specialistItems[0] as Extract<SpecialistListItem, { kind: 'custom' }>),
-      id: 'marketplace-specialist',
-      displayName: 'Marketplace Specialist',
-      origin: 'marketplace',
-      packageVersion: '1.0.0',
-      modifiedSinceImport: false,
-      marketplaceProvenance: {
-        sourceId: 'official',
-        publisher: 'EconoMind',
-        version: '1.0.0'
-      }
-    }
-    const items = [...specialistItems, marketplace]
+    const items = specialistItems
     useSpecialistStore.setState({ items })
     ;(window.api.specialist.list as ReturnType<typeof vi.fn>).mockResolvedValue({
       items,
@@ -1360,7 +1287,6 @@ describe('SpecialistsPanel', () => {
     })
 
     for (const [source, rowName] of [
-      ['marketplace', 'Marketplace Specialist'],
       ['custom', 'RNA Reviewer'],
       ['builtin', 'Builtin Curator']
     ] as const) {
@@ -1428,7 +1354,7 @@ describe('SpecialistsPanel', () => {
     const labels = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).map(
       (option) => option.textContent ?? ''
     )
-    expect(labels).toEqual(['All', 'Custom', 'Marketplace', 'Built-in'])
+    expect(labels).toEqual(['All', 'Custom', 'Built-in'])
   })
 
   it('omits the Tag filter when no installed Specialist has a Tag', async () => {
@@ -1439,53 +1365,6 @@ describe('SpecialistsPanel', () => {
     })
 
     expect(document.body.querySelector('[aria-label="Filter by Tag"]')).toBeNull()
-  })
-
-  it('separates Marketplace acquisition from creation and matches the Skill row action order', async () => {
-    const onNavigate = vi.fn()
-    await act(async () => {
-      root.render(<SpecialistsPanel view={{ kind: 'list' }} onNavigate={onNavigate} />)
-    })
-
-    const toolbar = document.body.querySelector('[data-slot="specialists-toolbar"]')
-    const search = toolbar?.querySelector('input[type="search"]')
-    const sourceFilter = toolbar?.querySelector('[aria-label="Filter specialists by category"]')
-    const tagFilter = toolbar?.querySelector('[aria-label="Filter by Tag"]')
-    expect(search).not.toBeNull()
-    expect(search?.parentElement?.parentElement).toBe(toolbar)
-    expect(sourceFilter?.parentElement).toBe(toolbar)
-    expect(tagFilter?.parentElement).toBe(toolbar)
-    expect(toolbar?.className).toContain('flex-wrap')
-    expect(search?.parentElement?.className).toContain('min-w-56')
-    expect(toolbar?.textContent).not.toContain('Add specialist')
-
-    const browseButton = Array.from(
-      document.body.querySelectorAll<HTMLButtonElement>('button')
-    ).find((button) => button.textContent?.trim() === 'Browse Marketplace')
-    const addButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
-      (button) => button.textContent?.includes('Add specialist')
-    )
-    expect(browseButton).not.toBeNull()
-    expect(addButton).not.toBeNull()
-    await act(async () => fireEvent.click(browseButton!))
-    expect(onNavigate).toHaveBeenCalledWith({ kind: 'marketplace' })
-
-    const toggle = document.body.querySelector<HTMLButtonElement>(
-      '[aria-label="Toggle RNA Reviewer"]'
-    )
-    const row = toggle?.closest('[data-slot="settings-list-row"]')
-    const trailingControlLabels = Array.from(
-      row?.querySelectorAll<HTMLButtonElement>('button') ?? []
-    )
-      .map((button) => button.getAttribute('aria-label'))
-      .filter((label) =>
-        ['Manage Tags', 'Actions for RNA Reviewer', 'Toggle RNA Reviewer'].includes(label ?? '')
-      )
-    expect(trailingControlLabels).toEqual([
-      'Manage Tags',
-      'Actions for RNA Reviewer',
-      'Toggle RNA Reviewer'
-    ])
   })
 
   it('shows a runnable builtin as a read-only row and opens its approved detail view', async () => {
@@ -1669,20 +1548,18 @@ describe('SpecialistsPanel', () => {
     expect(scroller!.className).toContain('[scrollbar-width:none]')
   })
 
-  it('rolls back a failed appearance update and retries it inline', async () => {
+  it('refreshes a conflicting appearance before an explicit retry', async () => {
     const current = specialistItems[0] as Extract<SpecialistListItem, { kind: 'custom' }>
-    const updated = { ...current, iconKey: 'atom', revision: 2 }
+    const refreshed = { ...current, iconKey: 'flask', revision: 2 }
+    const updated = { ...refreshed, iconKey: 'atom', revision: 3 }
     window.api.specialist.update = vi
       .fn()
       .mockRejectedValueOnce(new Error('revision conflict'))
       .mockResolvedValueOnce(updated)
-    window.api.specialist.list = vi
-      .fn()
-      .mockResolvedValueOnce({ items: specialistItems, integrity: { status: 'ok' } })
-      .mockResolvedValue({
-        items: [updated, ...specialistItems.slice(1)],
-        integrity: { status: 'ok' }
-      })
+    window.api.specialist.list = vi.fn().mockResolvedValue({
+      items: [refreshed, ...specialistItems.slice(1)],
+      integrity: { status: 'ok' }
+    })
 
     await act(async () => {
       root.render(<SpecialistsPanel view={{ kind: 'list' }} onNavigate={vi.fn()} />)
@@ -1698,8 +1575,11 @@ describe('SpecialistsPanel', () => {
       document.body.querySelector<HTMLButtonElement>('[aria-label="Atom"]')?.click()
     )
     await vi.waitFor(() =>
-      expect(document.body.textContent).toContain('Appearance wasn’t saved. Try again.')
+      expect(document.body.textContent).toContain(
+        'Appearance changed elsewhere. Review the current appearance before trying again.'
+      )
     )
+    expect(window.api.specialist.update).toHaveBeenCalledTimes(1)
     expect(
       document.body
         .querySelector('[aria-label="Change appearance for RNA Reviewer"]')
@@ -1714,7 +1594,7 @@ describe('SpecialistsPanel', () => {
     await vi.waitFor(() => expect(window.api.specialist.update).toHaveBeenCalledTimes(2))
     expect(window.api.specialist.update).toHaveBeenLastCalledWith({
       id: 'rna-reviewer',
-      revision: 1,
+      revision: 2,
       iconKey: 'atom'
     })
     expect(document.body.textContent).toContain('Saved')
@@ -1801,7 +1681,7 @@ describe('SpecialistsPanel', () => {
   // Concurrency and reload (Findings 1, 2, 3)
   // ---------------------------------------------------------------------------
 
-  it('F1: save payload carries the original revision even after a catalog-changed refreshes props', async () => {
+  it('F1: blocks stale saves and preserves input after a catalog-changed refreshes props', async () => {
     // rev 1 at mount
     const updateMock = vi.fn().mockResolvedValue(specialistItems[0])
     useSpecialistStore.setState({
@@ -1839,14 +1719,18 @@ describe('SpecialistsPanel', () => {
       })
     }
 
-    // Click Save — payload must still carry revision 1 (the pinned base revision).
+    // The pinned revision conflicts with the new catalog: do not submit or discard the draft.
     await act(async () => {
       Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
         .find((btn) => btn.textContent === 'Save changes')
         ?.click()
     })
 
-    expect(updateMock).toHaveBeenCalledWith(expect.objectContaining({ revision: 1 }))
+    expect(updateMock).not.toHaveBeenCalled()
+    expect(document.body.querySelector('[aria-label="Revision conflict"]')).not.toBeNull()
+    expect(document.body.querySelector<HTMLInputElement>('#sp-name')?.value).toBe(
+      'RNA Reviewer Edited'
+    )
   })
 
   it('F2: Reload actually replaces form content with the latest profile data', async () => {
@@ -2082,147 +1966,6 @@ describe('SpecialistsPanel', () => {
       'personal-exclusive',
       'standalone-tool'
     ])
-  })
-
-  it('shows a quiet Marketplace update action and tailored uninstall confirmation', async () => {
-    const managed = {
-      ...(specialistItems[0] as Extract<SpecialistListItem, { kind: 'custom' }>),
-      id: 'managed-specialist',
-      origin: 'marketplace' as const,
-      packageVersion: '1.0.0',
-      marketplaceProvenance: {
-        sourceId: 'official',
-        publisher: 'EconoMind',
-        version: '1.0.0'
-      }
-    }
-    const previewDelete = vi.fn().mockResolvedValue({
-      specialistId: managed.id,
-      specialistName: managed.name,
-      expectedRevision: managed.revision,
-      skills: []
-    })
-    useSpecialistStore.setState({
-      ...useSpecialistStore.getState(),
-      items: [managed, { kind: 'reviewer', id: 'reviewer' }],
-      previewDelete
-    })
-    ;(window.api.specialist.list as ReturnType<typeof vi.fn>).mockResolvedValue({
-      items: [managed, { kind: 'reviewer', id: 'reviewer' }],
-      integrity: { status: 'ok' }
-    })
-    useMarketplaceStore.setState({
-      snapshot: {
-        sources: [],
-        failures: [],
-        specialists: [
-          {
-            sourceId: 'official',
-            sourceName: 'EconoMind Marketplace',
-            sourceTrust: 'official',
-            id: managed.id,
-            displayName: managed.name,
-            summary: managed.description,
-            publisher: { id: 'open-science', name: 'EconoMind' },
-            version: '1.1.0',
-            installedVersion: '1.0.0',
-            updateAvailable: true
-          }
-        ]
-      }
-    })
-
-    await act(async () => {
-      root.render(<SpecialistsPanel view={{ kind: 'list' }} onNavigate={vi.fn()} />)
-    })
-
-    expect(document.body.textContent).toContain('Update available')
-    expect(document.body.textContent).toContain('Update')
-    const actions = document.body.querySelector<HTMLButtonElement>(
-      '[aria-label="Actions for RNA Reviewer"]'
-    )
-    openRadixMenu(actions)
-    await act(async () => undefined)
-    const uninstall = Array.from(
-      document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')
-    ).find((item) => item.textContent?.includes('Uninstall'))
-    expect(uninstall).not.toBeNull()
-    await act(async () => clickRadixMenuItem(uninstall!))
-
-    expect(previewDelete).toHaveBeenCalledWith(managed.id)
-    expect(document.body.textContent).toContain('Uninstall “RNA Reviewer”?')
-    expect(document.body.textContent).toContain(
-      'This removes the Marketplace Specialist from this device.'
-    )
-  })
-
-  it('disables unsupported Web package actions in Marketplace-installed Specialist details', async () => {
-    const managed = {
-      ...(specialistItems[0] as Extract<SpecialistListItem, { kind: 'custom' }>),
-      origin: 'marketplace' as const
-    }
-    installWebImportApi()
-    useSpecialistStore.setState({ items: [managed] })
-    ;(window.api.specialist.list as ReturnType<typeof vi.fn>).mockResolvedValue({
-      items: [managed],
-      integrity: { status: 'ok' }
-    })
-    await act(async () => {
-      root.render(<SpecialistsPanel view={{ kind: 'edit', id: managed.id }} onNavigate={vi.fn()} />)
-    })
-    for (const name of ['Create editable copy', 'Uninstall']) {
-      const button = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
-        (item) => item.textContent === name
-      )
-      expect(button).toBeDefined()
-      expect(button!.disabled).toBe(true)
-    }
-    expect(document.body.querySelector<HTMLButtonElement>('[role="switch"]')!.disabled).toBe(false)
-  })
-
-  it('marks a Marketplace Specialist whose source was removed and links source management', async () => {
-    const managed = {
-      ...(specialistItems[0] as Extract<SpecialistListItem, { kind: 'custom' }>),
-      id: 'managed-specialist',
-      origin: 'marketplace' as const,
-      packageVersion: '1.0.0',
-      marketplaceProvenance: {
-        sourceId: 'github-removed',
-        publisher: 'Example Publisher',
-        version: '1.0.0'
-      }
-    }
-    useSpecialistStore.setState({ items: [managed, { kind: 'reviewer', id: 'reviewer' }] })
-    ;(window.api.specialist.list as ReturnType<typeof vi.fn>).mockResolvedValue({
-      items: [managed, { kind: 'reviewer', id: 'reviewer' }],
-      integrity: { status: 'ok' }
-    })
-    useMarketplaceStore.setState({
-      snapshot: { sources: [], specialists: [], failures: [] }
-    })
-    const onNavigate = vi.fn()
-
-    await act(async () => {
-      root.render(<SpecialistsPanel view={{ kind: 'list' }} onNavigate={onNavigate} />)
-    })
-    expect(document.body.textContent).toContain('Source removed')
-
-    await act(async () => {
-      root.render(
-        <SpecialistsPanel view={{ kind: 'edit', id: managed.id }} onNavigate={onNavigate} />
-      )
-    })
-
-    expect(document.body.textContent).toContain('Marketplace source removed')
-    expect(document.body.textContent).toContain(
-      'This Specialist remains installed, but updates are unavailable until its Marketplace source is added again.'
-    )
-    const manageSources = Array.from(
-      document.body.querySelectorAll<HTMLButtonElement>('button')
-    ).find((button) => button.textContent === 'Manage Marketplace sources')
-    expect(manageSources).toBeDefined()
-    fireEvent.click(manageSources!)
-    expect(onNavigate).toHaveBeenCalledWith({ kind: 'marketplace-sources' })
   })
 })
 
@@ -2515,7 +2258,7 @@ describe('S04 explicit Specialist refresh controls', () => {
     }
     await click('Save changes')
     await click('Reload')
-    expect(window.api.specialist.list).toHaveBeenCalledOnce()
+    expect(window.api.specialist.list).toHaveBeenCalledTimes(2)
     expect(container.querySelector<HTMLInputElement>('#sp-description')!.value).toBe(
       'Fresh server description'
     )

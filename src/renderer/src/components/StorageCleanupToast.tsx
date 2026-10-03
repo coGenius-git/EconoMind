@@ -15,6 +15,7 @@ const StorageCleanupToast = (): React.JSX.Element | null => {
 
   return (
     <ActionToast
+      level="warning"
       title={t('Old data location needs cleanup')}
       detail={t(
         'Your data is using the new location, but some files remain in the old one. EconoMind will try again the next time it starts.'
@@ -26,7 +27,6 @@ const StorageCleanupToast = (): React.JSX.Element | null => {
         openSettingsToPanel('storage')
       }}
       onDismiss={() => setDismissed(true)}
-      className="top-32"
       testId="storage-cleanup-toast"
     />
   )

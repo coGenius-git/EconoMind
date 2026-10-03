@@ -32,11 +32,11 @@ const LITERATURE_LIBRARY_SEARCH_ABSTRACT_MAX_CHARACTERS = 1_200
 const LITERATURE_LIBRARY_SEARCH_ABSTRACT_MIN_CHARACTERS = 200
 const LITERATURE_LIBRARY_BATCH_ABSTRACT_LIMIT = 5
 const LITERATURE_LIBRARY_BATCH_ABSTRACT_MAX_CHARACTERS = 5_000
-const LITERATURE_LIBRARY_SCOPES = ['library', 'project', 'collection', 'items'] as const
+export const LITERATURE_LIBRARY_SCOPES = ['library', 'project', 'collection', 'items'] as const
 
 type LiteratureLibraryScope = (typeof LITERATURE_LIBRARY_SCOPES)[number]
 
-const literatureDiscoverySchema = z
+export const literatureDiscoverySchema = z
   .object({
     item: literatureItemInputSchema,
     source: literatureSourceInputSchema
@@ -661,7 +661,7 @@ const createLiteratureLibraryMcpServer = (
     {
       title: 'Read literature PDF evidence',
       description:
-        'Retrieve relevant passages with page numbers from one PDF attached to a Literature Library record. Use this only when the PDF could materially affect the answer, after finding the item with search_library. Each call reads one item on demand and reuses extraction and search data for the same immutable file version; it does not index the whole Library. Scope defaults to the trusted current Project.',
+        'Retrieve relevant passages with page numbers from one PDF attached to a Literature Library record. Use this only when the PDF could materially affect the answer, after finding the item with search_library. Each call reads one item on demand and reuses extraction and search data for the same immutable file version; it does not index the whole Library. Scope defaults to the trusted current Project. Returns prose, not verified table cells or images. Do not infer visual evidence from these passages. itemId is a Library record identifier, not a linked-PDF documentId for list_pdf_elements.',
       inputSchema: {
         itemId: z.string().trim().min(1).max(512),
         attachmentId: z.string().trim().min(1).max(512).optional(),
@@ -767,6 +767,9 @@ const createLiteratureLibraryMcpServer = (
       async ({ ref, candidate, pdfUrl }, { signal }) =>
         withDataRootWrite(async () => {
           signal.throwIfAborted()
+          if (Boolean(ref) === Boolean(candidate)) {
+            throw new Error('ACQUIRE_PDF_INPUT_REQUIRED: Pass exactly one of ref or candidate.')
+          }
           const candidates = await resolveSaveCandidates(
             { refs: ref ? [ref] : undefined, candidates: candidate ? [candidate] : undefined },
             handler,

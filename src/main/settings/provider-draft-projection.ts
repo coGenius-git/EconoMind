@@ -5,19 +5,21 @@ import {
   resolveCustomModelContextWindow,
   resolveVendorBaseUrl,
   resolveVendorModelApiEndpoints,
-  resolveVendorOpenAiBaseUrl
+  resolveVendorOpenAiBaseUrl,
+  resolveVendorResponsesBaseUrl
 } from '../../shared/provider-registry'
 import type { ResolvedProvider } from './provider-env'
 import { resolveCustomTokenLimits } from './provider-token-limits'
 
 export const resolveProviderDraft = (draft: ProviderDraft): ResolvedProvider => {
   if (draft.type === 'official' && isOfficialVendorId(draft.vendorId)) {
-    const draftModel = draft.model ?? defaultVendorModel(draft.vendorId)
+    const draftModel = draft.model ?? defaultVendorModel(draft.vendorId, draft.region)
     return {
       type: 'custom',
       vendorId: draft.vendorId,
       baseUrl: resolveVendorBaseUrl(draft.vendorId, draft.region),
       openaiBaseUrl: resolveVendorOpenAiBaseUrl(draft.vendorId, draft.region),
+      responsesBaseUrl: resolveVendorResponsesBaseUrl(draft.vendorId, draft.region),
       model: draftModel,
       key: draft.key,
       apiEndpoints: resolveVendorModelApiEndpoints(draft.vendorId, draftModel)

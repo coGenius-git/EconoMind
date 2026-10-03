@@ -1,3 +1,4 @@
+import { InlineNotice } from '@/components/ui/inline-notice'
 // SessionReviewerPanel: the dedicated Session reviewer page rendered inside the PreviewPanel.
 // Opened by clicking "Go to transcript" on any check in the ReviewerCard. Shows:
 //   - A unified Checks list (pass/warn/fail) with status badges, claim, evidence, locator+link
@@ -27,6 +28,7 @@ import type { ReviewWithChecks, ReviewCheck, ReviewerLogEntry } from '../../../.
 
 type SessionReviewerPanelProps = {
   review: ReviewWithChecks
+  historical?: boolean
   // Check id to highlight/scroll to (from GoToTranscriptIntent). Undefined = no active check.
   activeFindingId: string | undefined
 }
@@ -340,7 +342,8 @@ const ReviewerLogSection = ({ log }: { log: ReviewerLogEntry[] }): React.JSX.Ele
 // The Session reviewer panel, rendered inside the right PreviewPanel when toolKind === 'reviewer'.
 const SessionReviewerPanel = ({
   review,
-  activeFindingId
+  activeFindingId,
+  historical = false
 }: SessionReviewerPanelProps): React.JSX.Element => {
   const { t } = useTranslation()
   const formatDate = useDateTimeFormat()
@@ -354,15 +357,20 @@ const SessionReviewerPanel = ({
         <p className="mt-0.5 text-[11px] text-text-300">
           {review.model} &middot; {formatDate(review.createdAt, 'dateTime')}
         </p>
-        {review.stale && (
-          <p
-            data-testid="reviewer-stale-notice"
-            className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:border-amber-800/50 dark:bg-amber-950/20 dark:text-amber-300"
-          >
+        {historical && review.errorMessage ? (
+          <p className="mt-2 text-xs text-status-failure">{review.errorMessage}</p>
+        ) : null}
+        {historical ? (
+          <p className="mt-2 text-xs text-text-300">
+            {t('Recorded review. No new review is run during replay.')}
+          </p>
+        ) : null}
+        {review.stale && !historical && (
+          <InlineNotice data-testid="reviewer-stale-notice" className="mt-2">
             {t(
               'This turn changed after the review ran (e.g. an artifact was edited). The result below may be out of date — re-run the review to refresh it.'
             )}
-          </p>
+          </InlineNotice>
         )}
       </div>
 
@@ -392,7 +400,7 @@ const SessionReviewerPanel = ({
         </section>
 
         {/* Reviewer log section — replaces the old "Full reasoning" prose block */}
-        <ReviewerLogSection log={review.reviewerLog ?? []} />
+        {!historical ? <ReviewerLogSection log={review.reviewerLog ?? []} /> : null}
       </div>
     </div>
   )

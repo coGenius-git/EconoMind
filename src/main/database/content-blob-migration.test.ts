@@ -84,7 +84,14 @@ describe('Content blob migration', () => {
         '0038_literature_search_text',
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
-        '0041_project_category'
+        '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay'
       ]
     })
     await expect(
@@ -170,10 +177,17 @@ describe('Content blob migration', () => {
                 '0038_literature_search_text',
                 '0039_literature_metadata_commit_receipt',
                 '0040_literature_collection_revision',
-                '0041_project_category'
+                '0041_project_category',
+                '0042_bookmarks',
+                '0043_classification_usage',
+                '0044_pdf_annotations',
+                '0045_literature_smart_collections',
+                '0046_literature_smart_pause_run',
+                '0047_journal_attributes',
+                '0048_session_replay'
               ],
         from: schema === 'pre-ledger' ? null : '0029_compute_host_execution_mode',
-        to: '0041_project_category'
+        to: '0048_session_replay'
       })
 
       await expect(

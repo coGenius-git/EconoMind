@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -11,8 +10,7 @@ import type { SpecialistPackageCatalogSnapshot } from '../../../shared/specialis
 import { UserSkillSpecialistPackageAdapter } from '../../skills/specialist-package-adapter'
 import { UserSkillRepository } from '../../skills/user-skill-repository'
 import { SpecialistRepository } from '../repository'
-import { MarketplaceRepository, type MarketplaceInstallProvenance } from '../marketplace/repository'
-import { MarketplaceService } from '../marketplace/service'
+
 import { SpecialistPackageService } from './service'
 import { validateSpecialistZip } from './zip-adapter'
 
@@ -82,20 +80,6 @@ async function fixture(): Promise<{
   const packages = new SpecialistPackageService({ storageDir, repository, skillPort, catalog })
   return { storageDir, repository, skillPort, userSkills, liveCatalog, catalog, packages }
 }
-const provenance = (digest = 'c'.repeat(64)): MarketplaceInstallProvenance => ({
-  sourceId: 'official',
-  specialistId: 'first-specialist',
-  publisher: 'Example',
-  version: '1.0.0',
-  releasePath: 'releases/first-specialist/1.0.0.json',
-  releaseDigest: 'a'.repeat(64),
-  artifactDigest: 'b'.repeat(64),
-  installedArchiveDigest: digest,
-  upstreamCommit: 'd'.repeat(40),
-  selectedSkillIds: ['analysis-tools'],
-  selectedConnectorIds: [],
-  installedAt: '2026-09-05T00:00:00.000Z'
-})
 
 describe('reported Specialist package regressions', () => {
   it.each(['analysis-tools', 'relocated-tools'])(
@@ -351,80 +335,6 @@ describe('reported Specialist package regressions', () => {
       .toContain('USER LOCAL EDIT MUST SURVIVE')
   })
 
-  it.each([1, 2])(
-    'K02 preserves Main isolation and provenance across %s committed cleanup failures',
-    async (failures) => {
-      const { packages, repository, skillPort, storageDir, userSkills } = await fixture()
-      const marketRepository = new MarketplaceRepository(storageDir)
-      const disabled = new Set<string>()
-      const market = new MarketplaceService({
-        repository: marketRepository,
-        packages,
-        fetch: vi.fn() as never,
-        getDisabledSkillIds: async () => [...disabled],
-        setSkillsMainEnabled: async (ids, enabled) => {
-          for (const id of ids) {
-            if (enabled) disabled.delete(id)
-            else disabled.add(id)
-          }
-        },
-        getInstalledSpecialists: async () =>
-          (await repository.getAll()).specialists.map((item) => ({
-            id: item.id,
-            origin: item.origin,
-            archiveDigest: item.importBaseline?.archiveDigest
-          }))
-      })
-      const bytes = archive('first-specialist')
-      const preview = await packages.preview(bytes, undefined, { origin: 'marketplace' })
-      expect(preview.installable).toBe(true)
-      // Match existing market tests: seed the already-reviewed candidate, bypassing only network/trust setup.
-      Reflect.set(
-        market,
-        'installCandidates',
-        new Map([
-          [
-            preview.candidateToken,
-            {
-              expiresAt: Date.now() + 60_000,
-              sourceId: 'official',
-              packageCandidateToken: preview.candidateToken,
-              newSkillIds: packages.candidateNewSkillIds(preview.candidateToken),
-              provenance: provenance(createHash('sha256').update(bytes).digest('hex'))
-            }
-          ]
-        ])
-      )
-      const recover = skillPort.recover.bind(skillPort)
-      let injected = 0
-      vi.spyOn(skillPort, 'recover').mockImplementation(async (id, outcome) => {
-        if (id && outcome === 'commit' && injected < failures) {
-          injected += 1
-          throw new Error('Transient committed cleanup failure')
-        }
-        return recover(id, outcome)
-      })
-      const result = await market.install({ candidateToken: preview.candidateToken })
-      expect(injected).toBeGreaterThan(0)
-      expect((await repository.getAll()).specialists).toHaveLength(1)
-      expect(await userSkills.list()).toHaveLength(1)
-      // Either an installed result or the existing recovery-failed result can preserve the obligation.
-      if (result.status === 'failed') expect(result.code).toBe('recovery-failed')
-      expect.soft([...disabled]).toEqual(['personal-analysis-tools'])
-      const pending = await marketRepository.getAll()
-      expect.soft(pending.pendingInstallations.length + pending.installations.length).toBe(1)
-      // Retry through the market public boundary, including after a previous recovery attempt failed.
-      await market.recover()
-      await expect(
-        readFile(join(storageDir, 'specialist-package-transaction.json'))
-      ).rejects.toMatchObject({ code: 'ENOENT' })
-      await market.recover()
-      await market.recover()
-      expect.soft((await marketRepository.getAll()).installations).toHaveLength(1)
-      expect.soft([...disabled]).toEqual(['personal-analysis-tools'])
-    }
-  )
-
   it('K03 refuses installation when an approved connector disappears after preview', async () => {
     const { packages, liveCatalog, repository } = await fixture()
     liveCatalog.connectorIds = ['demo']
@@ -461,27 +371,6 @@ describe('reported Specialist package regressions', () => {
     ).toBe(false)
   })
 
-  it('K06 preserves corrupt recovery obligations during an unrelated cache write', async () => {
-    const { storageDir } = await fixture()
-    const repository = new MarketplaceRepository(storageDir)
-    await repository.beginInstallation({
-      provenance: provenance(),
-      newlyDisabledSkillIds: ['personal-analysis-tools']
-    })
-    const file = join(storageDir, 'specialist-marketplace.json')
-    const document = JSON.parse(await readFile(file, 'utf8'))
-    expect(document.pendingInstallations).toHaveLength(1)
-    document.pendingInstallations[0].newlyDisabledSkillIds = 'corrupted-array'
-    await writeFile(file, JSON.stringify(document))
-    const restarted = new MarketplaceRepository(storageDir)
-    // A fail-closed repository may reject; either way no cache update may erase the obligation.
-    await restarted.getAll().catch(() => undefined)
-    await restarted
-      .cacheRoot('unrelated-source', strToU8('{}'), strToU8('{}'), '2026-09-05T00:00:00.000Z')
-      .catch(() => undefined)
-    const after = JSON.parse(await readFile(file, 'utf8'))
-    expect(after.pendingInstallations).toEqual(document.pendingInstallations)
-  })
   it.each(['version', 'reference', 'unchanged'] as const)(
     'K05 compares actual %s content and checks edits inside the commit lock',
     async (change) => {
@@ -602,43 +491,6 @@ describe('reported Specialist package regressions', () => {
     })
   })
 
-  it.each(['unknown-version', 'pending', 'nested-provenance', 'invalid-json'] as const)(
-    'K06 write-protects %s and resumes after explicit repair',
-    async (damage) => {
-      const { storageDir } = await fixture()
-      const repository = new MarketplaceRepository(storageDir)
-      await repository.beginInstallation({
-        provenance: provenance(),
-        newlyDisabledSkillIds: ['personal-analysis-tools']
-      })
-      const file = join(storageDir, 'specialist-marketplace.json')
-      const healthy = await readFile(file, 'utf8')
-      const document = JSON.parse(healthy)
-      if (damage === 'unknown-version') document.version = 99
-      if (damage === 'pending') document.pendingInstallations[0].newlyDisabledSkillIds = 'broken'
-      if (damage === 'nested-provenance')
-        document.pendingInstallations[0].provenance.futureField = 'must survive'
-      const corrupt = damage === 'invalid-json' ? '{incomplete' : JSON.stringify(document)
-      await writeFile(file, corrupt)
-      await expect.soft(repository.getAll()).rejects.toThrow()
-      await expect
-        .soft(
-          repository.cacheRoot(
-            'unrelated',
-            strToU8('{}'),
-            strToU8('{}'),
-            '2026-09-05T00:00:00.000Z'
-          )
-        )
-        .rejects.toThrow()
-      expect.soft(await readFile(file, 'utf8')).toBe(corrupt)
-      await writeFile(file, healthy)
-      await repository.completeInstallation(provenance())
-      const recovered = await repository.getAll()
-      expect(recovered.pendingInstallations).toEqual([])
-      expect(recovered.installations).toHaveLength(1)
-    }
-  )
   it.each(['legacy', 'foreign-owner'] as const)(
     'K01 preserves ambiguous %s promotion evidence',
     async (kind) => {

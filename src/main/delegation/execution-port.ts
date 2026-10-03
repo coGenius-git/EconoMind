@@ -2,6 +2,7 @@ import type {
   AcpAgentRuntimeUpdate,
   AcpModelCallUsage,
   AcpPermissionScope,
+  AcpPermissionRequest,
   AcpTurnTokenUsage
 } from '../../shared/acp'
 import type { PermissionProfileId } from '../../shared/permission-profiles'
@@ -19,6 +20,11 @@ class DelegateExecutionError extends Error {
     super(message)
     this.name = 'DelegateExecutionError'
   }
+}
+
+// Terminal execution failure whose process-owned resources must remain quarantined.
+class DelegateExecutionCleanupError extends Error {
+  readonly name = 'DelegateExecutionCleanupError'
 }
 
 class DelegateMessagePreAcceptanceError extends Error {
@@ -48,6 +54,9 @@ type DelegateExecutionEvent =
       awaiting: true
       requestId: string
       title: string
+      providerToolName?: AcpPermissionRequest['providerToolName']
+      isMcp?: AcpPermissionRequest['isMcp']
+      toolKind?: AcpPermissionRequest['toolKind']
       options: readonly Readonly<{
         optionId: string
         name: string
@@ -63,17 +72,23 @@ type DelegatePermissionResponse = Readonly<{
   cancelled?: boolean
 }>
 
-type DelegateExecutionOutcome =
-  | Readonly<{
-      status: 'completed'
-      response: string
-      turnUsage?: AcpTurnTokenUsage
-      modelCallUsage?: readonly AcpModelCallUsage[]
-      turnUsageUnavailable?: true
-    }>
-  | Readonly<{ status: 'cancelled' }>
+// Execution results and resource retirement are independent terminal facts.
+// This field stays inside the host; it must not replace an already committed result.
+type DelegateExecutionOutcome = Readonly<{ cleanupError?: Error }> &
+  (
+    | Readonly<{
+        status: 'completed'
+        response: string
+        turnUsage?: AcpTurnTokenUsage
+        modelCallUsage?: readonly AcpModelCallUsage[]
+        turnUsageUnavailable?: true
+      }>
+    | Readonly<{ status: 'cancelled' }>
+  )
 
 type DelegateExecutionInput = Readonly<{
+  /** Captured before asynchronous admission; never persisted. */
+  permissionPrompts?: 'none'
   session: Readonly<{ projectId: string; sessionId: string }>
   frameId: string
   attemptId: string
@@ -140,11 +155,17 @@ type DelegateCapacityReservation = Readonly<{
 }>
 
 type DelegateExecution = Readonly<{
+  recoverCleanup?(): Promise<void>
   reserve(count: number): Promise<DelegateCapacityReservation>
   run(input: DelegateExecutionInput, slotId: string): RunningDelegateExecution
 }>
 
-export { DelegateExecutionError, DelegateMessageParkedError, DelegateMessagePreAcceptanceError }
+export {
+  DelegateExecutionError,
+  DelegateExecutionCleanupError,
+  DelegateMessageParkedError,
+  DelegateMessagePreAcceptanceError
+}
 export type {
   DelegateCapacityReservation,
   DelegateExecutionBackendClaim,

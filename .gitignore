@@ -168,3 +168,13 @@ auth.json
 
 # Local verification report containing personal workstation paths
 /design-qa.md
+
+# Historical PR screenshot contains a personal workstation path; keep it local only.
+/.github/pr-assets/automatic-environment-check.png
+# Unreferenced upstream screenshots also contain personal workstation paths.
+/docs/images/readme/onboarding-environment.jpg
+/docs/images/readme/project-files.jpg
+/docs/images/readme/workspace.jpg
+/docs/images/readme/csv-preview.jpg
+/docs/images/readme/product-tour-output.jpg
+/docs/images/readme/product-tour-task.jpg

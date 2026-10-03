@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto'
+import { redactSensitiveText } from '../../shared/diagnostic-redaction'
+
 import type {
   ChatApiEndpoint,
   ValidateProviderResult,
@@ -13,7 +16,7 @@ import {
 import type { ResolvedProvider } from './provider-env'
 import { ResponsesBridge, responsesToChatRequest } from './responses-bridge'
 import { NativeResponsesCompatibilityProxy } from './native-responses-compatibility'
-import { normalizeResponsesBaseUrl } from '../agent-framework/codex'
+import { resolveResponsesBaseUrl } from '../agent-framework/codex'
 import { ResponseBodyLimitError, readBoundedResponseText } from './bounded-response'
 import { PROVIDER_RESOURCE_LIMITS } from './provider-resource-limits'
 import { toErrorMessage } from '../error-message'
@@ -200,19 +203,15 @@ const buildOpenAiValidationRequest = (
 }
 
 // A minimal OpenAI Responses request. Responses is a separate wire protocol from Chat Completions;
-// normalize the base to exactly one endpoint suffix: a versioned OpenAI base (an official vendor's
-// `/v1`, or Volcengine Ark's `/api/v3`) takes `/responses` directly, while a bare root (the official
-// OpenAI entry, custom gateways) gains the `/v1` segment first.
+// use an explicitly published native Responses base when a vendor has one, otherwise normalize the
+// OpenAI base to exactly one endpoint suffix.
 const buildResponsesValidationRequest = (provider: ResolvedProvider): ValidationHttpRequest => {
   let url: string
 
   try {
-    const base = (provider.openaiBaseUrl ?? provider.baseUrl ?? '')
-      .trim()
-      .replace(/\/+$/, '')
-      .replace(/\/responses$/i, '')
-    const root = /\/v\d+[\w.]*$/i.test(base) ? base : `${base}/v1`
-    url = new URL(`${root}/responses`).toString()
+    const base = resolveResponsesBaseUrl(provider)
+    if (!base) throw new Error('Missing base URL.')
+    url = new URL(`${base}/responses`).toString()
   } catch {
     throw new Error('Invalid base URL.')
   }
@@ -288,6 +287,14 @@ const toResult = (
 // Cap on a surfaced provider error so a runaway HTML/error page can't flood the UI.
 const MAX_ERROR_MESSAGE_LENGTH = 300
 
+const safeProviderDiagnostic = (message: string, key?: string): string => {
+  const redacted = redactSensitiveText(key ? message.split(key).join('[redacted]') : message)
+  const collapsed = redacted.replace(/\s+/g, ' ').trim()
+  return collapsed.length > MAX_ERROR_MESSAGE_LENGTH
+    ? `${collapsed.slice(0, MAX_ERROR_MESSAGE_LENGTH)}…`
+    : collapsed
+}
+
 // Digs the human-readable error string out of a parsed error body. Anthropic- and
 // OpenAI/DeepSeek-compatible gateways nest it under `error.message`; some return a bare `message` or
 // a string `error` (e.g. DeepSeek's "Insufficient Balance" on a 402).
@@ -308,7 +315,7 @@ const pickErrorMessage = (parsed: unknown): string | undefined => {
 
 // Turns a provider's raw error body into a short, single-line message, or undefined when it carries
 // nothing usable. Non-JSON bodies (an HTML/plain-text gateway error page) fall back to the raw text.
-const extractProviderErrorMessage = (bodyText: string): string | undefined => {
+const extractProviderErrorMessage = (bodyText: string, key?: string): string | undefined => {
   const trimmed = bodyText.trim()
   if (!trimmed) return undefined
 
@@ -322,23 +329,22 @@ const extractProviderErrorMessage = (bodyText: string): string | undefined => {
   }
   if (!message) return undefined
 
-  const collapsed = message.replace(/\s+/g, ' ').trim()
-  if (!collapsed) return undefined
-
-  return collapsed.length > MAX_ERROR_MESSAGE_LENGTH
-    ? `${collapsed.slice(0, MAX_ERROR_MESSAGE_LENGTH)}…`
-    : collapsed
+  return safeProviderDiagnostic(message, key) || undefined
 }
 
 // Reads and extracts a failed response's error message, tolerating a body that can't be read.
-const readProviderErrorMessage = async (response: Response): Promise<string | undefined> => {
+const readProviderErrorMessage = async (
+  response: Response,
+  key?: string
+): Promise<string | undefined> => {
   try {
     return extractProviderErrorMessage(
       await readBoundedResponseText(
         response,
         PROVIDER_RESOURCE_LIMITS.validationResponseBytes,
         'Provider validation response'
-      )
+      ),
+      key
     )
   } catch (error) {
     if (error instanceof ResponseBodyLimitError) throw error
@@ -522,7 +528,8 @@ const createBoundedValidationFetch =
 
 const validateProviderThroughLocalResponsesAdapter = async (
   adapter: LocalResponsesValidationAdapter,
-  timeoutMs: number
+  timeoutMs: number,
+  key?: string
 ): Promise<ValidateProviderResult> => {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -560,7 +567,7 @@ const validateProviderThroughLocalResponsesAdapter = async (
       }
       throw error
     }
-    const providerMessage = extractProviderErrorMessage(bodyText)
+    const providerMessage = extractProviderErrorMessage(bodyText, key)
 
     if ((status === 400 || status === 404) && providerMessage) {
       category = isModelNotFoundMessage(providerMessage) ? 'model-not-found' : 'unknown'
@@ -611,7 +618,8 @@ const validateProviderThroughResponsesBridge = async (
       missingToolCallMessage:
         'The provider answered through the bridge, but did not complete the required streaming function tool call.'
     },
-    timeoutMs
+    timeoutMs,
+    provider.key
   )
 }
 
@@ -619,7 +627,7 @@ const validateProviderThroughNativeResponsesCompatibility = async (
   provider: ResolvedProvider,
   { fetchImpl = fetch, timeoutMs = DEFAULT_VALIDATE_TIMEOUT_MS }: ValidateProviderDeps
 ): Promise<ValidateProviderResult> => {
-  const targetBaseUrl = normalizeResponsesBaseUrl(provider.openaiBaseUrl ?? provider.baseUrl)
+  const targetBaseUrl = resolveResponsesBaseUrl(provider)
   if (!targetBaseUrl) return toResult('bad-url', { message: 'Missing base URL.' })
 
   try {
@@ -641,7 +649,8 @@ const validateProviderThroughNativeResponsesCompatibility = async (
       missingToolCallMessage:
         'The provider answered through the compatibility proxy, but did not complete the required namespace function tool call.'
     },
-    timeoutMs
+    timeoutMs,
+    provider.key
   )
 }
 
@@ -697,7 +706,7 @@ const validateCustomProvider = async (
 
     if (response.status < 200 || response.status >= 300) {
       try {
-        providerMessage = await readProviderErrorMessage(response)
+        providerMessage = await readProviderErrorMessage(response, provider.key)
       } catch (error) {
         if (error instanceof ResponseBodyLimitError) {
           return toResult(category, { status: response.status, message: error.message })
@@ -782,10 +791,40 @@ const validateCustomProvider = async (
 }
 
 // Dispatches validation by provider type.
-const validateProvider = (
+const validateProviderUnredacted = (
   provider: ResolvedProvider,
   deps: ValidateProviderDeps = {}
-): Promise<ValidateProviderResult> => validateCustomProvider(provider, deps)
+): Promise<ValidateProviderResult> => {
+  if (provider.vendorId !== 'opencode-go') return validateCustomProvider(provider, deps)
+
+  // Settings probes do not run through OpenCode's chat.headers plugin. Give each independent probe
+  // its own session, stable for every upstream request within that invocation. Decorate the upstream
+  // fetch (not the loopback request) so Messages, Chat Completions, Responses, and both Codex adapters
+  // all satisfy Go's routing contract without changing real conversation session identities.
+  const sessionId = `open-science-probe-${randomUUID()}`
+  const fetchImpl = deps.fetchImpl ?? fetch
+  return validateCustomProvider(provider, {
+    ...deps,
+    fetchImpl: (input, init) => {
+      const headers = new Headers(
+        init?.headers ?? (input instanceof Request ? input.headers : undefined)
+      )
+      headers.set('x-opencode-session', sessionId)
+      headers.set('user-agent', 'open-science/provider-validation')
+      return fetchImpl(input, { ...init, headers })
+    }
+  })
+}
+
+const validateProvider = async (
+  provider: ResolvedProvider,
+  deps: ValidateProviderDeps = {}
+): Promise<ValidateProviderResult> => {
+  const result = await validateProviderUnredacted(provider, deps)
+  return result.message
+    ? { ...result, message: safeProviderDiagnostic(result.message, provider.key) }
+    : result
+}
 
 export {
   ANTHROPIC_VERSION,

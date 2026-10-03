@@ -1,4 +1,5 @@
-import { AlertDialog } from 'radix-ui'
+import { storageErrorMessage } from '@/lib/storage-error'
+import * as AlertDialog from '@/components/ui/alert-dialog'
 import { FolderInput, FolderOpen, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -15,22 +16,25 @@ import {
 } from '@/components/ui/dialog-chrome'
 import { cn } from '@/lib/utils'
 import { StorageMigrationModal } from '@/pages/settings/StorageMigrationModal'
-import type { DataRootInspection, DataRootRecoveryStatus } from '../../../shared/storage'
+import type {
+  DataRootInspection,
+  DataRootRecoveryStatus,
+  DataRootSelection
+} from '../../../shared/storage'
 
 type LegacyDataMoveDialogProps = {
   // App Shell presentation ownership may temporarily cover this prompt without discarding its state.
   active?: boolean
   // The hidden config root where a legacy install's data currently lives (e.g. ~/.open-science).
   currentDataRoot: string
-  // The parent the "Move to OpenScience" action relocates into; its derived data root (resolved via
-  // inspectDataRoot below) is the visible <parent>/OpenScience folder.
-  defaultParent: string
-  // Called after the user declines and the "don't ask again" flag has been persisted.
+  // Exact destination from startup status, independent of any legacy sibling under its parent.
+  defaultDataRoot: string
+  // Dismisses this launch's prompt, after saving the preference or explicitly continuing for now.
   onDismiss: () => void
 }
 
 // One-time, non-forced upgrade prompt for a pre-§20 legacy install whose data still sits in the
-// hidden config root. Offers to move it into the visible OpenScience folder (default or a folder the
+// hidden config root. Offers to move it into the visible EconoMind folder (default or a folder the
 // user picks), or to keep it where it is - the last choice is remembered so it never re-appears.
 // Accepting reuses the ordinary relocation flow (StorageMigrationModal): a reversible copy, then a
 // restart. Moving sets settings.dataRoot, which by itself disqualifies the prompt on the next launch,
@@ -38,24 +42,25 @@ type LegacyDataMoveDialogProps = {
 const LegacyDataMoveDialog = ({
   active = true,
   currentDataRoot,
-  defaultParent,
+  defaultDataRoot,
   onDismiss
 }: LegacyDataMoveDialogProps): React.JSX.Element => {
   const { t } = useTranslation()
-  // When set, hand off to the shared migration modal targeting this parent; a durable interrupted
+  // When set, hand off to the shared migration modal targeting this exact root; a durable interrupted
   // copy carries its recovery status so the modal resumes instead of recopying.
   const [migrationTarget, setMigrationTarget] = useState<{
     path: string
+    selection?: DataRootSelection
     recoveryStatus?: DataRootRecoveryStatus
   } | null>(null)
-  // The exact <home>/OpenScience path "Move to OpenScience" would create. Resolved server-side via
-  // inspectDataRoot(defaultParent) rather than getInfo's dataRoot, which for a legacy install is the
+  // The exact target "Move to EconoMind" would use, normally <home>/EconoMind. Resolved via
+  // inspectDataRoot(defaultDataRoot) rather than getInfo's dataRoot, which for a legacy install is the
   // hidden config root itself.
   const [defaultInspectionState, setDefaultInspectionState] = useState<
     { parent: string; result: DataRootInspection } | undefined
   >(undefined)
   const defaultInspection =
-    defaultInspectionState?.parent === defaultParent ? defaultInspectionState.result : undefined
+    defaultInspectionState?.parent === defaultDataRoot ? defaultInspectionState.result : undefined
   const defaultInspectionRequestId = useRef(0)
   const [defaultInspectionError, setDefaultInspectionError] = useState<string | undefined>(
     undefined
@@ -64,13 +69,14 @@ const LegacyDataMoveDialog = ({
   const [operationError, setOperationError] = useState<string | undefined>(undefined)
   const [isPicking, setIsPicking] = useState(false)
   const [isDismissing, setIsDismissing] = useState(false)
+  const [dismissalFailed, setDismissalFailed] = useState(false)
 
   const requestDefaultInspection = useCallback((): void => {
     const requestId = ++defaultInspectionRequestId.current
-    void window.api.storage.inspectDataRoot(defaultParent).then(
+    void window.api.storage.inspectDataRoot(defaultDataRoot).then(
       (result) => {
         if (defaultInspectionRequestId.current !== requestId) return
-        setDefaultInspectionState({ parent: defaultParent, result })
+        setDefaultInspectionState({ parent: defaultDataRoot, result })
         setDefaultInspectionError(undefined)
       },
       () => {
@@ -78,7 +84,7 @@ const LegacyDataMoveDialog = ({
         setDefaultInspectionError(t('Could not check the data folder. Try again.'))
       }
     )
-  }, [defaultParent, t])
+  }, [defaultDataRoot, t])
 
   useEffect(() => {
     requestDefaultInspection()
@@ -97,7 +103,7 @@ const LegacyDataMoveDialog = ({
   const handleMigrationClose = (): void => {
     const resolvedTarget = migrationTarget
     setMigrationTarget(null)
-    if (resolvedTarget?.path === defaultParent) {
+    if (resolvedTarget?.path === defaultDataRoot) {
       refreshDefaultInspection()
     }
   }
@@ -107,7 +113,8 @@ const LegacyDataMoveDialog = ({
     if (!defaultInspection) return
     if (defaultInspection.kind === 'move' || defaultInspection.kind === 'recover') {
       setMigrationTarget({
-        path: defaultParent,
+        path: defaultInspection.dataRoot,
+        selection: defaultInspection.selection,
         recoveryStatus:
           defaultInspection.kind === 'recover' ? defaultInspection.recoveryStatus : undefined
       })
@@ -118,7 +125,8 @@ const LegacyDataMoveDialog = ({
         ? t(
             'That folder already contains EconoMind data. Pick an empty folder, or use the default location.'
           )
-        : (defaultInspection.error ?? t('That folder can’t be used. Pick another one.'))
+        : (storageErrorMessage(defaultInspection.error, t) ??
+            t('That folder can’t be used. Pick another one.'))
     )
   }
 
@@ -132,7 +140,8 @@ const LegacyDataMoveDialog = ({
       const inspection = await window.api.storage.inspectDataRoot(picked)
       if (inspection.kind === 'move' || inspection.kind === 'recover') {
         setMigrationTarget({
-          path: picked,
+          path: inspection.dataRoot,
+          selection: inspection.selection,
           recoveryStatus: inspection.kind === 'recover' ? inspection.recoveryStatus : undefined
         })
         return
@@ -145,7 +154,8 @@ const LegacyDataMoveDialog = ({
           ? t(
               'That folder already contains EconoMind data. Pick an empty folder, or use the default location.'
             )
-          : (inspection.error ?? t('That folder can’t be used. Pick another one.'))
+          : (storageErrorMessage(inspection.error, t) ??
+              t('That folder can’t be used. Pick another one.'))
       )
     } catch {
       setOperationError(t('Could not check the data folder. Try again.'))
@@ -157,10 +167,12 @@ const LegacyDataMoveDialog = ({
   const handleKeepHere = async (): Promise<void> => {
     setOperationError(undefined)
     setIsDismissing(true)
+    setDismissalFailed(false)
     try {
       await window.api.storage.dismissLegacyMovePrompt()
     } catch {
       setOperationError(t('Could not save changes.'))
+      setDismissalFailed(true)
       setIsDismissing(false)
       return
     }
@@ -174,6 +186,7 @@ const LegacyDataMoveDialog = ({
       <StorageMigrationModal
         active={active}
         targetPath={migrationTarget.path}
+        selection={migrationTarget.selection}
         recoveryStatus={migrationTarget.recoveryStatus}
         onClose={handleMigrationClose}
       />
@@ -196,7 +209,7 @@ const LegacyDataMoveDialog = ({
           <div className={cn(dialogBodyClassName, 'space-y-4')}>
             <AlertDialog.Description className={dialogDescriptionClassName}>
               {t(
-                'Your research data is in a hidden folder. Moving it into a visible OpenScience folder makes it easy to find and back up — your settings and history stay where they are.'
+                'Your research data is in a hidden folder. Moving it into a visible EconoMind folder makes it easy to find and back up — your settings and history stay where they are.'
               )}
             </AlertDialog.Description>
             <div>
@@ -241,7 +254,7 @@ const LegacyDataMoveDialog = ({
               ) : (
                 <FolderInput aria-hidden="true" />
               )}
-              {defaultInspectionFailed ? t('Try again') : t('Move to OpenScience')}
+              {defaultInspectionFailed ? t('Try again') : t('Move to EconoMind')}
             </Button>
             <Button
               type="button"
@@ -260,10 +273,24 @@ const LegacyDataMoveDialog = ({
             >
               {isDismissing ? t('Saving…') : t('Keep it in the current folder')}
             </Button>
+            {dismissalFailed ? (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={isPicking || isDismissing}
+                onClick={onDismiss}
+              >
+                {t('Continue for now')}
+              </Button>
+            ) : null}
             <p className="text-xs text-muted-foreground">
-              {t(
-                "You can always change this later in Settings → Data location. We won't ask again."
-              )}
+              {dismissalFailed
+                ? t(
+                    'Your choice could not be saved. Continue for now to keep using this folder; we may ask again after restarting.'
+                  )
+                : t(
+                    "You can always change this later in Settings → Data location. We won't ask again."
+                  )}
             </p>
           </div>
         </AlertDialog.Content>

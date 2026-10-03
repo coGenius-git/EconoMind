@@ -4,6 +4,7 @@ import type { ComputeJob, JobSummary } from '../../shared/compute'
 import type { ComputeJobRepository } from './job-repository'
 import type { ComputeHostRepository } from './repository'
 import {
+  isConnectionStdoutTruncated,
   classifyConnectionFailure,
   ComputeConnectionError,
   redactConnectionOutputs,
@@ -11,7 +12,7 @@ import {
   type ComputeConnectionLease
 } from './connection-broker'
 import {
-  computeRemoteWorkdir,
+  computeLegacyRemoteWorkdir,
   quoteRemotePath,
   REMOTE_PROCESS_OWNERSHIP_FUNCTION,
   type RemoteHandle
@@ -62,8 +63,10 @@ const POLL_BATCH_MAX_JOBS = 8
 const POLLER_KILL_GRACE_SECONDS = 60
 
 const buildDispatchRecoveryCommand = (workdir: string): string => {
-  const marker = '/.openscience/jobs/'
-  const markerIndex = workdir.lastIndexOf(marker)
+  const markerIndex = Math.max(
+    workdir.lastIndexOf('/.open-science/jobs/'),
+    workdir.lastIndexOf('/.openscience/jobs/')
+  )
   if (markerIndex < 0) throw new Error('Unsafe remote Compute Job recovery path.')
   const scratchRoot = markerIndex === 0 ? '/' : workdir.slice(0, markerIndex)
   const workdirSuffix = workdir.slice(markerIndex + 1)
@@ -376,7 +379,7 @@ export class JobPoller {
     for (const job of legacyNoHandle) {
       if (signal.aborted) return
       const fallbackWorkdir = hasRecoveryFallback
-        ? computeRemoteWorkdir(recoveryFallbackRoot, job.job_id)
+        ? computeLegacyRemoteWorkdir(recoveryFallbackRoot, job.job_id)
         : undefined
       const recovered = await this._recoverSubmittedJob(job, connection, signal, fallbackWorkdir)
       if (recovered) withHandle.push(recovered)
@@ -666,7 +669,7 @@ export class JobPoller {
       parts.push(
         `echo "${nonce}JOB_START:${job.job_id}"`,
         `workdir=$(cd -- ${quoteRemotePath(handle.workdir)} 2>/dev/null && pwd -P || true)`,
-        `process_owned_by_workdir ${handle.pid} "$workdir" && kill -0 ${handle.pid} 2>/dev/null && echo "${nonce}alive:1" || echo "${nonce}alive:0"`,
+        `process_owned_by_workdir ${handle.pid} "$workdir"; case $? in 0) echo "${nonce}alive:1" ;; 1|3) echo "${nonce}alive:0" ;; *) echo "${nonce}alive:unknown" ;; esac`,
         `if [ -f ${quoteRemotePath(handle.exit_code_path)} ]; then POLL_EXIT_CODE=$(cat ${quoteRemotePath(handle.exit_code_path)}); else POLL_EXIT_CODE=; fi; printf '${nonce}exit:%s\\n' "$POLL_EXIT_CODE"`,
         `tail -c ${TAIL_MAX_BYTES} ${quoteRemotePath(handle.stdout_path)} 2>/dev/null || true`,
         `printf '\n%s\n' '${nonce}STDOUT_END:${job.job_id}'`,
@@ -705,7 +708,7 @@ export class JobPoller {
       return
     }
 
-    if (runResult.truncated) {
+    if (isConnectionStdoutTruncated(runResult)) {
       await this._recordPollError(batched, 'poll_protocol_incomplete', signal, false)
       return
     }

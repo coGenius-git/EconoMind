@@ -1,3 +1,5 @@
+import sharp from 'sharp'
+import * as attachmentMedia from '../uploads/attachment-media'
 import type { ContentBlock } from '@agentclientprotocol/sdk'
 import { access, mkdtemp, readFile, rm, stat, truncate, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -9,7 +11,11 @@ import { MAX_ACP_MESSAGE_IMAGE_BYTES } from '../../shared/acp'
 import { createLiteratureAttachmentVersionReference } from '../../shared/literature'
 import { createUploadVersionReference, type UploadedAttachment } from '../../shared/uploads'
 import { estimateHistoryTokens } from '../../shared/history-preamble'
-import { extractPdfText, MAX_AUTO_PROCESS_IMAGE_BYTES } from '../uploads/attachment-media'
+import {
+  extractPdfText,
+  MAX_AUTO_PROCESS_IMAGE_BYTES,
+  MAX_AUTO_EXTRACT_PDF_BYTES
+} from '../uploads/attachment-media'
 import { UploadRepository } from '../uploads/repository'
 import { stageUploadFixtures } from '../uploads/repository.test-utils'
 import {
@@ -44,6 +50,15 @@ vi.mock('../uploads/attachment-media', async (importOriginal) => {
   return { ...actual, extractPdfText: vi.fn(actual.extractPdfText) }
 })
 
+// Valid, deterministic model images: production now decodes small inputs to remove metadata.
+const imageBytes = await sharp({ create: { width: 2, height: 2, channels: 3, background: 'red' } })
+  .png()
+  .toBuffer()
+const historyImageBytes = await sharp({
+  create: { width: 2, height: 2, channels: 3, background: 'blue' }
+})
+  .png()
+  .toBuffer()
 const roots: string[] = []
 
 describe('PDF preparation routing', () => {
@@ -108,6 +123,7 @@ const createTrustedLease = (bytes: Buffer): TrustedLeaseFixture => {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
@@ -168,6 +184,96 @@ describe('AcpPromptContentOwner', () => {
     }
   })
 
+  it.each([
+    ['总结整篇论文的贡献', true, 'full-document', false],
+    ['这个方法有哪些局限？', true, 'auto', false],
+    ['Explain Figure 3.', true, 'auto', false],
+    ['What is the exact value for treatment A in Table 2?', true, 'auto', false],
+    ['Does Figure 3 support the authors claim?', true, 'auto', false],
+    ['Explain this figure on the current page.', true, 'current-page', false],
+    ['Explain Figure 3.', false, 'auto', false],
+    ['Explain this figure on the current page.', false, 'current-page', false],
+    ['Explain this figure on the current page.', true, 'current-page', true]
+  ] as const)(
+    'delivers evidence boundaries for %s (active=%s)',
+    async (text, active, scope, oversized) => {
+      const root = await createRoot()
+      const sourcePath = join(root, 'paper.pdf')
+      await writeFile(sourcePath, '%PDF-1.4 fake')
+      const extract = vi.mocked(extractPdfText).mockResolvedValue({
+        text: '--- Page 2 ---\nThe authors report a treatment effect.',
+        pageCount: 3,
+        truncated: false
+      })
+      const callsBefore = extract.mock.calls.length
+      const resolver = createManagedFileReferenceResolver({})
+      vi.spyOn(resolver, 'resolve').mockResolvedValue({
+        absolutePath: sourcePath,
+        uri: pathToFileURL(sourcePath).href,
+        name: 'paper.pdf',
+        mimeType: 'application/pdf',
+        size: oversized ? MAX_AUTO_EXTRACT_PDF_BYTES + 1 : 14,
+        allowSkillImportReference: false
+      })
+      const owner = new AcpPromptContentOwner({ fileReferenceResolver: resolver })
+      const prepared = await owner.prepare({
+        appSessionId: 'session-1',
+        projectId: 'project-1',
+        text,
+        historyImages: [],
+        historyUploads: [],
+        currentUploads: [],
+        references: [
+          {
+            id: 'literature-attachment-1',
+            name: 'paper.pdf',
+            source: 'literature',
+            path: createLiteratureAttachmentVersionReference('version-1'),
+            versionId: 'version-1',
+            mimeType: 'application/pdf',
+            pdfContextDocumentId: 'binding-1',
+            pdfContextDocumentCount: 2,
+            pdfContextActive: active,
+            pdfReadingPosition: { pageNumber: 2, pageCount: 3 }
+          }
+        ],
+        codexSkillInputs: [],
+        skillImportEnabled: false
+      })
+      try {
+        const prompt = contentBlocks(prepared.content)
+          .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+          .join('\n')
+        expect(prompt).not.toContain('For questions about linked literature,')
+        if (active) {
+          expect(prompt.match(/For specific figures/g)).toHaveLength(1)
+          expect(prompt).toContain(
+            '`list_pdf_elements` for the requested linked documentId (this PDF: "binding-1")'
+          )
+          expect(prompt).toContain('`read_pdf_element` with its exact elementRef')
+          expect(prompt).toContain('not arbitrary Structure nodes')
+          expect(prompt).toContain(
+            'combine prose and element evidence only when the question needs both'
+          )
+          expect(prompt).toContain('Do not list elements for every paper summary')
+          expect(prompt).toContain('List captions and previews locate evidence')
+          expect(prompt).toContain('Read the selected element before making those claims')
+          expect(prompt).toContain('Missing cached evidence does not prove absence')
+          expect(prompt).toContain('cannot replace missing visual evidence')
+          expect(prompt).toContain('itemId and linked-PDF documentId are not interchangeable')
+          if (scope === 'auto') expect(prompt).toContain('For prose questions')
+        } else {
+          expect(prompt).not.toContain('`list_pdf_elements`')
+        }
+        expect(extract.mock.calls.length - callsBefore).toBe(
+          scope === 'current-page' && !oversized ? 1 : 0
+        )
+      } finally {
+        prepared.close()
+      }
+    }
+  )
+
   it('uses document context for a document-wide question despite a visible PDF page', async () => {
     const root = await createRoot()
     const sourcePath = join(root, 'paper.pdf')
@@ -190,11 +296,15 @@ describe('AcpPromptContentOwner', () => {
     const owner = new AcpPromptContentOwner({ fileReferenceResolver: resolver })
     loggerInfo.mockClear()
     const extractionCallStart = vi.mocked(extractPdfText).mock.calls.length
-    const prepare = (text: string): ReturnType<AcpPromptContentOwner['prepare']> =>
+    const prepare = (
+      text: string,
+      readingIntentText = text
+    ): ReturnType<AcpPromptContentOwner['prepare']> =>
       owner.prepare({
         appSessionId: 'session-1',
         projectId: 'project-1',
         text,
+        readingIntentText,
         historyImages: [],
         historyUploads: [],
         currentUploads: [],
@@ -221,6 +331,10 @@ describe('AcpPromptContentOwner', () => {
       const prepared = await prepare('总结一下整篇论文的核心贡献。')
       const auto = await prepare('这个方法有哪些局限？')
       const overall = await prepare("Analyze this paper's overall results and contributions.")
+      const composedPrompt = await prepare(
+        'Summarize this paper. Application guidance mentions all home directories.',
+        'Summarize this paper.'
+      )
 
       expect(vi.mocked(extractPdfText).mock.calls.slice(extractionCallStart)).toEqual([])
       const pdf = contentBlocks(prepared.content).find(
@@ -243,6 +357,14 @@ describe('AcpPromptContentOwner', () => {
         type: 'text',
         text: expect.stringContaining('"target":"active-document"')
       })
+      expect(
+        contentBlocks(composedPrompt.content).find(
+          (block) => block.type === 'text' && block.text.includes('route":"literature-mcp')
+        )
+      ).toMatchObject({
+        type: 'text',
+        text: expect.stringContaining('"target":"active-document"')
+      })
       expect(loggerInfo.mock.calls.map(([, fields]) => fields)).toEqual([
         expect.objectContaining({
           retrievalMode: 'literature-tool',
@@ -257,6 +379,13 @@ describe('AcpPromptContentOwner', () => {
           routingReason: 'intent-auto',
           fullDocumentInjected: false,
           bm25Status: 'pending-read-document-query'
+        }),
+        expect.objectContaining({
+          retrievalMode: 'literature-tool',
+          scope: 'full-document',
+          routingReason: 'intent-full-document',
+          fullDocumentInjected: false,
+          bm25Status: 'not-requested'
         }),
         expect.objectContaining({
           retrievalMode: 'literature-tool',
@@ -554,7 +683,7 @@ describe('AcpPromptContentOwner', () => {
     const root = await createRoot()
     const replacedPath = join(root, 'replaced.png')
     await writeFile(replacedPath, 'wrong image bytes')
-    const trustedBytes = Buffer.from('trusted image bytes')
+    const trustedBytes = imageBytes
     const trustedLease = createTrustedLease(trustedBytes)
     const owner = new AcpPromptContentOwner({
       fileReferenceResolver: new FileReferenceResolver([
@@ -851,8 +980,8 @@ describe('AcpPromptContentOwner', () => {
       historyImages: [
         {
           mimeType: 'image/png',
-          data: Buffer.from('history-image').toString('base64'),
-          byteLength: Buffer.byteLength('history-image')
+          data: historyImageBytes.toString('base64'),
+          byteLength: historyImageBytes.length
         }
       ],
       historyUploads: [immutableHistoryUpload],
@@ -1187,8 +1316,8 @@ describe('AcpPromptContentOwner', () => {
     const owner = new AcpPromptContentOwner({
       fileReferenceResolver: createManagedFileReferenceResolver({})
     })
-    const historyData = Buffer.from('history-image').toString('base64')
-    const currentData = Buffer.from('current-image').toString('base64')
+    const historyData = historyImageBytes.toString('base64')
+    const currentData = imageBytes.toString('base64')
 
     const result = await owner.prepare({
       appSessionId: 'session-1',
@@ -1198,14 +1327,14 @@ describe('AcpPromptContentOwner', () => {
         {
           mimeType: 'image/png',
           data: historyData,
-          byteLength: Buffer.byteLength('history-image')
+          byteLength: historyImageBytes.length
         }
       ],
       currentImages: [
         {
           mimeType: 'image/png',
           data: currentData,
-          byteLength: Buffer.byteLength('current-image')
+          byteLength: imageBytes.length
         }
       ],
       historyUploads: [],
@@ -1484,7 +1613,7 @@ describe('AcpPromptContentOwner', () => {
     const owner = new AcpPromptContentOwner({
       uploadRepository: uploads,
       fileReferenceResolver: createManagedFileReferenceResolver({ uploads }),
-      inlineImageBudgetBytes: 15
+      inlineImageBudgetBytes: imageBytes.toString('base64').length + 1
     })
     const stageImage = async (name: string): Promise<UploadedAttachment> => {
       const [image] = await stageUploadFixtures(uploads, {
@@ -1492,7 +1621,7 @@ describe('AcpPromptContentOwner', () => {
           {
             name,
             mimeType: 'image/png',
-            content: Buffer.from('png-bytes').toString('base64')
+            content: imageBytes.toString('base64')
           }
         ]
       })
@@ -1602,7 +1731,7 @@ describe('AcpPromptContentOwner', () => {
     const owner = new AcpPromptContentOwner({
       uploadRepository: uploads,
       fileReferenceResolver: createManagedFileReferenceResolver({ uploads }),
-      inlineImageBudgetBytes: 15
+      inlineImageBudgetBytes: imageBytes.toString('base64').length + 1
     })
     const stageImage = async (name: string): Promise<UploadedAttachment> => {
       const [image] = await stageUploadFixtures(uploads, {
@@ -1610,7 +1739,7 @@ describe('AcpPromptContentOwner', () => {
           {
             name,
             mimeType: 'image/png',
-            content: Buffer.from('png-bytes').toString('base64')
+            content: imageBytes.toString('base64')
           }
         ]
       })
@@ -1662,7 +1791,7 @@ describe('AcpPromptContentOwner', () => {
 it.each(['current failure', 'historical failure', 'image budget', 'evidence budget'])(
   'preserves mixed image identity through %s',
   async (scenario) => {
-    const bytes = Buffer.from('historical image')
+    const bytes = historyImageBytes
     const lease = createTrustedLease(bytes)
     const attachment: UploadedAttachment = {
       id: 'upload-1',
@@ -1698,7 +1827,7 @@ it.each(['current failure', 'historical failure', 'image budget', 'evidence budg
       } as never,
       fileReferenceResolver: new FileReferenceResolver([])
     })
-    const currentData = Buffer.from('current image').toString('base64')
+    const currentData = imageBytes.toString('base64')
     for (const historyUploads of [
       [],
       Array.from({ length: scenario.includes('budget') ? 9 : 1 }, () => attachment)
@@ -1707,7 +1836,9 @@ it.each(['current failure', 'historical failure', 'image budget', 'evidence budg
         appSessionId: 'session-1',
         projectId: 'project-1',
         text: 'Analyze the new image',
-        currentImages: [{ mimeType: 'image/png', data: currentData, byteLength: 13 }],
+        currentImages: [
+          { mimeType: 'image/png', data: currentData, byteLength: imageBytes.length }
+        ],
         historyImages: [],
         historyUploads,
         currentUploads: [],
@@ -1783,6 +1914,16 @@ it.each(['current failure', 'historical failure', 'image budget', 'evidence budg
 it.each(['current', 'historical'] as const)(
   'retains current inline images before native %s upload overflow',
   async (origin) => {
+    vi.spyOn(attachmentMedia, 'prepareModelImageData').mockImplementation(async (bytes) => ({
+      data: bytes.toString('base64'),
+      mimeType: 'image/png'
+    }))
+    vi.spyOn(attachmentMedia, 'buildImageContentData').mockImplementation(
+      async (path, _mimeType, _size, readBytes) => ({
+        data: Buffer.from(readBytes ? await readBytes() : await readFile(path)).toString('base64'),
+        mimeType: 'image/png'
+      })
+    )
     const root = await createRoot()
     const uploads = new UploadRepository(root)
     const pendingUploads = await stageUploadFixtures(uploads, {

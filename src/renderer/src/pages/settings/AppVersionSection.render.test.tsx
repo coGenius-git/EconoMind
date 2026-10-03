@@ -36,6 +36,23 @@ afterEach(() => {
 })
 
 describe('AppVersionSection', () => {
+  it('opens the bundled license and attribution notices without needing a website', () => {
+    act(() => root.render(<AppVersionSection />))
+    const button = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Open-source license"]'
+    )!
+    expect(button.textContent).toContain('Apache-2.0')
+    act(() => button.click())
+    const dialog = document.querySelector('[role="dialog"]')!
+    expect(dialog.textContent).toContain('Apache License')
+    expect(dialog.textContent).toContain('AIPOCH')
+    expect(dialog.textContent).toContain('EconoMind')
+    expect(dialog.querySelector('section[aria-label="NOTICE"]')).not.toBeNull()
+    const close = dialog.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!
+    act(() => close.click())
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+  })
+
   it('shows the app name, version, and copyright', () => {
     act(() => {
       root.render(<AppVersionSection />)
@@ -43,13 +60,81 @@ describe('AppVersionSection', () => {
 
     expect(container.textContent).toContain('EconoMind')
     expect(container.textContent).toContain('v0.2.0')
-    expect(container.textContent).toContain('Open Science (AIPOCH)')
+    expect(container.textContent).toContain('© 2026 EconoMind contributors')
+    expect(container.textContent).toContain('upstream © 2026 AIPOCH')
+    expect(container.textContent).toContain('independent derivative of AIPOCH Open Science')
   })
 
-  it('has no upstream links or update controls even with a pending update', () => {
-    useUpdateStore.setState({ status: { state: 'available', current: '0.2.0', latest: '0.3.0' } })
-    act(() => root.render(<AppVersionSection />))
-    expect(container.querySelectorAll('a,button')).toHaveLength(0)
+  it('links help and release history to the canonical external resources', () => {
+    act(() => {
+      root.render(<AppVersionSection />)
+    })
+
+    const links = Array.from(container.querySelectorAll('a'))
+    expect(links).toHaveLength(2)
+    expect(links.map((link) => link.getAttribute('href'))).toEqual([
+      'https://github.com/coGenius-git/EconoMind/blob/main/docs/README.md',
+      'https://github.com/coGenius-git/EconoMind/releases'
+    ])
+    expect(links.every((link) => link.target === '_blank' && link.rel === 'noreferrer')).toBe(true)
+  })
+
+  it('reveals resource details and primary-colored icons on pointer hover or keyboard focus', () => {
+    act(() => {
+      root.render(<AppVersionSection />)
+    })
+
+    const links = Array.from(
+      container.querySelectorAll('a, button[aria-label="Open-source license"]')
+    )
+    const icons = Array.from(container.querySelectorAll('[data-slot="about-resource-icon"]'))
+    const titles = Array.from(container.querySelectorAll('[data-slot="about-resource-title"]'))
+    const descriptions = Array.from(
+      container.querySelectorAll('[data-slot="about-resource-description"]')
+    )
+
+    expect(links).toHaveLength(3)
+    expect(links.every((link) => link.classList.contains('group'))).toBe(true)
+    expect(icons).toHaveLength(3)
+    expect(
+      icons.every(
+        (icon) =>
+          icon.classList.contains('group-hover:text-primary') &&
+          icon.classList.contains('group-focus-visible:text-primary')
+      )
+    ).toBe(true)
+    expect(titles).toHaveLength(3)
+    expect(titles.every((title) => !title.classList.contains('translate-y-2.5'))).toBe(true)
+    expect(
+      titles.every(
+        (title) =>
+          title.classList.contains('[@media(hover:hover)_and_(pointer:fine)]:translate-y-2.5') &&
+          title.classList.contains(
+            '[@media(hover:hover)_and_(pointer:fine)]:group-hover:translate-y-0'
+          ) &&
+          title.classList.contains(
+            '[@media(hover:hover)_and_(pointer:fine)]:group-focus-visible:translate-y-0'
+          ) &&
+          title.classList.contains('[@media(any-pointer:coarse)]:!translate-y-0')
+      )
+    ).toBe(true)
+    expect(descriptions).toHaveLength(3)
+    expect(descriptions.every((description) => !description.classList.contains('opacity-0'))).toBe(
+      true
+    )
+    expect(
+      descriptions.every(
+        (description) =>
+          description.classList.contains('[@media(hover:hover)_and_(pointer:fine)]:opacity-0') &&
+          description.classList.contains(
+            '[@media(hover:hover)_and_(pointer:fine)]:group-hover:opacity-100'
+          ) &&
+          description.classList.contains(
+            '[@media(hover:hover)_and_(pointer:fine)]:group-focus-visible:opacity-100'
+          ) &&
+          description.classList.contains('[@media(any-pointer:coarse)]:!opacity-100')
+      )
+    ).toBe(true)
   })
 
   it('switches the About logo with an explicit app Theme', () => {
@@ -89,4 +174,99 @@ describe('AppVersionSection', () => {
     expect(useThemeStore.getState().preference).toBe('system')
     expect(container.querySelector('img')?.getAttribute('src')).toBe('logo-dark.png')
   })
+
+  it('keeps the full update error available and routes retry to the existing owner', () => {
+    const check = vi.fn(async () => {})
+    useUpdateStore.setState({
+      status: { state: 'error', current: '0.2.0', error: 'net::ERR_NAME_NOT_RESOLVED' },
+      check
+    })
+    act(() => root.render(<AppVersionSection />))
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      'net::ERR_NAME_NOT_RESOLVED'
+    )
+    const button = Array.from(container.querySelectorAll('button')).find((element) =>
+      /check now/i.test(element.textContent ?? '')
+    )!
+    act(() => button.click())
+    expect(check).toHaveBeenCalledOnce()
+  })
+
+  it('shows an update action when a new version is available', () => {
+    useUpdateStore.setState({
+      status: { state: 'available', current: '0.2.0', latest: '0.3.0', notes: 'n' }
+    })
+
+    act(() => {
+      root.render(<AppVersionSection />)
+    })
+
+    const button = Array.from(container.querySelectorAll('button')).find((element) =>
+      /update to 0\.3\.0/i.test(element.textContent ?? '')
+    )
+
+    expect(button).toBeDefined()
+  })
+
+  it.each([
+    ['restart', 'Restart to update'],
+    ['installer', 'Update downloaded — open the installer to finish']
+  ] as const)('shows the ready instruction for the %s apply strategy', (applyKind, message) => {
+    useUpdateStore.setState({
+      status: { state: 'ready', current: '0.2.0', latest: '0.3.0', applyKind }
+    })
+
+    act(() => {
+      root.render(<AppVersionSection />)
+    })
+
+    expect(container.textContent).toContain(message)
+  })
+
+  it.each([
+    ['downloading', true],
+    ['ready', false]
+  ] as const)('sets check availability while the update is %s', (state, disabled) => {
+    useUpdateStore.setState({
+      status: { state, current: '0.2.0', latest: '0.3.0' }
+    })
+
+    act(() => {
+      root.render(<AppVersionSection />)
+    })
+
+    const checkButton = Array.from(container.querySelectorAll('button')).find((element) =>
+      /check now/i.test(element.textContent ?? '')
+    )
+    expect(checkButton?.disabled).toBe(disabled)
+  })
+})
+
+it('shows a rejected update action while preserving the ready installer action', () => {
+  useUpdateStore.setState({
+    status: { state: 'ready', current: '0.2.0', latest: '0.3.0', error: 'IPC unavailable' }
+  })
+  act(() => root.render(<AppVersionSection />))
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain('IPC unavailable')
+  expect(useUpdateStore.getState().status.state).toBe('ready')
+})
+
+it.each([
+  [
+    'development-build',
+    'In-app updates are unavailable in this development build. Use Git to update the source code.'
+  ],
+  [
+    'missing-feed',
+    'This installation has no update feed. Check the release notes for a new installer.'
+  ]
+] as const)('explains an unavailable check: %s', (unavailableReason, message) => {
+  useUpdateStore.setState({ status: { state: 'idle', current: '0.34.1', unavailableReason } })
+  act(() => root.render(<AppVersionSection />))
+  expect(container.querySelector('[role="status"]')?.textContent).toBe(message)
+  const button = Array.from(container.querySelectorAll('button')).find((element) =>
+    /check now/i.test(element.textContent ?? '')
+  )
+  expect(button?.disabled).toBe(true)
+  expect(container.textContent).not.toContain('You are on the latest version')
 })

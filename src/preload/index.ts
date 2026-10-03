@@ -27,8 +27,7 @@ const api = createElectronRendererApi(electronRendererContracts, {
     unwrapApplicationCommandOutcome(
       await electronRendererContracts.invoke('sessions.saveSession', session, options)
     ),
-  'remoteAccess.onChanged': (listener) =>
-    electronRendererContracts.subscribe('remoteAccess.onChanged', () => (listener as () => void)()),
+
   'window.onCloseActivePane': (listener) =>
     subscribeCloseActivePane(
       {

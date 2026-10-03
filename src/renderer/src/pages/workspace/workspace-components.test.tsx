@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
+
+import { loadModuleImpactManifest } from '../../../../../scripts/ci/load-module-impact.mjs'
 
 const workspacePagePath = resolve(__dirname, 'WorkspacePage.tsx')
 const workspacePanelLayoutPath = resolve(__dirname, 'workspace-panel-layout.tsx')
@@ -39,6 +41,7 @@ describe('workspace page component boundaries', () => {
   it('keeps workspace regions in page-private component files', () => {
     const workspacePageSource = readFileSync(workspacePagePath, 'utf8')
     const workspacePanelLayoutSource = readFileSync(workspacePanelLayoutPath, 'utf8')
+    const workspaceSidebarSource = readFileSync(workspaceSidebarPath, 'utf8')
     // The sidebar's session-list subscription lives in a container between the page and the view.
     const workspaceSidebarContainerSource = readFileSync(workspaceSidebarContainerPath, 'utf8')
 
@@ -62,6 +65,7 @@ describe('workspace page component boundaries', () => {
       "import { WorkspaceSidebarContainer } from './WorkspaceSidebarContainer'"
     )
     expect(workspacePageSource).toContain('<WorkspaceSidebarContainer')
+    expect(workspaceSidebarSource).toContain('<GitHubStarBadge variant="workspace" />')
 
     expect(workspacePageSource).toContain(
       "import { WorkspacePanelLayout } from './workspace-panel-layout'"
@@ -79,11 +83,9 @@ describe('workspace page component boundaries', () => {
       resolve(__dirname, 'previews/PreviewToolContent.tsx'),
       'utf8'
     )
-    const moduleImpact = JSON.parse(
-      readFileSync(resolve(__dirname, '../../../../../scripts/ci/module-impact.json'), 'utf8')
-    ) as {
-      modules: { project_files_view: { ownerPaths: string[] } }
-    }
+    const moduleImpact = loadModuleImpactManifest(
+      resolve(__dirname, '../../../../../scripts/ci/module-impact.json')
+    )
 
     expect(rawLineCount(facadeSource)).toBeLessThanOrEqual(900)
     // Translation wrappers and Notebook kernel-stop confirmations add render-only lines to the
@@ -257,6 +259,27 @@ describe('workspace page component boundaries', () => {
     for (const source of horizontalScrollerSources) expect(source).toContain('scroll-fade-x')
   })
 
+  it('uses the shared auto-hide scrollbar treatment for workspace scroll regions', () => {
+    const mainCssSource = readFileSync(resolve(__dirname, '../../assets/main.css'), 'utf8')
+    const workspaceScrollSources = [
+      workspaceSidebarPath,
+      resolve(__dirname, '../../components/ui/message-scroller.tsx'),
+      resolve(__dirname, 'PreviewPanel.tsx'),
+      resolve(__dirname, '../../components/ui/scroll-area.tsx')
+    ].map((path) => readFileSync(path, 'utf8'))
+
+    expect(mainCssSource).toContain('.scrollbar-auto-hide')
+    expect(mainCssSource).toContain('.scrollbar-auto-hide:hover')
+    expect(mainCssSource).toContain('.scrollbar-message')
+    expect(mainCssSource).toContain('.scrollbar-auto-hide:not(.scrollbar-message)')
+    expect(mainCssSource).toContain('@media (hover: none), (any-pointer: coarse)')
+    expect(mainCssSource).toContain(
+      ".scrollbar-auto-hide:focus-within > [data-slot='scroll-area-scrollbar']"
+    )
+    expect(mainCssSource).toContain('::-webkit-scrollbar-thumb')
+    for (const source of workspaceScrollSources) expect(source).toContain('scrollbar-auto-hide')
+  })
+
   it('keeps desktop workspace bottom spacing aligned with the tighter top spacing', () => {
     const workspacePanelLayoutSource = readFileSync(workspacePanelLayoutPath, 'utf8')
     const sidebarSource = readFileSync(workspaceSidebarPath, 'utf8')
@@ -300,7 +323,8 @@ describe('workspace page component boundaries', () => {
       resolve(__dirname, 'NotebookPreview.tsx'),
       projectFilesFacadePath,
       projectFilesPresentationOwnerPath,
-      resolve(__dirname, '../../components/FileDropOverlay.tsx')
+      resolve(__dirname, '../../components/FileDropOverlay.tsx'),
+      resolve(__dirname, 'previews/renderers/PdbPreview.tsx')
     ]
       .map((path) => readFileSync(path, 'utf8'))
       .join('\n')
@@ -374,7 +398,10 @@ describe('conversation message scroller integration', () => {
     )
     expect(workspaceMessageScrollerSource).toContain('scrollPreviousItemPeek={64}')
     expect(workspaceMessageScrollerSource).toContain('<WorkspaceMessageItem')
-    expect(workspaceMessageItemSource).toContain("scrollAnchor={message.role === 'user'}")
+    expect(workspaceMessageItemSource).toContain(
+      "scrollAnchor={message.role === 'user' && !disableScrollAnchor}"
+    )
+    expect(workspaceMessageItemSource).toContain('disableScrollAnchor?: boolean')
     expect(workspaceMessageItemSource).toContain('messageId={message.id}')
     expect(workspaceMessageItemSource).toContain('<SessionMessageMarkdown')
     expect(workspaceMessageItemSource).toContain('content={assistantPresentation.content}')
@@ -399,14 +426,20 @@ describe('conversation message scroller integration', () => {
     expect(workspaceMessageItemSource).toContain('data-slot="user-bubble-row"')
     expect(workspaceMessageItemSource).toContain('data-slot="user-message-actions"')
     expect(workspaceMessageItemSource).toContain('data-slot="user-message-footer"')
-    expect(workspaceMessageItemSource).toContain(
+    const transcriptSurfaceSource = readFileSync(
+      resolve(__dirname, 'WorkspaceTranscriptSurface.tsx'),
+      'utf8'
+    )
+    expect(workspaceMessageItemSource).toContain('<WorkspaceUserMessageBubble')
+    expect(workspaceMessageItemSource).toContain('<WorkspaceAssistantMessageSurface')
+    expect(transcriptSurfaceSource).toContain(
       "'max-w-[90%] break-words rounded-2xl bg-bg-300 px-3.5 py-2 text-sm text-message-user-text md:max-w-[min(85%,56rem)] md:px-4 md:py-2.5 md:text-[15px]'"
     )
-    expect(workspaceMessageItemSource).toContain(
+    expect(transcriptSurfaceSource).toContain(
       "'relative w-full max-w-[56rem] text-sm leading-relaxed text-text-000 md:text-[15px]'"
     )
     expect(workspaceMessageScrollerSource).toContain(
-      'className="mx-auto w-full max-w-4xl gap-0 px-4 pb-[56px]"'
+      "'mx-auto w-full max-w-4xl gap-0 px-4 pb-[56px]'"
     )
     // Rows must stay direct children of MessageScrollerContent; no transcript wrapper div.
     expect(workspaceMessageScrollerSource).not.toContain('conversationContentClassName')
@@ -554,8 +587,13 @@ describe('conversation message scroller integration', () => {
       "import { WorkspaceAgentLoadingRow } from './WorkspaceAgentLoadingRow'"
     )
     expect(workspaceActivityGroupSource).toContain('const WorkspaceActivityGroup')
-    expect(workspaceActivityGroupSource).toContain('data-testid="tool-group"')
-    expect(workspaceActivityGroupSource).toContain('data-testid="tool-group-header"')
+    const transcriptSurfaceSource = readFileSync(
+      resolve(__dirname, 'WorkspaceTranscriptSurface.tsx'),
+      'utf8'
+    )
+    expect(workspaceActivityGroupSource).toContain('<WorkspaceActivityGroupSurface')
+    expect(transcriptSurfaceSource).toContain('data-testid="tool-group"')
+    expect(transcriptSurfaceSource).toContain('data-testid="tool-group-header"')
     expect(workspaceActivityGroupSource).toContain('<WorkspaceWebSearchActivityRow')
     expect(workspaceActivityGroupSource).toMatch(
       /formatActivityGroupPresentationTitle\(\s*group\.activities,\s*group\.title,\s*permission,\s*notebookRunsById,\s*t\s*\)/
@@ -625,9 +663,14 @@ describe('conversation message scroller integration', () => {
 
     const workspaceMessageItemSource = readFileSync(workspaceMessageItemPath, 'utf8')
 
-    expect(workspaceMessageItemSource).toContain('const artifactCardClassName')
-    expect(workspaceMessageItemSource).toContain('h-[82px] w-[128px]')
-    expect(workspaceMessageItemSource).toContain('grid-cols-[repeat(auto-fill,128px)]')
+    expect(workspaceMessageItemSource).toContain("from './GeneratedFileCard'")
+    const generatedFileCardSource = readFileSync(
+      resolve(dirname(workspaceMessageItemPath), 'GeneratedFileCard.tsx'),
+      'utf8'
+    )
+    expect(generatedFileCardSource).toContain('const artifactCardClassName')
+    expect(generatedFileCardSource).toContain('h-[82px] w-[128px]')
+    expect(generatedFileCardSource).toContain('grid-cols-[repeat(auto-fill,128px)]')
     expect(workspaceMessageItemSource).toContain('artifactGalleryClassName')
     expect(workspaceMessageItemSource).not.toContain('overflow-x-auto')
     expect(workspaceMessageItemSource).not.toContain("isGrid ? 'h-[132px] w-full'")

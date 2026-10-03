@@ -68,7 +68,7 @@ vi.mock('streamdown', () => ({
 
 const { AgentMarkdown, PresentedAgentMarkdown } = await import('./AgentMarkdown')
 const { SessionMessageLink } = await import('./SessionMessageLink')
-const { StreamingBlock } = await import('./StreamingBlock')
+const { AsyncStreamingBlock } = await import('./AsyncStreamingBlock')
 
 describe('AgentMarkdown renderer recovery', () => {
   let container: HTMLDivElement
@@ -155,6 +155,35 @@ describe('AgentMarkdown renderer recovery', () => {
     expect(container.querySelector('[data-testid="rich-markdown"]')?.textContent).toBe(content)
   })
 
+  it.each([
+    ['Parse error on line 2: unexpected token', false],
+    ['Lexical error on line 3. Unrecognized text.', false],
+    ['No diagram type detected matching given configuration for text: invalid', false],
+    ['Failed to fetch dynamically imported module', true]
+  ])('offers retry only when the rendering error may recover: %s', async (error, retryable) => {
+    streamdownHarness.shouldThrow = false
+    await act(async () =>
+      root.render(<AgentMarkdown content={'```mermaid\ngraph TD; A-->B\n```'} />)
+    )
+    const Panel = (
+      streamdownHarness.mermaidOptions as {
+        errorComponent: React.ComponentType<{ chart: string; error: string; retry: () => void }>
+      }
+    ).errorComponent
+    const retry = vi.fn()
+    act(() => root.render(<Panel chart="invalid source" error={error} retry={retry} />))
+    expect(container.textContent).toContain('View source')
+    expect(container.textContent).toContain('invalid source')
+    const button = Array.from(container.querySelectorAll('button')).find(
+      (item) => item.textContent === 'Retry'
+    )
+    expect(Boolean(button)).toBe(retryable)
+    if (button) {
+      act(() => button.click())
+      expect(retry).toHaveBeenCalledOnce()
+    }
+  })
+
   it('loads plugins for code and Mermaid fences nested in Markdown containers', async () => {
     streamdownHarness.shouldThrow = false
 
@@ -192,12 +221,25 @@ describe('AgentMarkdown renderer recovery', () => {
     expect(container.querySelector('[data-testid="rich-markdown"]')?.textContent).toBe(listMermaid)
   })
 
-  it('keeps the original message and sibling UI visible when rich Markdown rendering fails', async () => {
+  it('keeps rich Markdown structure and sibling UI visible when Streamdown fails', async () => {
+    const content = [
+      '## Iris EDA 完成',
+      '',
+      '- **150 rows** from `load_iris`',
+      '',
+      '| species | count |',
+      '| --- | --- |',
+      '| setosa | 50 |',
+      '',
+      '```text',
+      'sepal length  5.006',
+      '```'
+    ].join('\n')
     await act(async () => {
       root.render(
         <section>
           <span data-testid="workspace-sibling">Workspace controls</span>
-          <AgentMarkdown content={'Original message\n```ts\nconst value = 1\n```'} />
+          <AgentMarkdown content={content} />
         </section>
       )
     })
@@ -205,9 +247,32 @@ describe('AgentMarkdown renderer recovery', () => {
     expect(container.querySelector('[data-testid="workspace-sibling"]')?.textContent).toBe(
       'Workspace controls'
     )
-    expect(container.querySelector('[data-agent-markdown-fallback]')?.textContent).toBe(
-      'Original message\n```ts\nconst value = 1\n```'
-    )
+    const fallback = container.querySelector('[data-agent-markdown-fallback]')
+    expect(fallback?.querySelector('h2')?.textContent).toBe('Iris EDA 完成')
+    expect(fallback?.querySelector('strong')?.textContent).toBe('150 rows')
+    expect(fallback?.querySelector('code')?.textContent).toBe('load_iris')
+    expect(fallback?.querySelector('table tbody tr')?.textContent).toContain('setosa')
+    expect(fallback?.querySelector('pre')?.textContent).toContain('sepal length  5.006')
+    expect(fallback?.textContent).not.toContain('## Iris')
+    expect(container.querySelector('[data-agent-markdown-source-fallback]')).toBeNull()
+  })
+
+  it('does not load media or activate links in the readable fallback', async () => {
+    await act(async () => {
+      root.render(
+        <AgentMarkdown
+          content={
+            '[Report](https://example.com) ![remote figure](https://example.com/image.png) <img src="https://example.com/hidden.png">'
+          }
+        />
+      )
+    })
+
+    const fallback = container.querySelector('[data-agent-markdown-fallback]')
+    expect(fallback?.textContent).toContain('Report')
+    expect(fallback?.textContent).toContain('remote figure')
+    expect(fallback?.textContent).toContain('hidden.png')
+    expect(fallback?.querySelector('a, img')).toBeNull()
   })
 
   it('uses a caller-provided fallback when rich Markdown rendering fails', async () => {
@@ -243,6 +308,41 @@ describe('AgentMarkdown renderer recovery', () => {
     )
   })
 
+  it('retries rich rendering when streaming finishes with the same content', async () => {
+    await act(async () =>
+      root.render(<PresentedAgentMarkdown content="Final answer" isAnimating />)
+    )
+    expect(container.querySelector('[data-agent-markdown-fallback]')).not.toBeNull()
+
+    streamdownHarness.shouldThrow = false
+    await act(async () => root.render(<PresentedAgentMarkdown content="Final answer" />))
+
+    expect(container.querySelector('[data-agent-markdown-fallback]')).toBeNull()
+    expect(container.querySelector('[data-testid="rich-markdown"]')?.textContent).toBe(
+      'Final answer'
+    )
+  })
+
+  it('settles on the readable fallback when a completed message still cannot render', async () => {
+    await act(async () =>
+      root.render(<PresentedAgentMarkdown content="## Final answer" isAnimating />)
+    )
+    await act(async () => root.render(<PresentedAgentMarkdown content="## Final answer" />))
+
+    expect(container.querySelector('[data-agent-markdown-fallback] h2')?.textContent).toBe(
+      'Final answer'
+    )
+    const richFailures = (): number =>
+      vi
+        .mocked(console.error)
+        .mock.calls.filter(([message]) =>
+          String(message).startsWith('Failed to render rich Markdown')
+        ).length
+    const failures = richFailures()
+    await act(async () => root.render(<PresentedAgentMarkdown content="## Final answer" />))
+    expect(richFailures()).toBe(failures)
+  })
+
   it('blocks network-fetching media elements when media is disabled', async () => {
     streamdownHarness.shouldThrow = false
 
@@ -261,7 +361,7 @@ describe('AgentMarkdown renderer recovery', () => {
     await act(async () => {
       root.render(<AgentMarkdown content="Plain shared markdown" />)
     })
-    expect(streamdownHarness.components).toBeUndefined()
+    expect(streamdownHarness.components?.a).toBeUndefined()
 
     await act(async () => {
       root.render(<AgentMarkdown content="Session markdown" sessionLinks />)
@@ -309,14 +409,14 @@ describe('AgentMarkdown renderer recovery', () => {
     expect(streamdownHarness.components?.['managed-diff-added-r4nd0m']).toBe(Added)
   })
 
-  it('defers highlighting of the trailing unclosed code fence via the streaming block', async () => {
+  it('uses the cost-aware streaming block adapter', async () => {
     streamdownHarness.shouldThrow = false
 
     await act(async () => {
       root.render(<AgentMarkdown content={'```ts\nconst value = 1'} isAnimating />)
     })
 
-    expect(streamdownHarness.blockComponent).toBe(StreamingBlock)
+    expect(streamdownHarness.blockComponent).toBe(AsyncStreamingBlock)
   })
 
   it('reveals a buffered segment across frames without any caret at the visible tail', async () => {

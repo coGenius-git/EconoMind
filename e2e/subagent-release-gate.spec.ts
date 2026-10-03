@@ -1,5 +1,10 @@
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import type { Page } from 'playwright'
+import { applySessionConversationCommands } from '../src/shared/session-conversation-command'
+import type { PersistedChatSession } from '../src/shared/session-persistence'
 
 import {
   createProject,
@@ -8,6 +13,7 @@ import {
   sendPrompt
 } from './certification/helpers'
 import { test } from './fixtures/electron-app'
+import { retrySessionRevisionConflict } from './fixtures/session-revision-retry'
 
 const ROOT_PROMPT = 'Coordinate the release-gate delegates.'
 const CHILD_COUNT = 24
@@ -16,6 +22,7 @@ const ARTIFACT_VERSION_INPUT_PROMPT =
   'Run the production Artifact Version input delegation journey.'
 const BOUNDED_COLLECT_PROMPT = 'Run the production bounded collect journey.'
 const BOUNDED_RECOLLECT_PROMPT = 'Collect the running Subagent in Turn B.'
+const SCROLL_INTENT_PROMPT = 'Run the production Subagent scroll intent journey.'
 const PERMISSION_PROMPT = 'Run the production delegated permission journey.'
 const USER_QUESTION_PROMPT = 'Run the production delegated user question journey.'
 const STOP_PROMPT = 'Run the production delegation Stop journey.'
@@ -42,6 +49,26 @@ const STOP_CHILD_TWO = 'Delegated fixture B'
 const BRANCH_A_CHILD = 'Inactive branch child A'
 const BRANCH_B_CHILD = 'Active branch child B1'
 const BRANCH_B_CHILD_TWO = 'Active branch child B2'
+const IRIS_MARKDOWN_REPORT = [
+  '## Iris EDA 完成',
+  '',
+  '数据来源：`sklearn.datasets.load_iris`',
+  '',
+  '### 1) 数据规模与元信息（实测）',
+  '- 形状：**150 行 × 4 个数值特征**',
+  '',
+  '### 2) 分组统计',
+  '| species | sepal length | petal length |',
+  '| --- | --- | --- |',
+  '| setosa | 5.006 ± 0.352 | 1.462 ± 0.174 |',
+  '| versicolor | 5.936 ± 0.516 | 4.260 ± 0.470 |',
+  '',
+  '### 3) 相关系数矩阵',
+  '```',
+  '              sepal length  petal length',
+  'sepal length         1.000         0.872',
+  '```'
+].join('\n')
 
 const expectDurableChildStatus = async (
   page: Page,
@@ -89,9 +116,21 @@ const expectRenderedChildStatus = async (
   await trigger.click()
 }
 
-const seedDelegatedWork = async (page: Page, projectId: string): Promise<void> => {
+const seedDelegatedWork = async (
+  page: Page,
+  projectId: string,
+  longFirstChild = false,
+  markdownFirstChild = false
+): Promise<void> => {
   await page.evaluate(
-    async ({ childCount, projectId, rootPrompt }) => {
+    async ({
+      childCount,
+      projectId,
+      rootPrompt,
+      longFirstChild,
+      markdownFirstChild,
+      markdownReport
+    }) => {
       const bridge = globalThis as unknown as {
         api: {
           sessions: {
@@ -170,26 +209,39 @@ const seedDelegatedWork = async (page: Page, projectId: string): Promise<void> =
           activeBranchId: branchId,
           createdAt
         })
+        const messageCount = longFirstChild && index === 0 ? 32 : 1
         graph.branches.push({
           id: branchId,
           agentFrameId: frameId,
-          headMessageId: messageId,
+          headMessageId: messageCount === 1 ? messageId : `${messageId}-${messageCount - 1}`,
           createdAt,
           updatedAt: createdAt
         })
-        graph.messages.push({
-          id: messageId,
-          role: 'agent',
-          content: `Durable transcript for Release Child ${suffix}`,
-          status: 'complete',
-          eventIds: [],
-          agentFrameId: frameId,
-          introducedOnBranchId: branchId,
-          revisionRootMessageId: messageId,
-          runtimeSegmentId,
-          createdAt,
-          updatedAt: createdAt
-        })
+        for (let messageIndex = 0; messageIndex < messageCount; messageIndex += 1) {
+          graph.messages.push({
+            id: messageIndex === 0 ? messageId : `${messageId}-${messageIndex}`,
+            role: 'agent',
+            content:
+              longFirstChild && index === 0
+                ? `Durable transcript for Release Child ${suffix}, part ${messageIndex + 1}. ${'Review the evidence. '.repeat(30)}`
+                : markdownFirstChild && index === 0
+                  ? markdownReport
+                  : `Durable transcript for Release Child ${suffix}`,
+            status: markdownFirstChild && index === 0 ? 'streaming' : 'complete',
+            eventIds: [],
+            agentFrameId: frameId,
+            introducedOnBranchId: branchId,
+            ...(messageIndex > 0
+              ? {
+                  parentMessageId:
+                    messageIndex === 1 ? messageId : `${messageId}-${messageIndex - 1}`
+                }
+              : {}),
+            runtimeSegmentId,
+            createdAt: createdAt + messageIndex,
+            updatedAt: createdAt + messageIndex
+          })
+        }
         graph.runtimeSegments.push({
           id: runtimeSegmentId,
           agentFrameId: frameId,
@@ -247,9 +299,345 @@ const seedDelegatedWork = async (page: Page, projectId: string): Promise<void> =
         lastSessionId: sessionId
       })
     },
-    { childCount: CHILD_COUNT, projectId, rootPrompt: ROOT_PROMPT }
+    {
+      childCount: CHILD_COUNT,
+      projectId,
+      rootPrompt: ROOT_PROMPT,
+      longFirstChild,
+      markdownFirstChild,
+      markdownReport: IRIS_MARKDOWN_REPORT
+    }
   )
 }
+
+test('renders a running Subagent Markdown report after switching preview tabs', async ({ app }) => {
+  test.setTimeout(180_000)
+  await app.completeOnboarding()
+  let page = await app.configureFakeAgent()
+  const projectId = await createProject(page, 'Subagent Markdown report')
+  await seedDelegatedWork(page, projectId, false, true)
+  page = await app.restart()
+  await openRecentSession(page, ROOT_PROMPT)
+
+  const bar = page.getByTestId('subagents-bar')
+  await bar.locator(':scope > button').click()
+  await bar.getByRole('button', { name: 'Release Child 01, running' }).click()
+  const transcript = page.locator('[data-slot="subagent-transcript"]')
+  const report = transcript.locator('[data-message-id="release-message-01"]')
+  await expect(report.locator('h2')).toHaveText('Iris EDA 完成')
+  await expect(report.locator('[data-streamdown="strong"]')).toContainText('150 行')
+  await expect(report.locator('table tbody tr')).toHaveCount(2)
+  await expect(report.locator('pre')).toContainText('sepal length')
+  await expect(report.locator('[data-agent-markdown-fallback]')).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Files', exact: true }).click()
+  await page.getByRole('tab', { name: 'Subagents' }).click()
+  await expect(report.locator('h2')).toHaveText('Iris EDA 完成')
+  await expect(report.locator('table tbody tr')).toHaveCount(2)
+  await expect(report.locator('[data-agent-markdown-fallback]')).toHaveCount(0)
+})
+
+test('keeps a Subagent reading position across preview tabs', async ({ app }) => {
+  test.setTimeout(180_000)
+  await app.completeOnboarding()
+  let page = await app.configureFakeAgent()
+  await app.setMainWindowSize(1280, 900)
+  const projectId = await createProject(page, 'Subagent reading position')
+  await seedDelegatedWork(page, projectId, true)
+  page = await app.restart()
+  await openRecentSession(page, ROOT_PROMPT)
+
+  const bar = page.getByTestId('subagents-bar')
+  await bar.locator(':scope > button').click()
+  await bar.getByRole('button', { name: 'Release Child 01, running' }).click()
+  const preview = page.getByRole('region', { name: 'Subagents' })
+  const viewport = preview.locator('[data-slot="message-scroller-viewport"]')
+  await expect(preview).toContainText('part 32')
+  await expect.poll(() => viewport.evaluate((element) => element.scrollHeight)).toBeGreaterThan(900)
+  await viewport.hover()
+  await page.mouse.wheel(0, 2000)
+  await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(100)
+  await page.mouse.wheel(0, -500)
+  await expect
+    .poll(() =>
+      viewport.evaluate(
+        (element) => element.scrollHeight - element.clientHeight - element.scrollTop
+      )
+    )
+    .toBeGreaterThan(100)
+  const readingPosition = await viewport.evaluate((element) => element.scrollTop)
+
+  await page.getByRole('button', { name: 'Files', exact: true }).click()
+  await page.getByRole('tab', { name: 'Subagents' }).click()
+  expect(await preview.textContent()).toContain('part 32')
+  expect(await viewport.locator('[data-message-id]').count()).toBeGreaterThan(0)
+  await expect(preview).toBeVisible()
+  await expect
+    .poll(() => viewport.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(readingPosition - 8)
+  expect(await viewport.evaluate((element) => element.scrollTop)).toBeLessThan(readingPosition + 8)
+
+  const bottomGap = (): Promise<number> =>
+    viewport.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop)
+  await preview.getByRole('button', { name: 'Scroll to end' }).click()
+  await expect.poll(bottomGap).toBeLessThan(3)
+  await app.setMainWindowSize(1280, 760)
+  await expect.poll(bottomGap).toBeLessThan(3)
+  await page.getByRole('button', { name: 'Files', exact: true }).click()
+  await page.getByRole('tab', { name: 'Subagents' }).click()
+  await expect.poll(bottomGap).toBeLessThan(3)
+})
+
+test('follows live Subagent output only after the reader returns to the end', async ({ app }) => {
+  test.setTimeout(240_000)
+  await app.completeOnboarding()
+  const page = await app.configureFakeAgent()
+  await app.setMainWindowSize(1280, 900)
+  await createProject(page, 'Live Subagent scroll intent')
+  const directory = await app.createTestDirectory('subagent-scroll-intent')
+  const releaseFiles = [
+    join(directory, 'start'),
+    join(directory, 'first'),
+    join(directory, 'second')
+  ]
+
+  try {
+    await sendPrompt(
+      page,
+      `${SCROLL_INTENT_PROMPT}\nRelease files: ${JSON.stringify(releaseFiles)}`,
+      'Production Subagent scroll intent journey started.',
+      120_000
+    )
+    await expectDurableChildStatus(page, 'Scroll intent child', 'running')
+    const bar = page.getByTestId('subagents-bar')
+    await bar.locator(':scope > button').click()
+    await bar.getByRole('button', { name: 'Scroll intent child, running' }).click()
+    const preview = page.getByRole('region', { name: 'Subagents' })
+    const viewport = preview.locator('[data-slot="message-scroller-viewport"]')
+    await expect(viewport).toBeVisible()
+    await writeFile(releaseFiles[0], '')
+    await expect(preview).toContainText('Initial delegated evidence.', { timeout: 60_000 })
+    await page.getByRole('button', { name: 'Files', exact: true }).click()
+    await page.getByRole('tab', { name: 'Subagents' }).click()
+    await expect(preview).toContainText('Initial delegated evidence.')
+    await expect
+      .poll(() => viewport.evaluate((element) => element.scrollHeight))
+      .toBeGreaterThan(900)
+    await viewport.hover()
+    await page.mouse.wheel(0, 2000)
+    await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(100)
+    await page.mouse.wheel(0, -500)
+    const bottomGap = (): Promise<number> =>
+      viewport.evaluate(
+        (element) => element.scrollHeight - element.clientHeight - element.scrollTop
+      )
+    await expect.poll(bottomGap).toBeGreaterThan(100)
+    const readingPosition = await viewport.evaluate((element) => element.scrollTop)
+
+    await writeFile(releaseFiles[1], '')
+    await expect(preview).toContainText('Reading-position update arrived.', { timeout: 60_000 })
+    await expect
+      .poll(() => viewport.evaluate((element) => element.scrollTop))
+      .toBeGreaterThan(readingPosition - 8)
+    expect(await viewport.evaluate((element) => element.scrollTop)).toBeLessThan(
+      readingPosition + 8
+    )
+
+    await preview.getByRole('button', { name: 'Scroll to end' }).click()
+    await expect.poll(bottomGap).toBeLessThan(3)
+    await writeFile(releaseFiles[2], '')
+    await expect(preview).toContainText('Follow-end update arrived.', { timeout: 60_000 })
+    await expect.poll(bottomGap).toBeLessThan(3)
+  } finally {
+    await Promise.all(releaseFiles.map((file) => writeFile(file, '')))
+  }
+})
+
+test('preserves the complete live transcript on every visible frame across preview tabs', async ({
+  app
+}) => {
+  test.setTimeout(240_000)
+  await app.completeOnboarding()
+  const page = await app.configureFakeAgent()
+  await app.setMainWindowSize(1280, 900)
+  await createProject(page, 'Live Subagent history continuity')
+  const directory = await app.createTestDirectory('subagent-history-continuity')
+  const releaseFiles = ['start', 'first', 'second', 'finish'].map((name) => join(directory, name))
+  try {
+    await sendPrompt(
+      page,
+      `${SCROLL_INTENT_PROMPT}\nRelease files: ${JSON.stringify(releaseFiles)}`,
+      'Production Subagent scroll intent journey started.',
+      120_000
+    )
+    await expectDurableChildStatus(page, 'Scroll intent child', 'running')
+    const bar = page.getByTestId('subagents-bar')
+    await bar.locator(':scope > button').click()
+    await bar.getByRole('button', { name: 'Scroll intent child, running' }).click()
+    const preview = page.getByRole('region', { name: 'Subagents', includeHidden: true })
+    const transcript = preview.locator('[data-slot="subagent-transcript"]')
+    await writeFile(releaseFiles[0], '')
+    await expect(transcript).toContainText('Initial delegated evidence.', { timeout: 60_000 })
+
+    // Keep the provider running throughout the assertions: terminal staging must not repair
+    // a missing transcript before this test notices it. Sample painted frames, not just an
+    // eventually successful locator assertion after re-entering the tab.
+    await transcript.evaluate((element) => {
+      const panelId = element.closest('[role="tabpanel"]')?.id
+      if (!panelId) throw new Error('Subagent preview has no tab panel')
+      const audit = { frames: 0, losses: [] as string[], expected: [60, 0, 0], stop: false }
+      ;(window as unknown as { subagentHistoryAudit: typeof audit }).subagentHistoryAudit = audit
+      const sample = (): void => {
+        if (audit.stop) return
+        const panel = document.getElementById(panelId)
+        if (panel && !panel.closest('[hidden]')) {
+          audit.frames += 1
+          const current = panel.querySelector('[data-slot="subagent-transcript"]')
+          const counts = [
+            'Initial delegated evidence.',
+            'Reading-position update arrived.',
+            'Follow-end update arrived.'
+          ].map((text) => (current?.textContent?.split(text).length ?? 1) - 1)
+          if (counts.some((count, index) => count < audit.expected[index])) {
+            audit.losses.push(`Expected ${audit.expected}; received ${counts}`)
+          }
+        }
+        requestAnimationFrame(sample)
+      }
+      requestAnimationFrame(sample)
+    })
+    const counts = async (): Promise<number[]> =>
+      transcript.evaluate((element) =>
+        [
+          'Initial delegated evidence.',
+          'Reading-position update arrived.',
+          'Follow-end update arrived.'
+        ].map((text) => (element.textContent?.split(text).length ?? 1) - 1)
+      )
+    expect(await counts()).toEqual([60, 0, 0])
+    for (const [gate, expected] of [
+      [1, [60, 20, 0]],
+      [2, [60, 20, 20]]
+    ] as const) {
+      await page.getByRole('button', { name: 'Files', exact: true }).click()
+      if (gate === 1) {
+        await sendPrompt(page, 'Verify interaction follow-up.', 'Interaction follow-up completed.')
+        expect(await counts()).toEqual([60, 0, 0])
+      }
+      await writeFile(releaseFiles[gate], '')
+      await expect.poll(counts, { timeout: 60_000 }).toEqual(expected)
+      await page.evaluate((expected) => {
+        ;(
+          window as unknown as { subagentHistoryAudit: { expected: readonly number[] } }
+        ).subagentHistoryAudit.expected = expected
+      }, expected)
+      await page.getByRole('tab', { name: 'Subagents' }).click()
+      expect(await counts()).toEqual(expected)
+      await expectDurableChildStatus(page, 'Scroll intent child', 'running')
+    }
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      await page.getByRole('button', { name: 'Files', exact: true }).click()
+      await page.getByRole('tab', { name: 'Subagents' }).click()
+      expect(await counts()).toEqual([60, 20, 20])
+    }
+    const audit = await page.evaluate(async () => {
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      )
+      const audit = (
+        window as unknown as {
+          subagentHistoryAudit: { frames: number; losses: string[]; stop: boolean }
+        }
+      ).subagentHistoryAudit
+      audit.stop = true
+      return audit
+    })
+    expect(audit.frames).toBeGreaterThan(0)
+    expect(audit.losses).toEqual([])
+    await writeFile(releaseFiles[3], '')
+    await expectDurableChildStatus(page, 'Scroll intent child', 'completed')
+    expect(await counts()).toEqual([60, 20, 20])
+  } finally {
+    await Promise.all(releaseFiles.map((file) => writeFile(file, '')))
+  }
+})
+
+test('restores messages and tools emitted before opening and while the Subagents tab is closed', async ({
+  app
+}) => {
+  test.setTimeout(180_000)
+  await app.completeOnboarding()
+  const page = await app.configureFakeAgent()
+  await createProject(page, 'Subagent transcript lifecycle')
+  const directory = await app.createTestDirectory('subagent-transcript-lifecycle')
+  const releaseFiles = ['start', 'first', 'second', 'finish', 'include-history'].map((name) =>
+    join(directory, name)
+  )
+  try {
+    await page.evaluate(() => {
+      const received: string[] = []
+      ;(window as unknown as { childHistoryEvents: string[] }).childHistoryEvents = received
+      window.api.acp.onAgentRuntimeUpdate((update) => {
+        if (update.event.text) received.push(update.event.text)
+      })
+    })
+    await sendPrompt(
+      page,
+      `${SCROLL_INTENT_PROMPT}\nRelease files: ${JSON.stringify(releaseFiles)}`,
+      'Production Subagent scroll intent journey started.',
+      120_000
+    )
+    await expectDurableChildStatus(page, 'Scroll intent child', 'running')
+    await writeFile(releaseFiles[0], '')
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (window as unknown as { childHistoryEvents: string[] }).childHistoryEvents.some((text) =>
+            text.includes('Initial delegated evidence.')
+          )
+        )
+      )
+      .toBe(true)
+    const openChild = async (): Promise<void> => {
+      const bar = page.getByTestId('subagents-bar')
+      const trigger = bar.locator(':scope > button')
+      if ((await trigger.getAttribute('aria-expanded')) === 'false') await trigger.click()
+      await bar.getByRole('button', { name: 'Scroll intent child, running' }).click()
+    }
+    await openChild()
+    const preview = page.getByRole('region', { name: 'Subagents' })
+    await expect(preview).toContainText('Historical plan before preview.')
+    await expect(preview).toContainText('Read a file')
+    await expect(preview).toContainText('Initial delegated evidence.')
+    await page.getByRole('button', { name: 'Close preview of Subagents', exact: true }).click()
+    await writeFile(releaseFiles[1], '')
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (window as unknown as { childHistoryEvents: string[] }).childHistoryEvents.some((text) =>
+            text.includes('Reading-position update arrived.')
+          )
+        )
+      )
+      .toBe(true)
+    await openChild()
+    // Read immediately after the actual tab is re-created; no completion or later delta may repair it.
+    const text = await preview.textContent()
+    expect(text).toContain('Historical plan before preview.')
+    expect(text).toContain('Read a file')
+    expect(text?.split('Initial delegated evidence.').length).toBe(61)
+    expect(text?.split('Reading-position update arrived.').length).toBe(21)
+    await expectDurableChildStatus(page, 'Scroll intent child', 'running')
+    await writeFile(releaseFiles[2], '')
+    await expect(preview).toContainText('Follow-end update arrived.')
+    await writeFile(releaseFiles[3], '')
+    await expectDurableChildStatus(page, 'Scroll intent child', 'completed')
+    await expect(preview).toContainText('Historical plan before preview.')
+    expect((await preview.textContent())?.split('Initial delegated evidence.').length).toBe(61)
+  } finally {
+    await Promise.all(releaseFiles.map((file) => writeFile(file, '')))
+  }
+})
 
 test('resolves a bare Artifact version_id into a delegated read-only input', async ({ app }) => {
   test.setTimeout(180_000)
@@ -318,28 +706,32 @@ test('projects real production-composed delegation, permission, and Stop lifecyc
   )
   await expectDurableChildStatus(page, TERMINAL_CHILD, 'completed')
 
+  const releaseFile = join(await app.createTestDirectory('bounded-delegation'), 'release')
   await sendPrompt(
     page,
-    BOUNDED_COLLECT_PROMPT,
+    `${BOUNDED_COLLECT_PROMPT}\nRelease file: ${JSON.stringify(releaseFile)}`,
     'Production bounded delegate returned while a Subagent kept running.',
     120_000
   )
   await expect(page.getByRole('button', { name: 'Send message' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Stop subagents' })).toBeVisible()
+  await writeFile(releaseFile, '')
   await sendPrompt(
     page,
     BOUNDED_RECOLLECT_PROMPT,
     'Production bounded collect journey completed.',
     120_000
   )
+  await expectDurableChildStatus(page, 'Complete the bounded fixture after a delay.', 'completed')
   await expectRenderedChildStatus(page, TERMINAL_CHILD, 'completed')
 
   const composer = page.getByRole('textbox', { name: 'Ask anything' })
   await composer.fill(PERMISSION_PROMPT)
   await page.getByRole('button', { name: 'Send message' }).click()
-  const permissionCard = page
-    .getByTestId('permission-composer-scroll')
-    .getByTestId('permission-card')
+  const permissionCard = page.getByRole('group', {
+    name: `${PERMISSION_CHILD} permission request: Allow tool access?`,
+    exact: true
+  })
   await expect(permissionCard).toContainText('Read delegated evidence', {
     timeout: 120_000
   })
@@ -634,130 +1026,219 @@ test('routes reliable Main and child messages through production Host RPC and th
     name: /asked a question\./
   })
   await expect(inlineQuestion).toContainText('Child reliable question reached Main')
-  const evidence = await page.evaluate(async (projectId) => {
-    const loaded = await window.api.sessions.loadAll()
-    const session = loaded.sessions.find((candidate) => candidate.projectId === projectId)
-    return {
-      commands: session?.runtimeContext?.delegatedWork?.messageCommands,
-      rendered: session?.conversationGraph?.messages.some((message) =>
-        message.content.includes(
-          'Main replied to the reliable child question from the root continuation.'
-        )
-      )
-    }
-  }, projectId)
-  expect(evidence.rendered).toBe(true)
-  expect(evidence.commands).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        direction: 'to_child',
-        receipt: expect.objectContaining({ status: 'accepted' })
-      }),
-      expect.objectContaining({
-        direction: 'to_parent',
-        receipt: expect.objectContaining({ status: 'accepted' })
-      }),
-      expect.objectContaining({
-        requestId: 'e2e-main-reply-to-child',
-        direction: 'to_child',
-        receipt: expect.objectContaining({ status: 'accepted' })
-      })
-    ])
-  )
+  await expect
+    .poll(() =>
+      page.evaluate(async (projectId) => {
+        const loaded = await window.api.sessions.loadAll()
+        const session = loaded.sessions.find((candidate) => candidate.projectId === projectId)
+        return {
+          commands: session?.runtimeContext?.delegatedWork?.messageCommands,
+          rendered: session?.conversationGraph?.messages.some((message) =>
+            message.content.includes(
+              'Main replied to the reliable child question from the root continuation.'
+            )
+          )
+        }
+      }, projectId)
+    )
+    .toMatchObject({
+      rendered: true,
+      commands: expect.arrayContaining([
+        expect.objectContaining({
+          direction: 'to_child',
+          receipt: expect.objectContaining({ status: 'accepted' })
+        }),
+        expect.objectContaining({
+          direction: 'to_parent',
+          receipt: expect.objectContaining({ status: 'accepted' })
+        }),
+        expect.objectContaining({
+          requestId: 'e2e-main-reply-to-child',
+          direction: 'to_child',
+          receipt: expect.objectContaining({ status: 'accepted' })
+        })
+      ])
+    })
 })
 
 test('parks an upward message on branch switch and resumes it after restart and restoration', async ({
   app
-}) => {
+}, testInfo) => {
   test.setTimeout(180_000)
   await app.completeOnboarding()
   let page = await app.configureFakeAgent()
   const projectId = await createProject(page, 'Reliable branch park release gate')
-
-  const composer = page.getByRole('textbox', { name: 'Ask anything' })
-  await composer.fill(RELIABLE_BRANCH_PARK_PROMPT)
-  await page.getByRole('button', { name: 'Send message' }).click()
-  await expect(page.getByText('Branch park upward message queued.')).toBeVisible({
-    timeout: 120_000
-  })
-  let sessionId: string | undefined
-  await expect
-    .poll(async () => {
-      const identity = await page.evaluate(async (projectId) => {
-        const loaded = await window.api.sessions.loadAll()
-        const session = loaded.sessions.find((candidate) => candidate.projectId === projectId)
-        const command = session?.runtimeContext?.delegatedWork?.messageCommands?.find(
-          ({ requestId }) => requestId === 'e2e-child-park'
-        )
-        return { sessionId: session?.id, status: command?.receipt.status }
-      }, projectId)
-      sessionId = identity.sessionId
-      return identity.status
-    })
-    .toBe('queued')
-  expect(sessionId).toEqual(expect.any(String))
-
-  const inactiveBranchReload = page.waitForEvent('domcontentloaded')
-  await page.evaluate(
-    async ({ projectId, sessionId }) => {
-      const loaded = await window.api.sessions.loadAll()
-      const session = loaded.sessions.find(
-        (candidate) => candidate.projectId === projectId && candidate.id === sessionId
-      )!
-      const graph = session.conversationGraph!
-      const root = graph.frames.find(({ id }) => id === graph.rootFrameId)!
-      const parentBranch = graph.branches.find(({ id }) => id === root.activeBranchId)!
-      const forkTarget = graph.messages
-        .filter(
-          (message) =>
-            message.agentFrameId === root.id &&
-            message.introducedOnBranchId === parentBranch.id &&
-            message.role === 'user'
-        )
-        .sort((left, right) => right.createdAt - left.createdAt)[0]!
-      const now = Date.now()
-      graph.branches.push({
-        id: 'e2e-park-other-branch',
-        agentFrameId: root.id,
-        parentBranchId: parentBranch.id,
-        forkMessageId: forkTarget.parentMessageId,
-        supersededMessageId: forkTarget.id,
-        headMessageId: forkTarget.parentMessageId,
-        createdAt: now,
-        updatedAt: now
-      })
-      root.activeBranchId = 'e2e-park-other-branch'
-      graph.activeFrameId = root.id
-      await window.api.sessions.saveSession({
-        ...session,
-        conversationGraph: graph,
-        messages: [],
-        activities: [],
-        activityGroups: [],
-        updatedAt: now
-      })
-      window.setTimeout(() => window.location.reload(), 0)
+  const cwd = await app.createTestDirectory('reliable-branch-park')
+  // Seed an unfenced durable queue on an idle Session. A running Main turn cannot switch
+  // branches; Host RPC admission and concurrent delivery are exercised by the adjacent tests.
+  const sessionId = 'e2e-park-session'
+  const now = Date.now()
+  const rootMessage = {
+    id: 'park-origin',
+    role: 'user' as const,
+    content: RELIABLE_BRANCH_PARK_PROMPT,
+    status: 'complete' as const,
+    eventIds: [],
+    createdAt: now,
+    updatedAt: now,
+    agentFrameId: 'park-root',
+    introducedOnBranchId: 'park-branch',
+    revisionRootMessageId: 'park-origin',
+    runtimeSegmentId: 'park-segment'
+  }
+  const fixture: PersistedChatSession = {
+    id: sessionId,
+    projectId,
+    cwd,
+    title: RELIABLE_BRANCH_PARK_PROMPT,
+    runtimeTranscriptOwner: 'main',
+    status: 'idle',
+    agentFrameworkId: 'opencode',
+    messages: [rootMessage],
+    createdAt: now,
+    updatedAt: now,
+    conversationGraph: {
+      schemaVersion: 1,
+      rootFrameId: 'park-root',
+      activeFrameId: 'park-root',
+      frames: [
+        {
+          id: 'park-root',
+          kind: 'root',
+          originBindingState: 'root',
+          status: 'completed',
+          activeBranchId: 'park-branch',
+          createdAt: now
+        },
+        {
+          id: 'park-child',
+          kind: 'delegate',
+          originBindingState: 'validated',
+          originMessageId: rootMessage.id,
+          parentFrameId: 'park-root',
+          delegateName: 'Parked child',
+          status: 'completed',
+          activeBranchId: 'park-child-branch',
+          createdAt: now
+        }
+      ],
+      branches: [
+        {
+          id: 'park-branch',
+          agentFrameId: 'park-root',
+          headMessageId: rootMessage.id,
+          createdAt: now,
+          updatedAt: now
+        },
+        {
+          id: 'park-child-branch',
+          agentFrameId: 'park-child',
+          headMessageId: 'park-child-prompt',
+          createdAt: now,
+          updatedAt: now
+        }
+      ],
+      messages: [
+        rootMessage,
+        {
+          ...rootMessage,
+          id: 'park-child-prompt',
+          agentFrameId: 'park-child',
+          introducedOnBranchId: 'park-child-branch',
+          revisionRootMessageId: 'park-child-prompt',
+          runtimeSegmentId: 'park-child-segment',
+          content: 'Send Main a question'
+        }
+      ],
+      runtimeSegments: [
+        {
+          id: 'park-segment',
+          agentFrameId: 'park-root',
+          frameworkId: 'opencode',
+          startedAt: now
+        },
+        {
+          id: 'park-child-segment',
+          agentFrameId: 'park-child',
+          frameworkId: 'opencode',
+          startedAt: now,
+          endedAt: now + 1
+        }
+      ],
+      activities: [],
+      activityGroups: []
     },
-    { projectId, sessionId: sessionId! }
+    runtimeContext: {
+      version: 1,
+      revision: 1,
+      delegatedWork: {
+        records: [
+          {
+            agentFrameId: 'park-child',
+            attempts: [
+              {
+                id: 'park-attempt',
+                status: 'completed',
+                resolvedAgent: { kind: 'main' },
+                runtimeSegmentIds: ['park-child-segment'],
+                startedAt: now,
+                endedAt: now + 1
+              }
+            ]
+          }
+        ],
+        messageCommands: [
+          {
+            messageId: 'park-message',
+            requestId: 'e2e-child-park',
+            sourcePrincipal: 'park-child\u0000park-attempt',
+            canonicalDigest: 'a'.repeat(64),
+            sourceFrameId: 'park-child',
+            sourceAttemptId: 'park-attempt',
+            targetFrameId: 'park-root',
+            rootPromptMessageId: 'park-message-root-prompt',
+            rootOriginMessageId: rootMessage.id,
+            callerRootMessageId: rootMessage.id,
+            rootBranchId: 'park-branch',
+            rootBranchRevision: `park-branch:${now}`,
+            direction: 'to_parent',
+            disposition: 'message',
+            text: 'Parked reliable child question',
+            kind: 'question',
+            laneSequence: 1,
+            queuedAt: now + 1,
+            receipt: { status: 'queued' }
+          }
+        ]
+      }
+    }
+  }
+  page = await app.restartWithSessionFixture(
+    applySessionConversationCommands(fixture, [
+      {
+        id: 'e2e-park-fork',
+        kind: 'fork-message',
+        timestamp: now + 2,
+        branchId: 'e2e-park-other-branch',
+        parentBranchId: 'park-branch',
+        messageId: rootMessage.id
+      }
+    ])
   )
-  await inactiveBranchReload
   await expect
     .poll(async () =>
-      page.evaluate(
-        async ({ projectId, sessionId }) => {
-          const loaded = await window.api.sessions.loadAll()
-          const session = loaded.sessions.find(
-            (candidate) => candidate.projectId === projectId && candidate.id === sessionId
-          )
-          const command = session?.runtimeContext?.delegatedWork?.messageCommands?.find(
-            ({ requestId }) => requestId === 'e2e-child-park'
-          )
-          return { sessionStatus: session?.status, receiptStatus: command?.receipt.status }
-        },
-        { projectId, sessionId: sessionId! }
-      )
+      page.evaluate(async (sessionId) => {
+        const loaded = await window.api.sessions.loadAll()
+        const session = loaded.sessions.find(({ id }) => id === sessionId)!
+        return {
+          branchId: session.conversationGraph!.frames.find(({ id }) => id === 'park-root')!
+            .activeBranchId,
+          receipt: session.runtimeContext?.delegatedWork?.messageCommands?.[0]?.receipt
+        }
+      }, sessionId)
     )
-    .toEqual({ sessionStatus: 'idle', receiptStatus: 'queued' })
+    .toEqual({ branchId: 'e2e-park-other-branch', receipt: { status: 'queued' } })
+  await page.screenshot({ path: testInfo.outputPath('late-output-selected-branch.png') })
   page = await app.restart()
   await expect
     .poll(async () =>
@@ -775,49 +1256,38 @@ test('parks an upward message on branch switch and resumes it after restart and 
     )
     .toBe('queued')
 
-  const restoredBranchReload = page.waitForEvent('domcontentloaded')
-  await page.evaluate(
-    async ({ projectId, sessionId }) => {
-      const loaded = await window.api.sessions.loadAll()
-      const session = loaded.sessions.find(
-        (candidate) => candidate.projectId === projectId && candidate.id === sessionId
-      )!
-      const graph = session.conversationGraph!
-      const root = graph.frames.find(({ id }) => id === graph.rootFrameId)!
-      const command = session.runtimeContext?.delegatedWork?.messageCommands?.find(
-        ({ requestId }) => requestId === 'e2e-child-park'
+  await Promise.all([
+    page.waitForEvent('domcontentloaded'),
+    retrySessionRevisionConflict(() =>
+      page.evaluate(
+        async ({ projectId, sessionId }) => {
+          const loaded = await window.api.sessions.loadAll()
+          const session = loaded.sessions.find(
+            (candidate) => candidate.projectId === projectId && candidate.id === sessionId
+          )!
+          const graph = session.conversationGraph!
+          const root = graph.frames.find(({ id }) => id === graph.rootFrameId)!
+          const command = session.runtimeContext?.delegatedWork?.messageCommands?.find(
+            ({ requestId }) => requestId === 'e2e-child-park'
+          )
+          if (!command) throw new Error('Parked message command is unavailable.')
+          await window.api.sessions.saveSession(session, {
+            conversationCommands: [
+              {
+                id: 'e2e-park-restore',
+                timestamp: Date.now(),
+                kind: 'select-branch',
+                branchId: command.rootBranchId,
+                previousBranchId: root.activeBranchId
+              }
+            ]
+          })
+          window.setTimeout(() => window.location.reload(), 0)
+        },
+        { projectId, sessionId: sessionId! }
       )
-      if (!command) throw new Error('Parked message command is unavailable.')
-      root.activeBranchId = command.rootBranchId
-      graph.activeFrameId = root.id
-      const restoredBranch = graph.branches.find(({ id }) => id === command.rootBranchId)!
-      const messagesById = new Map(graph.messages.map((message) => [message.id, message]))
-      const restoredMessages: typeof graph.messages = []
-      let cursor = restoredBranch.headMessageId
-      while (cursor) {
-        const message = messagesById.get(cursor)
-        if (!message) break
-        restoredMessages.unshift(message)
-        cursor = message.parentMessageId
-      }
-      const restoredMessageIds = new Set<string>(restoredMessages.map(({ id }) => id))
-      await window.api.sessions.saveSession({
-        ...session,
-        conversationGraph: graph,
-        messages: restoredMessages,
-        activities: graph.activities.filter((activity) =>
-          restoredMessageIds.has(activity.promptMessageId)
-        ),
-        activityGroups: graph.activityGroups.filter((group) =>
-          restoredMessageIds.has(group.promptMessageId)
-        ),
-        updatedAt: Date.now()
-      })
-      window.setTimeout(() => window.location.reload(), 0)
-    },
-    { projectId, sessionId: sessionId! }
-  )
-  await restoredBranchReload
+    )
+  ])
   await openRecentSession(page, RELIABLE_BRANCH_PARK_PROMPT)
   await expect(
     page.getByText('Main rendered the parked child question after branch restoration.')
@@ -837,9 +1307,10 @@ test('parks an upward message on branch switch and resumes it after restart and 
       )
     )
     .toBe('accepted')
+  await page.screenshot({ path: testInfo.outputPath('late-output-restored-branch.png') })
 })
 
-test('recovers a post-fence receipt persistence failure as uncertain after restart', async ({
+test('recovers a post-fence receipt persistence failure as uncertain after process termination', async ({
   app
 }) => {
   test.setTimeout(180_000)
@@ -876,9 +1347,9 @@ test('recovers a post-fence receipt persistence failure as uncertain after resta
         dispatchStarted: typeof durable.dispatchStartedAt === 'number'
       }
     })
-    .toEqual({ sessionStatus: 'idle', dispatchStarted: true })
+    .toEqual({ sessionStatus: 'running', dispatchStarted: true })
   expect(sessionId).toEqual(expect.any(String))
-  page = await app.restart()
+  page = await app.restartAfterCrash()
   await openProjectSession(page, 'Reliable failure window release gate', RELIABLE_FAILURE_PROMPT)
   const messageId = await page.evaluate(
     async ({ projectId, sessionId }) => {
@@ -912,29 +1383,40 @@ test('recovers a post-fence receipt persistence failure as uncertain after resta
   expect(receipt).toMatchObject({ status: 'uncertain', resolution: 'pending' })
 })
 
-test('fairly schedules two upward lanes with a concurrent real user prompt', async ({ app }) => {
+test('fairly schedules two upward lanes with a concurrent real user prompt', async ({
+  app
+}, testInfo) => {
   test.setTimeout(180_000)
   await app.completeOnboarding()
   const page = await app.configureFakeAgent()
   const projectId = await createProject(page, 'Reliable fairness release gate')
 
   const composer = page.getByRole('textbox', { name: 'Ask anything' })
-  await composer.fill(RELIABLE_FAIRNESS_PROMPT)
+  const releaseFile = join(await app.createTestDirectory('fairness-admission'), 'release')
+  await composer.fill(`${RELIABLE_FAIRNESS_PROMPT}\nRelease file: ${JSON.stringify(releaseFile)}`)
   await page.getByRole('button', { name: 'Send message' }).click()
-  await expect(page.getByText('Two upward lanes are queued.')).toBeVisible({ timeout: 120_000 })
-  await page.evaluate(
-    ({ projectId, text }) => {
-      const run = async (): Promise<void> => {
+  await expect(page.getByText('Two upward lanes are starting.')).toBeVisible({ timeout: 120_000 })
+  await expect
+    .poll(async () =>
+      page.evaluate(async (projectId) => {
         const loaded = await window.api.sessions.loadAll()
-        const session = loaded.sessions.find((candidate) => candidate.projectId === projectId)!
-        await window.api.acp.sendPrompt({ sessionId: session.id, text })
-      }
-      ;(
-        globalThis as typeof globalThis & { fairnessUserPrompt?: Promise<void> }
-      ).fairnessUserPrompt = run()
-    },
-    { projectId, text: RELIABLE_FAIRNESS_USER_PROMPT }
-  )
+        const commands =
+          loaded.sessions.find((candidate) => candidate.projectId === projectId)?.runtimeContext
+            ?.delegatedWork?.messageCommands ?? []
+        return commands
+          .filter(({ requestId }) => requestId.startsWith('e2e-fairness-'))
+          .map(({ requestId, receipt }) => ({ requestId, status: receipt.status }))
+          .sort((left, right) => left.requestId.localeCompare(right.requestId))
+      }, projectId)
+    )
+    .toEqual([
+      { requestId: 'e2e-fairness-a', status: 'queued' },
+      { requestId: 'e2e-fairness-b', status: 'queued' }
+    ])
+  await composer.fill(RELIABLE_FAIRNESS_USER_PROMPT)
+  await page.getByTestId('composer-queue-submit').click()
+  await expect(page.getByTestId('composer-queue-trigger')).toBeVisible()
+  await writeFile(releaseFile, '')
 
   await expect(page.getByText('Main rendered reliable fairness child A.')).toBeVisible({
     timeout: 120_000
@@ -946,8 +1428,6 @@ test('fairly schedules two upward lanes with a concurrent real user prompt', asy
     timeout: 120_000
   })
   const evidence = await page.evaluate(async (projectId) => {
-    await (globalThis as typeof globalThis & { fairnessUserPrompt?: Promise<void> })
-      .fairnessUserPrompt
     const loaded = await window.api.sessions.loadAll()
     const commands =
       loaded.sessions.find((candidate) => candidate.projectId === projectId)?.runtimeContext
@@ -961,9 +1441,12 @@ test('fairly schedules two upward lanes with a concurrent real user prompt', asy
     { requestId: 'e2e-fairness-a', status: 'accepted' },
     { requestId: 'e2e-fairness-b', status: 'accepted' }
   ])
+  await page.screenshot({ path: testInfo.outputPath('concurrent-parent-messages.png') })
 })
 
-test('stops only the active branch and exposes a retryable partial failure', async ({ app }) => {
+test('stops only the active branch and exposes a retryable partial failure', async ({
+  app
+}, testInfo) => {
   test.setTimeout(180_000)
   await app.completeOnboarding()
   const page = await app.configureFakeAgent()
@@ -1000,9 +1483,9 @@ test('stops only the active branch and exposes a retryable partial failure', asy
   await page.getByRole('button', { name: 'Stop subagents' }).click()
   await expectDurableChildStatus(page, BRANCH_B_CHILD, 'cancelled')
   await expectDurableChildStatus(page, BRANCH_B_CHILD_TWO, 'running')
-  await expect(page.getByRole('alert')).toContainText(
-    'One or more Subagent Attempts could not be stopped.'
-  )
+  await expect(
+    page.getByRole('alert', { name: /One or more Subagent Attempts could not be stopped/ })
+  ).toContainText('One or more Subagent Attempts could not be stopped.')
   await page.getByRole('textbox', { name: 'Ask anything' }).fill('Send gate restored after Stop.')
   await expect(page.getByRole('button', { name: 'Send message' })).toBeEnabled()
   await expect(page.getByRole('button', { name: 'Stop subagents' })).toBeEnabled()
@@ -1017,6 +1500,7 @@ test('stops only the active branch and exposes a retryable partial failure', asy
   await expectRenderedChildStatus(page, BRANCH_A_CHILD, 'running')
   await page.getByRole('button', { name: 'Stop subagents' }).click()
   await expectDurableChildStatus(page, BRANCH_A_CHILD, 'cancelled')
+  await page.screenshot({ path: testInfo.outputPath('stopped-selected-branch.png') })
 })
 
 test('inherits a real root Specialist when profile is omitted and preserves its label after restart', async ({
@@ -1120,16 +1604,7 @@ test('ships one durable, scalable, keyboard-operable persisted Subagent surface'
   await expect
     .poll(() =>
       page.evaluate(async (projectId) => {
-        const bridge = globalThis as unknown as {
-          api: {
-            preview: {
-              load: (request: { projectId: string }) => Promise<{
-                subagents?: { selectedAgentFrameId?: string }
-              } | null>
-            }
-          }
-        }
-        return (await bridge.api.preview.load({ projectId }))?.subagents?.selectedAgentFrameId
+        return (await window.api.preview.load({ projectId }))?.state.subagents?.selectedAgentFrameId
       }, projectId)
     )
     .toBe('release-child-05')
@@ -1148,4 +1623,92 @@ test('ships one durable, scalable, keyboard-operable persisted Subagent surface'
   await expect(page.getByRole('combobox', { name: 'Subagent Frame' })).toContainText(
     'Release Child 05'
   )
+})
+
+test('preserves a quarantined delegated workspace after restart when Project deletion is retried', async ({
+  app
+}, testInfo) => {
+  test.setTimeout(180_000)
+  await app.completeOnboarding()
+  let page = await app.configureFakeAgent()
+  const name = 'Protected delegated evidence'
+  const projectId = await createProject(page, name)
+  await sendPrompt(
+    page,
+    TERMINAL_PROMPT,
+    'Production delegation reached a terminal result.',
+    120_000
+  )
+  await expectDurableChildStatus(page, TERMINAL_CHILD, 'completed')
+  const persisted = await page.evaluate(async (projectId) => {
+    const session = (await window.api.sessions.loadAll()).sessions.find(
+      (candidate) => candidate.projectId === projectId
+    )!
+    const record = session.runtimeContext!.delegatedWork!.records[0]
+    return {
+      dataRoot: (await window.api.storage.getInfo()).dataRoot,
+      sessionId: session.id,
+      frameId: record.agentFrameId,
+      attemptId: record.attempts.at(-1)!.id,
+      frameworkId: session.agentFrameworkId!
+    }
+  }, projectId)
+  const receiptId = randomUUID()
+  const receiptDirectory = join(
+    persisted.dataRoot,
+    'delegation-process-ownership',
+    projectId,
+    persisted.sessionId
+  )
+  const receiptPath = join(receiptDirectory, `${receiptId}.json`)
+  const evidence = join(
+    persisted.dataRoot,
+    'delegation',
+    projectId,
+    persisted.sessionId,
+    'frames',
+    persisted.frameId,
+    'protected-evidence.txt'
+  )
+  await writeFile(evidence, 'preserve this evidence')
+  await mkdir(receiptDirectory, { recursive: true })
+  // Seed the persisted cleanup-failure boundary. This UI test does not manufacture a live orphan;
+  // production-composition regressions independently exercise receipt creation from cleanup failure.
+  await writeFile(
+    receiptPath,
+    JSON.stringify({
+      version: 1,
+      receiptId,
+      projectId,
+      sessionId: persisted.sessionId,
+      frameId: persisted.frameId,
+      attemptId: persisted.attemptId,
+      frameworkId: persisted.frameworkId,
+      phase: 'cleanup-pending',
+      createdAt: Date.now()
+    })
+  )
+  try {
+    page = await app.restartAfterCrash()
+    const projects = page.getByRole('region', { name: 'Projects' })
+    await projects.getByRole('button', { name, exact: true }).hover()
+    await projects.getByRole('button', { name: `Open actions for ${name}` }).click()
+    await page.getByRole('menuitem', { name: 'Delete', exact: true }).click()
+    const dialog = page.getByRole('alertdialog', { name: 'Delete project?' })
+    for (let retry = 0; retry < 2; retry++) {
+      await dialog.getByRole('button', { name: 'Delete', exact: true }).click()
+      await expect(dialog).toContainText('Could not delete the project. Please try again.')
+      expect(await readFile(evidence, 'utf8')).toBe('preserve this evidence')
+      await expect(dialog.getByRole('button', { name: 'Delete', exact: true })).toBeEnabled()
+    }
+    await page.screenshot({
+      path: testInfo.outputPath('quarantined-project-after-restart.png'),
+      animations: 'disabled'
+    })
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await expect(projects.getByRole('button', { name, exact: true })).toBeVisible()
+  } finally {
+    // Only this test-generated identity-less fixture is removed; it never represented a live tree.
+    await unlink(receiptPath)
+  }
 })

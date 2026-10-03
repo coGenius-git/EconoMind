@@ -146,14 +146,21 @@ describe('opencodeFramework.prepareModelConfig', () => {
 
     const rules = JSON.parse(config.env?.OPENCODE_CONFIG_CONTENT ?? '{}').permission
     expect(rules['*']).toBe('ask')
-    for (const tool of ['read', 'lsp', 'skill']) {
+    for (const tool of ['read', 'lsp']) {
       expect(rules[tool]).toBe('allow')
     }
-    for (const tool of ['edit', 'webfetch', 'websearch']) {
+    for (const tool of ['edit', 'webfetch', 'websearch', 'skill']) {
       expect(rules[tool]).toBe('ask')
     }
-    for (const tool of ['bash', 'glob', 'grep', 'list', 'external_directory'])
-      expect(rules[tool]).toBe('deny')
+    for (const tool of ['bash', 'glob', 'grep', 'list']) expect(rules[tool]).toBe('deny')
+    expect(Object.entries(rules.external_directory)).toEqual([
+      ['*', 'deny'],
+      [join('/data', 'opencode', 'config', 'opencode', 'skills', '*'), 'allow']
+    ])
+    const writtenConfig = JSON.parse(
+      config.configFiles?.find((file) => file.path.endsWith('opencode.json'))?.content ?? '{}'
+    )
+    expect(writtenConfig.permission).toEqual(rules)
     expect(rules.task).toBe('deny')
     expect(JSON.parse(config.env?.OPENCODE_CONFIG_CONTENT ?? '{}').agent).toEqual({
       general: { disable: true },
@@ -202,6 +209,60 @@ describe('opencodeFramework.prepareModelConfig', () => {
     expect(config.env?.OPENCODE_DISABLE_PROJECT_CONFIG).toBe('true')
   })
 
+  it('injects the native session id as x-opencode-session only for OpenCode Go providers', () => {
+    const goProvider = {
+      type: 'official' as const,
+      vendorId: 'opencode-go' as const,
+      agentProviderId: 'open-science-go-model',
+      baseUrl: 'http://127.0.0.1:41001/v1',
+      apiEndpoints: ['openai' as const],
+      model: 'glm-5.3-flash',
+      key: 'local-go-token'
+    }
+    const otherProvider = {
+      type: 'official' as const,
+      vendorId: 'deepseek' as const,
+      agentProviderId: 'open-science-deepseek-model',
+      baseUrl: 'http://127.0.0.1:41002/v1',
+      apiEndpoints: ['openai' as const],
+      model: 'deepseek-v4-flash',
+      key: 'local-deepseek-token'
+    }
+    const config = opencodeFramework.prepareModelConfig(goProvider, {
+      storageRoot: '/data',
+      executablePath: '/bin/opencode',
+      providerModelCatalog: [{ provider: goProvider }, { provider: otherProvider }]
+    })
+
+    const plugin = config.configFiles?.find((file) =>
+      file.path.endsWith(join('plugins', 'open-science-opencode-go-session.js'))
+    )
+    expect(plugin?.content).toContain('new Set(["open-science-go-model"])')
+    expect(plugin?.content).not.toContain('open-science-deepseek-model')
+    expect(plugin?.content).toContain('if (!providerIDs.has(input.model.providerID)) return')
+    expect(plugin?.content).toContain('output.headers["x-opencode-session"] = input.sessionID')
+  })
+
+  it('rewrites the OpenCode Go session plugin as an inert module for other vendors', () => {
+    const config = opencodeFramework.prepareModelConfig(
+      {
+        type: 'official',
+        vendorId: 'deepseek',
+        agentProviderId: 'open-science-deepseek-model',
+        baseUrl: 'http://127.0.0.1:41002/v1',
+        apiEndpoints: ['openai'],
+        model: 'deepseek-v4-flash',
+        key: 'local-deepseek-token'
+      },
+      { storageRoot: '/data', executablePath: '/bin/opencode' }
+    )
+
+    const plugin = config.configFiles?.find((file) =>
+      file.path.endsWith(join('plugins', 'open-science-opencode-go-session.js'))
+    )
+    expect(plugin?.content).toContain('new Set([])')
+  })
+
   it('pins the authoritative provider/model/baseURL (not just permission) in OPENCODE_CONFIG_CONTENT', () => {
     const config = opencodeFramework.prepareModelConfig(
       {
@@ -231,6 +292,28 @@ describe('opencodeFramework.prepareModelConfig', () => {
     // The key rides the env as a reference only — never a plaintext literal in the pinned layer.
     expect(content.provider.anthropic.options.apiKey).toBe('{env:OPENCODE_APP_API_KEY}')
     expect(config.env?.OPENCODE_CONFIG_CONTENT).not.toContain('"k"')
+  })
+
+  it('pins the Anthropic driver for an app-generated provider id in both config layers', () => {
+    const config = opencodeFramework.prepareModelConfig(
+      {
+        type: 'custom',
+        agentProviderId: 'open-science-messages-model',
+        apiEndpoints: ['anthropic'],
+        baseUrl: 'http://127.0.0.1:41002',
+        model: 'claude-sonnet-4-5',
+        key: 'local-token'
+      },
+      { storageRoot: '/data', executablePath: '/bin/opencode' }
+    )
+    const file = config.configFiles?.find((entry) => entry.path.endsWith('opencode.json'))
+    for (const source of [file?.content, config.env?.OPENCODE_CONFIG_CONTENT]) {
+      const content = JSON.parse(source ?? '{}')
+      expect(content.provider['open-science-messages-model']).toMatchObject({
+        npm: '@ai-sdk/anthropic',
+        options: { baseURL: 'http://127.0.0.1:41002/v1' }
+      })
+    }
   })
 
   it('gives the Anthropic AI SDK a /v1 base so it requests /v1/messages', () => {
@@ -419,6 +502,15 @@ describe('opencodeFramework.prepareModelConfig', () => {
   it.each([
     ['minimax', 'MiniMax-M3', 'none', { thinking: { type: 'disabled' } }],
     ['minimax', 'MiniMax-M3', 'high', { thinking: { type: 'adaptive' } }],
+    ...(['low', 'medium', 'high', 'xhigh', 'max'] as const).map(
+      (effort) =>
+        [
+          'minimax',
+          'MiniMax-M3.1-Flash-Preview',
+          effort,
+          { reasoningEffort: effort, thinking: { type: 'adaptive' } }
+        ] as const
+    ),
     ['xiaomimimo', 'mimo-v2.5-pro', 'none', { thinking: { type: 'disabled' } }],
     ['xiaomimimo', 'mimo-v2.5-pro', 'high', { thinking: { type: 'enabled' } }],
     ['apodex', 'apodex-1.1', 'none', {}],
@@ -676,7 +768,7 @@ describe('buildOpencodeConfig', () => {
     )
 
     // Our rules override the base for every side-effecting built-in.
-    for (const tool of ['edit', 'webfetch', 'websearch']) {
+    for (const tool of ['edit', 'webfetch', 'websearch', 'skill']) {
       expect(config.permission[tool]).toBe('ask')
     }
     expect(config.permission.bash).toBe('deny')
@@ -686,7 +778,7 @@ describe('buildOpencodeConfig', () => {
       explore: { disable: true },
       scout: { disable: true }
     })
-    expect(config.permission.skill).toBe('allow')
+    expect(config.permission.skill).toBe('ask')
   })
 
   it('delegates every side-effecting tool (incl. MCP) via a "*" catch-all, allowing safe reads', () => {
@@ -698,7 +790,7 @@ describe('buildOpencodeConfig', () => {
 
     expect(config.permission['*']).toBe('ask')
     // Safe read-only tools run without prompting (parity with Claude's Ask mode).
-    for (const tool of ['read', 'lsp', 'skill']) {
+    for (const tool of ['read', 'lsp']) {
       expect(config.permission[tool]).toBe('allow')
     }
     // Mutating/external tools are pinned to ask (and unlisted MCP tools fall through to "*" → ask),
@@ -916,4 +1008,33 @@ describe('buildOpencodeConfig', () => {
     expect(config.provider.anthropic.models).toBeUndefined()
     expect(config.provider.anthropic.options).toEqual({})
   })
+})
+
+it('prevents physical launch when delegated ownership admission fails', () => {
+  const ordinarySpawn = vi.fn(() => ({}) as ChildProcessWithoutNullStreams)
+  const ownedSpawn = vi.fn(() => {
+    throw new Error('ownership receipt write failed')
+  })
+  const framework = createOpencodeFramework({
+    platform: 'win32',
+    sourceEnv: { PATH: 'C:\\bin' },
+    spawnProcess: ordinarySpawn
+  })
+  const input = {
+    executablePath: 'C:\\runtime\\opencode.exe',
+    args: ['--trace'],
+    env: { OWNED: 'yes' },
+    spawnProcess: ownedSpawn
+  }
+  expect(() => framework.spawn(input)).toThrow('ownership receipt write failed')
+  expect(ordinarySpawn).not.toHaveBeenCalled()
+  expect(ownedSpawn).toHaveBeenCalledWith(
+    input.executablePath,
+    ['acp', '--trace'],
+    expect.objectContaining({
+      env: expect.objectContaining({ OWNED: 'yes' }),
+      stdio: 'pipe',
+      windowsHide: true
+    })
+  )
 })

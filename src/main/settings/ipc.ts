@@ -67,7 +67,14 @@ import {
   type UpsertProviderRequest,
   type ValidateProviderRequest
 } from '../../shared/settings'
+import type {
+  InstallMissingWslDependenciesRequest,
+  InstallWslDistroRequest,
+  OpenWslTerminalRequest,
+  SelectWslProfileRequest
+} from '../../shared/wsl-setup'
 import { SettingsService } from './service'
+
 import { connectorTemplateExportSelection } from './connector-template'
 import type { SettingsWorkflows } from './workflows'
 import { createLogger } from '../logger'
@@ -293,6 +300,9 @@ const registerSettingsIpcHandlers = ({
       return snapshotCommits.currentSnapshotAfter(workflows.appearance.setAppIconVariant(variant))
     }
   )
+  ipcMainHandle('settings:save-validated-provider', (_event, request: UpsertProviderRequest) =>
+    snapshotCommits.projectAfter(workflows.runtime.saveValidatedProvider(request))
+  )
   ipcMainHandle('settings:validate-provider', (_event, request: ValidateProviderRequest) =>
     snapshotCommits.projectAfter(service.validateProvider(request))
   )
@@ -343,6 +353,33 @@ const registerSettingsIpcHandlers = ({
 
   ipcMainHandle('settings:get-package-mirror', () => service.getPackageMirror())
   ipcMainHandle('settings:get-notebook-network-status', () => service.getNotebookNetworkStatus())
+  ipcMainHandle('settings:get-wsl2-bash-preview-status', () => service.getWsl2BashPreviewStatus())
+  ipcMainHandle('settings:get-wsl-setup-status', () => service.getWslSetupStatus())
+  ipcMainHandle('settings:get-local-shell-runtime-preference', () =>
+    service.getLocalShellRuntimePreference()
+  )
+  ipcMainHandle('settings:probe-wsl-setup', () => service.probeWslSetup())
+  ipcMainHandle('settings:install-wsl-platform', () => service.installWslPlatform())
+  ipcMainHandle(
+    'settings:install-missing-wsl-dependencies',
+    (_event, request: InstallMissingWslDependenciesRequest) =>
+      service.installMissingWslDependencies(request)
+  )
+  ipcMainHandle('settings:create-wsl-support-handoff', () => service.createWslSupportHandoff())
+  ipcMainHandle('settings:select-wsl-profile', (_event, request: SelectWslProfileRequest) =>
+    service.selectWslProfile(request)
+  )
+  ipcMainHandle('settings:switch-local-shell-to-powershell', () =>
+    workflows.localShell.switchToPowerShell()
+  )
+  ipcMainHandle('settings:use-wsl2-bash', () => workflows.localShell.useWsl2Bash())
+  ipcMainHandle(
+    'settings:install-recommended-wsl-distro',
+    (_event, request: InstallWslDistroRequest) => service.installRecommendedWslDistro(request)
+  )
+  ipcMainHandle('settings:open-wsl-terminal', (_event, request: OpenWslTerminalRequest) =>
+    service.openWslTerminal(request)
+  )
   ipcMainHandle('settings:set-package-mirror', (_event, request: SetPackageMirrorRequest) =>
     snapshotCommits.projectAfter(service.setPackageMirror(request))
   )
@@ -353,9 +390,13 @@ const registerSettingsIpcHandlers = ({
     snapshotCommits.projectAfter(service.setNotebookNetwork(request))
   )
   ipcMainHandle('settings:install-notebook-network', () => service.installNotebookNetwork())
+  ipcMainHandle('settings:cancel-notebook-network-setup', () =>
+    service.cancelNotebookNetworkSetup()
+  )
   ipcMainHandle('settings:remove-notebook-network', () => service.removeNotebookNetwork())
 
   ipcMainHandle('settings:list-skills', () => service.listSkills())
+
   ipcMainHandle('settings:get-github-token-status', () => service.getGitHubTokenStatus())
   ipcMainHandle('settings:save-github-token', (_event, request: SaveGitHubTokenRequest) =>
     service.saveGitHubToken(readGitHubToken(request))
@@ -493,6 +534,13 @@ const registerSettingsIpcHandlers = ({
   )
   ipcMainHandle('settings:set-ncbi-credentials', (_event, request: SetNcbiCredentialsRequest) =>
     workflows.connectors.setNcbiCredentials(request)
+  )
+  ipcMainHandle('settings:get-classification', () => service.classification.snapshot())
+  ipcMainHandle('settings:update-classification', (_event, request) =>
+    service.classification.mutate(request)
+  )
+  ipcMainHandle('settings:test-classification', (_event, request) =>
+    service.classification.probe(request)
   )
   ipcMainHandle('settings:list-device-credentials', () =>
     workflows.connectors.listDeviceCredentials()

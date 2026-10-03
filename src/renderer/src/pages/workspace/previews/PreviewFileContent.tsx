@@ -1,4 +1,5 @@
 import { renderPreviewFile } from './preview-registry'
+import { Suspense } from 'react'
 import { PreviewUnsupportedContent } from './PreviewFallback'
 import { PreviewRuntimeBoundary } from './preview-runtime'
 import type { PreviewDownloadVersionContext } from './preview-runtime-context'
@@ -6,6 +7,8 @@ import type { PreviewFileRendererProps } from './preview-types'
 
 export const PreviewFileContent = ({
   item,
+  presentation,
+  readOnly,
   downloadVersionContext,
   onRetry,
   annotationVersionId,
@@ -25,6 +28,8 @@ export const PreviewFileContent = ({
 }): React.JSX.Element => {
   const content = renderPreviewFile({
     item,
+    presentation,
+    readOnly,
     annotationVersionId,
     annotationBlockedByHistoricalVersion,
     annotationVersionPending,
@@ -44,16 +49,18 @@ export const PreviewFileContent = ({
       downloadVersionContext={downloadVersionContext}
       onRetry={onRetry}
     >
-      {content ?? (
-        <PreviewUnsupportedContent
-          path={item.path}
-          name={item.name}
-          source={item.source}
-          projectId={item.projectId}
-          fileId={item.managedFileId}
-          versionId={item.selectedVersionId}
-        />
-      )}
+      <Suspense fallback={null}>
+        {content ?? (
+          <PreviewUnsupportedContent
+            path={item.path}
+            name={item.name}
+            source={item.source}
+            projectId={item.projectId}
+            fileId={item.managedFileId}
+            versionId={item.selectedVersionId}
+          />
+        )}
+      </Suspense>
     </PreviewRuntimeBoundary>
   )
 }

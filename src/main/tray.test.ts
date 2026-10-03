@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Menu template item shape captured from Menu.buildFromTemplate.
-type MenuTemplateItem = { label?: string; type?: string; click?: () => void }
+type MenuTemplateItem = {
+  label?: string
+  type?: string
+  enabled?: boolean
+  click?: () => void
+  submenu?: MenuTemplateItem[]
+}
 
 // A nativeImage stand-in that records template-image flagging so tests can assert the macOS branch.
 type FakeImage = {
@@ -165,11 +171,40 @@ describe('createAppTray', () => {
     emptyPaths = []
     // Default the shared cases to a non-darwin platform (full-color icon path).
     setPlatform('linux')
+    vi.stubEnv('DISPLAY', ':99')
+    vi.stubEnv('WAYLAND_DISPLAY', undefined)
   })
 
   afterEach(() => {
     setPlatform(originalPlatform)
+    vi.unstubAllEnvs()
   })
+
+  it.each([
+    ['linux', undefined, undefined, false],
+    ['linux', ':99', undefined, true],
+    ['linux', undefined, 'wayland-0', true],
+    ['darwin', undefined, undefined, true],
+    ['win32', undefined, undefined, true]
+  ])(
+    'handles tray availability on %s with X11=%s and Wayland=%s',
+    (platform, x11, wayland, available) => {
+      setPlatform(platform)
+      vi.stubEnv('DISPLAY', x11)
+      vi.stubEnv('WAYLAND_DISPLAY', wayland)
+      const tray = createAppTray({
+        iconPath: '/icons/tray.png',
+        onShow: vi.fn(),
+        onHide: vi.fn(),
+        onQuit: vi.fn()
+      })
+      expect(Boolean(tray)).toBe(available)
+      if (!available) {
+        expect(lastTray).toBeUndefined()
+        expect(createdFromPaths).toEqual([])
+      }
+    }
+  )
 
   it('builds a tray with tooltip and a Show/Hide/Quit context menu', () => {
     const tray = createAppTray({
@@ -187,6 +222,71 @@ describe('createAppTray', () => {
       'Hide',
       'Quit'
     ])
+  })
+
+  it('loads running, pinned, and recent sessions into the desktop menu', async () => {
+    const onOpenSession = vi.fn()
+    createAppTray({
+      iconPath: '/icons/tray.png',
+      onShow: vi.fn(),
+      onHide: vi.fn(),
+      onQuit: vi.fn(),
+      getNavigationSessions: async () => [
+        { id: 'running', title: 'Running task', projectName: 'Alpha', updatedAt: 3, pinned: false },
+        { id: 'pinned', title: 'Pinned task', projectName: 'Beta', updatedAt: 2, pinned: true },
+        { id: 'recent', title: 'Recent task', projectName: 'Gamma', updatedAt: 1, pinned: false }
+      ],
+      getRunningSessions: () => [{ projectId: 'alpha', sessionId: 'running', kind: 'agent' }],
+      onOpenSession
+    })
+
+    await vi.waitFor(() =>
+      expect(lastTemplate?.some((item) => item.label === 'Running sessions')).toBe(true)
+    )
+    expect(lastTemplate?.filter((item) => item.label).map((item) => item.label)).toEqual([
+      'Show',
+      'Running sessions',
+      'Running task — Alpha',
+      'Pinned sessions',
+      'Pinned task — Beta',
+      'Recent items',
+      'Recent task — Gamma',
+      'Hide',
+      'Quit'
+    ])
+
+    const runningItem = lastTemplate?.find((item) => item.label === 'Running task — Alpha')
+    runningItem?.click?.()
+    expect(onOpenSession).toHaveBeenCalledWith('running')
+  })
+
+  it('keeps the native menu-bar menu on macOS and opens a selected session', async () => {
+    setPlatform('darwin')
+    const onOpenSession = vi.fn()
+    createAppTray({
+      iconPath: '/icons/tray.png',
+      templateIconPath: '/icons/tray-template.png',
+      onShow: vi.fn(),
+      onHide: vi.fn(),
+      onQuit: vi.fn(),
+      getNavigationSessions: async () => [
+        {
+          id: 'mac-session',
+          title: 'Mac task',
+          projectName: 'Mac project',
+          updatedAt: 1,
+          pinned: false
+        }
+      ],
+      onOpenSession
+    })
+
+    await vi.waitFor(() =>
+      expect(lastTemplate?.some((item) => item.label === 'Recent items')).toBe(true)
+    )
+    expect(lastTray?.contextMenu).toBeDefined()
+    lastTemplate?.find((item) => item.label === 'Mac task — Mac project')?.click?.()
+    expect(onOpenSession).toHaveBeenCalledWith('mac-session')
   })
 
   it('rebuilds menu labels when the process locale changes', () => {

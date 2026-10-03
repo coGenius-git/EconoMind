@@ -1,3 +1,4 @@
+import { RENDERER_CONTRACT_CATALOG } from '../../shared/renderer-contract-catalog'
 import { createHash } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { readFile, stat } from 'node:fs/promises'
@@ -34,7 +35,7 @@ import {
   WEB_RPC_PROTOCOL_VERSION,
   webRpcRequestSchema
 } from '../../shared/web-rpc-contract'
-import { RENDERER_CONTRACT_CATALOG } from '../../shared/renderer-contract-catalog'
+
 import {
   projectPublicTaskEvents,
   projectPublicTaskProgressEvent,
@@ -83,13 +84,14 @@ const gzipAsync = promisify(gzip)
 const log = createLogger('web-service')
 const STATIC_RESPONSE_SECURITY_HEADERS = {
   'content-security-policy':
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; font-src 'self' data:; media-src 'self' https: blob:; frame-src 'self'; connect-src 'self' ws: wss:; frame-ancestors 'none'",
+    "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; font-src 'self' data:; media-src 'self' https: blob:; frame-src 'self'; connect-src 'self' ws: wss:; frame-ancestors 'none'",
   'x-frame-options': 'DENY',
   'referrer-policy': 'no-referrer'
 } as const
 
 // Remote Browser access is an application session, not authority over native host lifecycle and
 // shell integration. The catalog keeps that authority decision aligned with renderer installation.
+
 export const REMOTE_LOCAL_ONLY_RPC_CHANNELS = new Set(
   RENDERER_CONTRACT_CATALOG.flatMap(({ channel, surfaceInstallation }) =>
     channel !== null &&
@@ -129,7 +131,7 @@ type WebServerOptions = {
     maxClientsPerPrincipal?: number
     httpIdleTtlMs?: number
   }>
-  externalAccess?: ExternalWebAccess
+
   tasks?: Pick<
     HeadlessTaskApi,
     | 'listProjects'
@@ -168,6 +170,10 @@ type WebServerOptions = {
         | 'updateCredential'
         | 'getAgentRouting'
         | 'updateAgentRouting'
+        | 'doctor'
+        | 'bootstrap'
+        | 'installCli'
+        | 'listRuntimes'
       >
     >
   waitUntilTasksReady?: () => Promise<void>
@@ -410,17 +416,6 @@ class WebClientLeaseRegistry {
 }
 
 // Keep the remote payload allowlisted: the full bootstrap also carries host-local diagnostics.
-const remoteWebBootstrap = ({
-  appName,
-  appVersion,
-  platform,
-  versions
-}: WebServerOptions['bootstrap']): Omit<WebServerOptions['bootstrap'], 'configRoot'> => ({
-  appName,
-  appVersion,
-  platform,
-  versions
-})
 
 const publicApplicationCommandError = (
   error: unknown
@@ -455,38 +450,9 @@ const sendWebSocketMessage = (socket: WebSocket, message: string): boolean => {
   }
 }
 
-export type ExternalWebAccessAuthorization = {
-  kind: 'authorized' | 'authorized-pairing-manager'
-  principalId: string
-  isCurrent: () => boolean
-}
-
-export type ExternalWebAccessDecision = ExternalWebAccessAuthorization | 'handled' | 'denied'
-
-export type ExternalWebSocketAccess = {
-  principalId: string
-  isCurrent: () => boolean
-}
-
-// Optional authentication boundary for a loopback reverse proxy. The normal localhost token path
-// remains unchanged; an isolated remote-access adapter can authenticate its own origin/cookies or
-// render a pairing page without coupling the web server to a tunnel provider.
-export type ExternalWebAccess = {
-  authorizeHttp: (
-    request: IncomingMessage,
-    response: ServerResponse,
-    url: URL
-  ) => Promise<ExternalWebAccessDecision>
-  authorizeWebSocket: (
-    request: IncomingMessage,
-    url: URL
-  ) => Promise<ExternalWebSocketAccess | undefined>
-}
-
 export type RunningWebServer = {
   port: number
-  // Invalidates retained replay access before closing the matching remotely authorized sockets.
-  closeExternalConnections: (principalId?: string) => void
+
   close: () => Promise<void>
 }
 
@@ -577,9 +543,6 @@ const parseClientNonce = (values: readonly string[]): string => {
 
 const requestClientNonce = (request: IncomingMessage): string =>
   parseClientNonce(request.headersDistinct['x-open-science-client'] ?? [])
-
-const authorizedClientId = (principalId: string, clientNonce: string): string =>
-  `${principalId}:${clientNonce}`
 
 const readJsonBody = async (
   request: IncomingMessage,
@@ -677,13 +640,6 @@ const parseTaskPlanResponseRequest = (value: unknown): TaskPlanResponseRequest =
     decision: candidate.decision,
     artifactVersionId: candidate.artifactVersionId.trim(),
     expectedRevision: candidate.expectedRevision as number
-  }
-}
-
-class ExternalAuthorizationExpiredError extends Error {
-  constructor() {
-    super('Remote authorization expired before the request was executed.')
-    this.name = 'ExternalAuthorizationExpiredError'
   }
 }
 
@@ -839,14 +795,6 @@ const runIdempotentTask = <Result>(
   return registry.run(scope, fingerprint, reservedBytes, operation, ownerScope)
 }
 
-const assertExternalAuthorizationCurrent = (
-  authorization: ExternalWebAccessAuthorization | undefined
-): void => {
-  if (authorization && !authorization.isCurrent()) {
-    throw new ExternalAuthorizationExpiredError()
-  }
-}
-
 const taskError = (response: ServerResponse, error: unknown): void => {
   if (error instanceof RequestBodyBudgetExceededError) {
     const status = error.dimension === 'request' ? 413 : error.dimension === 'client' ? 429 : 503
@@ -869,12 +817,7 @@ const taskError = (response: ServerResponse, error: unknown): void => {
     })
     return
   }
-  if (error instanceof ExternalAuthorizationExpiredError) {
-    json(response, 401, {
-      error: { code: 'unauthorized', message: error.message }
-    })
-    return
-  }
+
   if (error instanceof IdempotencyConflictError) {
     json(response, 409, {
       error: { code: 'idempotency_conflict', message: error.message }
@@ -982,12 +925,42 @@ const handleTaskApiRequest = async (
   requestBodyClientId: string,
   requestBodyBudgetRegistry: RequestBodyBudgetRegistry,
   idempotencyRegistry: TaskIdempotencyRegistry,
-  externalAuthorization?: ExternalWebAccessAuthorization,
+
   waitUntilTasksReady?: () => Promise<void>
 ): Promise<boolean> =>
   tasks.runWithCallerContext(callerContext, async () => {
     try {
       await waitUntilTasksReady?.()
+      if (url.pathname === '/api/v1/doctor' && request.method === 'GET' && tasks.doctor) {
+        const data = await tasks.doctor()
+
+        json(response, 200, { data })
+        return true
+      }
+      if (url.pathname === '/api/v1/bootstrap' && request.method === 'POST' && tasks.bootstrap) {
+        const body = await readJsonBody(
+          request,
+          response,
+          requestBodyBudgetRegistry,
+          requestBodyClientId
+        )
+
+        const data = await tasks.bootstrap(
+          body as import('../../shared/bootstrap').BootstrapRequest
+        )
+        json(response, 200, { data })
+        return true
+      }
+      if (url.pathname === '/api/v1/cli/install' && request.method === 'POST' && tasks.installCli) {
+        json(response, 200, { data: await tasks.installCli() })
+        return true
+      }
+      if (url.pathname === '/api/v1/runtimes' && request.method === 'GET' && tasks.listRuntimes) {
+        const data = await tasks.listRuntimes()
+
+        json(response, 200, { data })
+        return true
+      }
       const connectorMatch = url.pathname.match(
         /^\/api\/v1\/connectors(?:\/([^/]+)(?:\/(enabled|test))?)?$/
       )
@@ -1008,7 +981,7 @@ const handleTaskApiRequest = async (
             throw new TaskApiError('invalid_request', 'Configuration must be a JSON object.')
           }
         }
-        assertExternalAuthorizationCurrent(externalAuthorization)
+
         let operation: (() => Promise<unknown>) | undefined
         if (connectorMatch) {
           if (!id && request.method === 'GET' && tasks.listConnectors)
@@ -1047,13 +1020,12 @@ const handleTaskApiRequest = async (
         }
         if (operation) {
           const data = await operation()
-          assertExternalAuthorizationCurrent(externalAuthorization)
+
           json(response, 200, { data })
           return true
         }
       }
       if (url.pathname === '/api/v1/projects' && request.method === 'GET') {
-        assertExternalAuthorizationCurrent(externalAuthorization)
         json(response, 200, { data: await tasks.listProjects() })
         return true
       }
@@ -1064,7 +1036,7 @@ const handleTaskApiRequest = async (
           requestBodyBudgetRegistry,
           requestBodyClientId
         )) as CreateTaskProjectRequest
-        assertExternalAuthorizationCurrent(externalAuthorization)
+
         json(response, 201, {
           data: await runIdempotentTask(
             idempotencyRegistry,
@@ -1086,7 +1058,6 @@ const handleTaskApiRequest = async (
         request.method === 'GET' &&
         tasks.getProjectSessionDefaults
       ) {
-        assertExternalAuthorizationCurrent(externalAuthorization)
         json(response, 200, {
           data: await tasks.getProjectSessionDefaults(
             decodeURIComponent(projectSessionDefaultsMatch[1])
@@ -1105,7 +1076,7 @@ const handleTaskApiRequest = async (
           requestBodyBudgetRegistry,
           requestBodyClientId
         )) as UpdateProjectSessionDefaultsRequest
-        assertExternalAuthorizationCurrent(externalAuthorization)
+
         json(response, 200, {
           data: await tasks.updateProjectSessionDefaults(
             decodeURIComponent(projectSessionDefaultsMatch[1]),
@@ -1122,14 +1093,13 @@ const handleTaskApiRequest = async (
           requestBodyBudgetRegistry,
           requestBodyClientId
         )) as UpdateTaskProjectRequest
-        assertExternalAuthorizationCurrent(externalAuthorization)
+
         json(response, 200, {
           data: await tasks.updateProject(decodeURIComponent(projectMatch[1]), body)
         })
         return true
       }
       if (url.pathname === '/api/v1/sessions' && request.method === 'GET') {
-        assertExternalAuthorizationCurrent(externalAuthorization)
         json(response, 200, {
           data: await tasks.listSessions(url.searchParams.get('project') ?? undefined)
         })
@@ -1140,7 +1110,6 @@ const handleTaskApiRequest = async (
         request.method === 'GET' &&
         tasks.getAgentRouting
       ) {
-        assertExternalAuthorizationCurrent(externalAuthorization)
         json(response, 200, { data: await tasks.getAgentRouting() })
         return true
       }
@@ -1155,7 +1124,7 @@ const handleTaskApiRequest = async (
           requestBodyBudgetRegistry,
           requestBodyClientId
         )) as UpdateTaskAgentRoutingRequest
-        assertExternalAuthorizationCurrent(externalAuthorization)
+
         json(response, 200, { data: await tasks.updateAgentRouting(body) })
         return true
       }
@@ -1166,7 +1135,7 @@ const handleTaskApiRequest = async (
           requestBodyBudgetRegistry,
           requestBodyClientId
         )) as StartTaskRunRequest
-        assertExternalAuthorizationCurrent(externalAuthorization)
+
         json(response, 202, {
           data: await runIdempotentTask(
             idempotencyRegistry,
@@ -1183,14 +1152,13 @@ const handleTaskApiRequest = async (
 
       const runMatch = url.pathname.match(/^\/api\/v1\/runs\/([^/]+)$/)
       if (runMatch && request.method === 'GET') {
-        assertExternalAuthorizationCurrent(externalAuthorization)
         json(response, 200, { data: tasks.getRun(decodeURIComponent(runMatch[1])) })
         return true
       }
       const cancelRunMatch = url.pathname.match(/^\/api\/v1\/runs\/([^/]+)\/cancel$/)
       if (cancelRunMatch && request.method === 'POST') {
         await readJsonBody(request, response, requestBodyBudgetRegistry, requestBodyClientId)
-        assertExternalAuthorizationCurrent(externalAuthorization)
+
         json(response, 200, {
           data: await tasks.cancelRun(decodeURIComponent(cancelRunMatch[1]))
         })
@@ -1198,7 +1166,6 @@ const handleTaskApiRequest = async (
       }
       const sessionPlanMatch = url.pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/plan$/)
       if (sessionPlanMatch && request.method === 'GET' && tasks.getSessionPlan) {
-        assertExternalAuthorizationCurrent(externalAuthorization)
         json(response, 200, {
           data: await tasks.getSessionPlan(decodeURIComponent(sessionPlanMatch[1]))
         })
@@ -1211,7 +1178,7 @@ const handleTaskApiRequest = async (
         const body = parseTaskPlanResponseRequest(
           await readJsonBody(request, response, requestBodyBudgetRegistry, requestBodyClientId)
         )
-        assertExternalAuthorizationCurrent(externalAuthorization)
+
         json(response, 200, {
           data: await tasks.respondSessionPlan(
             decodeURIComponent(sessionPlanResponseMatch[1]),
@@ -1222,7 +1189,6 @@ const handleTaskApiRequest = async (
       }
       const sessionArtifactsMatch = url.pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/artifacts$/)
       if (sessionArtifactsMatch && request.method === 'GET') {
-        assertExternalAuthorizationCurrent(externalAuthorization)
         json(response, 200, {
           data: await tasks.listArtifacts(decodeURIComponent(sessionArtifactsMatch[1]))
         })
@@ -1230,7 +1196,6 @@ const handleTaskApiRequest = async (
       }
       const sessionConfigMatch = url.pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/config$/)
       if (sessionConfigMatch && request.method === 'GET' && tasks.getSessionConfiguration) {
-        assertExternalAuthorizationCurrent(externalAuthorization)
         json(response, 200, {
           data: await tasks.getSessionConfiguration(decodeURIComponent(sessionConfigMatch[1]))
         })
@@ -1243,7 +1208,7 @@ const handleTaskApiRequest = async (
           requestBodyBudgetRegistry,
           requestBodyClientId
         )) as UpdateSessionConfigurationRequest
-        assertExternalAuthorizationCurrent(externalAuthorization)
+
         json(response, 200, {
           data: await tasks.updateSessionConfiguration(
             decodeURIComponent(sessionConfigMatch[1]),
@@ -1254,13 +1219,11 @@ const handleTaskApiRequest = async (
       }
       const sessionMatch = url.pathname.match(/^\/api\/v1\/sessions\/([^/]+)$/)
       if (sessionMatch && request.method === 'GET') {
-        assertExternalAuthorizationCurrent(externalAuthorization)
         json(response, 200, { data: await tasks.getSession(decodeURIComponent(sessionMatch[1])) })
         return true
       }
       const artifactMatch = url.pathname.match(/^\/api\/v1\/artifacts\/([^/]+)\/content$/)
       if (artifactMatch && (request.method === 'GET' || request.method === 'HEAD')) {
-        assertExternalAuthorizationCurrent(externalAuthorization)
         const artifact = await tasks.acquireArtifact(decodeURIComponent(artifactMatch[1]))
         try {
           await streamPreviewResource(request, response, artifact.url, {
@@ -1334,7 +1297,7 @@ const serveStatic = async (
 
 const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWebServer> => {
   const sockets = new Set<WebSocket>()
-  const externalSockets = new Map<WebSocket, ExternalWebSocketAccess>()
+
   const publicEventSockets = new Map<WebSocket, 'legacy' | 'replay'>()
   const internalEventSockets = new Map<WebSocket, 'legacy' | 'replay'>()
   const livenessSockets = new Set<WebSocket>()
@@ -1343,28 +1306,7 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
   const publicTaskEventStream = new PublicTaskEventStream()
   // A current remote authorization grants replay only from the first sequence that principal saw.
   // Local Web clients keep the process-wide cursor so remote lifecycle changes never reload them.
-  const remoteReplayFloors = new Map<
-    string,
-    Readonly<{
-      internalAfter: number
-      publicTaskAfter: number
-    }>
-  >()
-  const replayFloorFor = (
-    principalId: string
-  ): Readonly<{
-    internalAfter: number
-    publicTaskAfter: number
-  }> => {
-    const existing = remoteReplayFloors.get(principalId)
-    if (existing) return existing
-    const created = {
-      internalAfter: internalEventStream.cursor().latestSequence,
-      publicTaskAfter: publicTaskEventStream.cursor().latestSequence
-    }
-    remoteReplayFloors.set(principalId, created)
-    return created
-  }
+
   const commandClient = createApplicationCommandClient()
   const taskIdempotencyRegistry = new TaskIdempotencyRegistry()
   const requestBodyBudgetRegistry = new RequestBodyBudgetRegistry(
@@ -1386,20 +1328,8 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
     maxPayload: MAX_WEBSOCKET_INBOUND_BYTES
   })
 
-  const isWebSocketAuthorizationCurrent = (socket: WebSocket): boolean => {
-    const authorization = externalSockets.get(socket)
-    if (!authorization) return true
-    try {
-      if (authorization.isCurrent()) return true
-    } catch {
-      // A failed runtime authorization check is stale by default.
-    }
-    socket.close(1008, 'Remote access expired')
-    return false
-  }
-
   const sendCurrentWebSocketMessage = (socket: WebSocket, message: string): boolean =>
-    isWebSocketAuthorizationCurrent(socket) && sendWebSocketMessage(socket, message)
+    sendWebSocketMessage(socket, message)
 
   const handleRequest = async (
     request: IncomingMessage,
@@ -1408,22 +1338,14 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
     try {
       const url = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`)
       const auth = authenticateRequest(request, url, options.token)
-      let authorized = auth.ok
-      let externalAuthorization: ExternalWebAccessAuthorization | undefined
-      if (!authorized && options.externalAccess) {
-        const decision = await options.externalAccess.authorizeHttp(request, response, url)
-        if (decision === 'handled') return
-        authorized = typeof decision === 'object'
-        if (typeof decision === 'object') {
-          externalAuthorization = decision
-        }
-      }
-      if (!authorized || (externalAuthorization && !externalAuthorization.isCurrent())) {
+      const authorized = auth.ok
+
+      if (!authorized) {
         response.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' })
         response.end('Unauthorized')
         return
       }
-      if (externalAuthorization) replayFloorFor(externalAuthorization.principalId)
+
       let clientNonce: string
       try {
         clientNonce = requestClientNonce(request)
@@ -1434,13 +1356,9 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
         }
         throw error
       }
-      const clientId = externalAuthorization
-        ? authorizedClientId(externalAuthorization.principalId, clientNonce)
-        : clientNonce
-      const clientPrincipalId = externalAuthorization
-        ? `remote:${externalAuthorization.principalId}`
-        : 'local'
-      const requestBodyClientId = externalAuthorization?.principalId ?? clientId
+      const clientId = clientNonce
+      const clientPrincipalId = 'local'
+      const requestBodyClientId = clientId
       if (!hasValidUrlPathEncoding(url.pathname)) {
         json(response, 400, { error: 'Malformed URL encoding.' })
         return
@@ -1454,17 +1372,19 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
       }
 
       if (url.pathname === '/api/bootstrap' && request.method === 'GET') {
-        const rpcChannels = auth.ok
-          ? options.applicationCommands.localWeb.commandNames()
-          : options.applicationCommands.remoteWeb.commandNames()
-        const restrictedRpcChannels = auth.ok
-          ? []
-          : options.applicationCommands.remoteWeb.rejectedCommandNames()
+        const rpcChannels = options.applicationCommands.localWeb.commandNames()
+        const restrictedRpcChannels: string[] = []
         json(response, 200, {
-          ...(auth.ok ? options.bootstrap : remoteWebBootstrap(options.bootstrap)),
-          webCallerLocation: auth.ok ? 'local' : 'remote',
+          ...options.bootstrap,
+          webCallerLocation: 'local',
+          draftScope: createHash('sha256')
+            .update(options.token)
+            .update('\0')
+            .update(clientPrincipalId)
+            .digest('hex'),
+          taskCapabilities: options.tasks ? ['permission-prompts-none'] : [],
           rpcProtocolVersion: WEB_RPC_PROTOCOL_VERSION,
-          rpcCapabilities: auth.ok ? WEB_RPC_CAPABILITIES : [],
+          rpcCapabilities: WEB_RPC_CAPABILITIES,
           rpcChannels,
           eventStream: internalEventStream.cursor(),
           restrictedRpcChannels
@@ -1502,20 +1422,12 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
           response,
           url,
           options.tasks,
-          createTaskCallerContext({
-            ...(externalAuthorization
-              ? {
-                  clientId,
-                  location: 'remote' as const,
-                  isAuthorizationCurrent: externalAuthorization.isCurrent
-                }
-              : {})
-          }),
+          createTaskCallerContext({}),
           clientPrincipalId,
           requestBodyClientId,
           requestBodyBudgetRegistry,
           taskIdempotencyRegistry,
-          externalAuthorization,
+
           options.waitUntilTasksReady
         ))
       ) {
@@ -1586,27 +1498,8 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
           )
           return
         }
-        if (!auth.ok && REMOTE_LOCAL_ONLY_RPC_CHANNELS.has(channel)) {
-          webRpcError(
-            response,
-            403,
-            'method_not_found',
-            `Channel only available from the local app: ${channel}`
-          )
-          return
-        }
-        const callerContext = createWebCallerContext(clientId, {
-          ...(externalAuthorization
-            ? {
-                location: 'remote' as const,
-                authorities:
-                  externalAuthorization.kind === 'authorized-pairing-manager'
-                    ? (['manage-remote-pairing'] as const)
-                    : [],
-                isAuthorizationCurrent: externalAuthorization.isCurrent
-              }
-            : {})
-        })
+
+        const callerContext = createWebCallerContext(clientId, {})
         let clientLease: WebClientLease
         try {
           clientLease = webClientLeases.acquireHttp(clientPrincipalId, clientNonce, clientId)
@@ -1621,17 +1514,14 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
         request.once('aborted', releaseDisconnectedClient)
         response.once('close', releaseDisconnectedClient)
         try {
-          assertExternalAuthorizationCurrent(externalAuthorization)
-          const dispatcher = auth.ok
-            ? options.applicationCommands.localWeb
-            : options.applicationCommands.remoteWeb
+          const dispatcher = options.applicationCommands.localWeb
           const result = await commandClient.invoke(
             dispatcher,
             channel,
             callerContext,
             parsed.data.args
           )
-          assertExternalAuthorizationCurrent(externalAuthorization)
+
           json(
             response,
             200,
@@ -1644,20 +1534,14 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
           )
         } catch (error) {
           // A delayed error may carry the same private data as a successful result.
-          if (externalAuthorization && !externalAuthorization.isCurrent()) {
-            webRpcError(response, 401, 'invalid_request', 'Remote access authorization expired.')
-            return
-          }
+
           log.warn('web rpc rejected', {
             channel,
             surface: callerContext.surface,
             location: callerContext.location,
             ...diagnosticErrorFields(error)
           })
-          if (error instanceof ExternalAuthorizationExpiredError) {
-            webRpcError(response, 401, 'invalid_request', error.message)
-            return
-          }
+
           if (error instanceof WebRpcResponseBudgetExceededError) {
             webRpcError(response, 500, 'handler_error', error.message)
             return
@@ -1711,14 +1595,8 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
       try {
         const url = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`)
         const auth = authenticateRequest(request, url, options.token)
-        const externalAuthorization =
-          !auth.ok && options.externalAccess
-            ? await options.externalAccess.authorizeWebSocket(request, url)
-            : undefined
-        if (
-          (!auth.ok && (!externalAuthorization || !externalAuthorization.isCurrent())) ||
-          !['/events', '/api/v1/events'].includes(url.pathname)
-        ) {
+
+        if (!auth.ok || !['/events', '/api/v1/events'].includes(url.pathname)) {
           socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
           socket.destroy()
           return
@@ -1732,9 +1610,6 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
           return
         }
         wsServer.handleUpgrade(request, socket, head, (webSocket) => {
-          if (externalAuthorization) {
-            externalSockets.set(webSocket, externalAuthorization)
-          }
           wsServer.emit('connection', webSocket, request)
         })
       } catch {
@@ -1747,27 +1622,14 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
   wsServer.on('connection', (socket, request) => {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`)
     const clientNonce = parseClientNonce(url.searchParams.getAll('client'))
-    const externalAuthorization = externalSockets.get(socket)
-    if (externalAuthorization && !externalAuthorization.isCurrent()) {
-      externalSockets.delete(socket)
-      socket.close(1008, 'Remote access expired')
-      return
-    }
-    const replayFloor = externalAuthorization
-      ? replayFloorFor(externalAuthorization.principalId)
-      : undefined
-    const clientId =
-      externalAuthorization === undefined
-        ? clientNonce
-        : authorizedClientId(externalAuthorization.principalId, clientNonce)
-    const clientPrincipalId =
-      externalAuthorization === undefined ? 'local' : `remote:${externalAuthorization.principalId}`
+
+    const clientId = clientNonce
+    const clientPrincipalId = 'local'
     let lease: WebClientLease
     try {
       lease = webClientLeases.acquireSocket(clientPrincipalId, clientNonce, clientId)
     } catch (error) {
       if (error instanceof WebClientCapacityExceededError) {
-        externalSockets.delete(socket)
         socket.close(1013, 'Too many active Web clients')
         return
       }
@@ -1776,7 +1638,7 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
     let releaseApprovalPresence: (() => void) | undefined
     socket.on('close', () => {
       sockets.delete(socket)
-      externalSockets.delete(socket)
+
       publicEventSockets.delete(socket)
       internalEventSockets.delete(socket)
       livenessSockets.delete(socket)
@@ -1808,7 +1670,7 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
                   streamId: streamId ?? '',
                   after: afterValue === null ? Number.NaN : Number(afterValue)
                 },
-                replayFloor?.publicTaskAfter
+                undefined
               )
         for (const message of messages) {
           if (!sendCurrentWebSocketMessage(socket, message)) break
@@ -1828,10 +1690,7 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
         const streamId = url.searchParams.get('stream') ?? ''
         const afterValue = url.searchParams.get('after')
         const after = afterValue === null ? Number.NaN : Number(afterValue)
-        for (const message of internalEventStream.resume(
-          { streamId, after },
-          replayFloor?.internalAfter
-        )) {
+        for (const message of internalEventStream.resume({ streamId, after }, undefined)) {
           if (!sendCurrentWebSocketMessage(socket, message)) break
         }
       }
@@ -1902,7 +1761,7 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
     const internalHeartbeat = internalEventStream.heartbeat()
     for (const socket of livenessSockets) {
       if (socket.readyState !== WebSocket.OPEN) continue
-      if (!isWebSocketAuthorizationCurrent(socket)) continue
+
       if (awaitingPong.has(socket)) {
         socket.terminate()
         continue
@@ -1918,18 +1777,10 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
 
   return {
     port,
-    closeExternalConnections: (principalId) => {
-      if (principalId === undefined) remoteReplayFloors.clear()
-      else remoteReplayFloors.delete(principalId)
-      for (const [socket, authorization] of externalSockets) {
-        if (principalId === undefined || authorization.principalId === principalId) {
-          socket.close(1008, 'Remote access revoked')
-        }
-      }
-    },
+
     close: async () => {
       taskIdempotencyRegistry.clear()
-      remoteReplayFloors.clear()
+
       clearInterval(eventHeartbeatInterval)
       removeBroadcastSink()
       removeTaskProgressSink?.()

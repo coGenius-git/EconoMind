@@ -22,12 +22,10 @@ const themeMocks = vi.hoisted(() => ({
 
 vi.mock('@/lib/theme', () => themeMocks)
 vi.mock('../src/main', () => ({}))
-vi.mock('../../main/remote-access/openscience-logo.svg?raw', () => ({
-  default: '<svg viewBox="0 0 1 1"></svg>'
-}))
+vi.mock('../src/assets/logo.png', () => ({ default: 'economind-logo.png' }))
 
 type SocketEventName = 'open' | 'message' | 'close'
-type SocketEvent = { data?: unknown }
+type SocketEvent = { data?: unknown; code?: number }
 type SocketListener = (event: SocketEvent) => void
 
 class FakeWebSocket {
@@ -187,7 +185,10 @@ const heartbeatFrame = (latestSequence: number): string =>
 
 const loadBootstrap = async (): Promise<WebApi> => {
   const bootstrapImport = import('./bootstrap')
-  await vi.waitFor(() => expect((window as unknown as { api?: WebApi }).api).toBeDefined())
+  // Cold module transforms and locale loading can exceed Vitest's default one-second wait.
+  await vi.waitFor(() => expect((window as unknown as { api?: WebApi }).api).toBeDefined(), {
+    timeout: 5000
+  })
   window.dispatchEvent(new Event(WEB_EVENT_CONSUMERS_READY_EVENT))
   await bootstrapImport
   return (window as unknown as { api: WebApi }).api
@@ -203,7 +204,7 @@ beforeEach(() => {
     <div id=open-science-connection-state role=status>
       <div class=open-science-connection-panel>
         <span id=open-science-connection-logo></span>
-        <p id=open-science-connection-message>Connecting to remote computer…</p>
+        <p id=open-science-connection-message>Connecting to EconoMind…</p>
       </div>
     </div>
   `
@@ -292,7 +293,7 @@ describe('Web bootstrap event connection', () => {
     await vi.waitFor(() => expect((window as unknown as { api?: WebApi }).api).toBeDefined())
 
     expect(document.getElementById('open-science-connection-message')?.textContent).toBe(
-      '正在连接远程计算机…'
+      '正在连接 EconoMind…'
     )
     window.dispatchEvent(new Event(WEB_EVENT_CONSUMERS_READY_EVENT))
     await bootstrapImport
@@ -315,7 +316,7 @@ describe('Web bootstrap event connection', () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
     await vi.waitFor(() =>
       expect(document.getElementById('open-science-connection-message')?.textContent).toBe(
-        '正在重新连接远程计算机…（2/8）'
+        '正在重新连接 EconoMind…（2/8）'
       )
     )
     await vi.advanceTimersByTimeAsync(500)
@@ -337,7 +338,7 @@ describe('Web bootstrap event connection', () => {
       'alert'
     )
     expect(document.getElementById('open-science-connection-message')?.textContent).toBe(
-      '访问授权已失效。请从主机上的 EconoMind 重新打开 Web 链接，或返回远程访问入口页面重新配对。'
+      '访问授权已失效。请从 EconoMind 重新打开本地 Web 链接。'
     )
     expect(document.querySelector('button')?.textContent).toBe('重试')
   })
@@ -899,6 +900,134 @@ describe('Web bootstrap event connection', () => {
     expect(FakeWebSocket.instances).toHaveLength(2)
     await vi.advanceTimersByTimeAsync(1)
     expect(FakeWebSocket.instances).toHaveLength(3)
+  })
+
+  it('requires a new local link immediately after authorization is revoked and ignores later frames', async () => {
+    const phases: string[] = []
+    const stateListener = (event: Event): void => {
+      phases.push((event as CustomEvent<{ phase: string }>).detail.phase)
+    }
+    window.addEventListener(WEB_EVENT_CONNECTION_STATE_EVENT, stateListener)
+    try {
+      const api = await loadBootstrap()
+      const listener = vi.fn()
+      api.projects.onCreated(listener)
+      const socket = FakeWebSocket.instances[0]
+      socket.emit('close', { code: 1008 })
+      socket.emit('message', { data: eventFrame(1, 'project:created', { id: 'late' }) })
+      socket.emit('message', { data: readyFrame(1) })
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(phases.at(-1)).toBe('authorization-required')
+      expect(FakeWebSocket.instances).toHaveLength(1)
+      expect(listener).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener(WEB_EVENT_CONNECTION_STATE_EVENT, stateListener)
+    }
+  })
+
+  it('ignores old socket callbacks after a replacement connects', async () => {
+    const api = await loadBootstrap()
+    const listener = vi.fn()
+    api.projects.onCreated(listener)
+    const old = FakeWebSocket.instances[0]
+    old.emit('close')
+    await vi.advanceTimersByTimeAsync(1_000)
+    const current = FakeWebSocket.instances[1]
+    old.emit('open')
+    old.emit('message', { data: eventFrame(1, 'project:created', { id: 'old' }) })
+    old.emit('close', { code: 1008 })
+    current.emit('message', { data: eventFrame(1, 'project:created', { id: 'current' }) })
+    current.emit('message', { data: readyFrame(1) })
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(listener.mock.calls).toEqual([[{ id: 'current' }]])
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect(current.closed).toBe(false)
+  })
+
+  it('does not apply any more frames after a stream gap requires reload', async () => {
+    const api = await loadBootstrap()
+    const listener = vi.fn()
+    api.projects.onCreated(listener)
+    const socket = FakeWebSocket.instances[0]
+    socket.emit('message', { data: eventFrame(2, 'project:created', {}) })
+    socket.emit('message', { data: eventFrame(1, 'project:created', { id: 'late' }) })
+    socket.emit('message', { data: readyFrame(1) })
+    expect(socket.closed).toBe(true)
+    expect(listener).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['malformed JSON', '{'],
+    ['invalid schema', '{}'],
+    ['sequence gap', eventFrame(2, 'project:created', {})],
+    ['duplicate sequence', eventFrame(0, 'project:created', {})],
+    ['changed stream', readyFrame(0).replace('stream-1', 'stream-2')],
+    ['heartbeat mismatch', heartbeatFrame(1)],
+    ['ready mismatch', readyFrame(1)]
+  ])('keeps the recovery gate closed after %s', async (_label, frame) => {
+    const phases: string[] = []
+    const stateListener = (event: Event): void => {
+      phases.push((event as CustomEvent<{ phase: string }>).detail.phase)
+    }
+    window.addEventListener(WEB_EVENT_CONNECTION_STATE_EVENT, stateListener)
+    try {
+      await loadBootstrap()
+      const socket = FakeWebSocket.instances[0]
+      socket.emit('message', { data: frame })
+      socket.emit('message', { data: readyFrame(0) })
+      expect(phases.at(-1)).toBe('reload-required')
+      expect(phases).not.toContain('live')
+      expect(socket.closed).toBe(true)
+    } finally {
+      window.removeEventListener(WEB_EVENT_CONNECTION_STATE_EVENT, stateListener)
+    }
+  })
+
+  it('does not resume after an event consumer throws', async () => {
+    const api = await loadBootstrap()
+    const listener = vi.fn(() => {
+      throw new Error('consumer failed')
+    })
+    api.projects.onCreated(listener)
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const socket = FakeWebSocket.instances[0]
+      socket.emit('message', { data: eventFrame(1, 'project:created', {}) })
+      socket.emit('message', { data: eventFrame(1, 'project:created', {}) })
+      expect(socket.closed).toBe(true)
+      expect(listener).toHaveBeenCalledOnce()
+    } finally {
+      errorLog.mockRestore()
+    }
+  })
+
+  it('stops a live connection when an RPC reports expired authorization', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) =>
+        String(input) === '/api/bootstrap'
+          ? new Response(JSON.stringify({ ...bootstrapPayload, rpcChannels: ['projects:create'] }))
+          : new Response('Expired', { status: 401 })
+      )
+    )
+    const phases: string[] = []
+    const stateListener = (event: Event): void => {
+      phases.push((event as CustomEvent<{ phase: string }>).detail.phase)
+    }
+    window.addEventListener(WEB_EVENT_CONNECTION_STATE_EVENT, stateListener)
+    try {
+      const api = await loadBootstrap()
+      FakeWebSocket.instances[0].emit('message', { data: readyFrame(0) })
+      await expect(api.projects.create({ name: 'Test' })).rejects.toThrow(
+        'Access authorization has expired'
+      )
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(phases.at(-1)).toBe('authorization-required')
+      expect(FakeWebSocket.instances).toHaveLength(1)
+      expect(FakeWebSocket.instances[0].closed).toBe(true)
+    } finally {
+      window.removeEventListener(WEB_EVENT_CONNECTION_STATE_EVENT, stateListener)
+    }
   })
 
   it('closes a ready event socket that stops receiving liveness frames', async () => {

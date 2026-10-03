@@ -7,6 +7,7 @@ import { useSessionStore } from './session-store'
 import {
   createNotebookPreviewItem,
   createProjectFilesPreviewItem,
+  createProjectLibraryPreviewItem,
   createInitialPreviewWorkbenchState,
   PROJECT_FILES_PREVIEW_ID,
   usePreviewWorkbenchStore
@@ -17,6 +18,68 @@ type PreviewItemInput = Parameters<
 >[0]
 
 describe('preview workbench store', () => {
+  it('keeps file view selection across versions and project restore, but clears it on tab removal', () => {
+    const store = usePreviewWorkbenchStore.getState()
+    const file: PreviewItemInput = {
+      id: 'file-1',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      type: 'file',
+      artifactId: 'artifact-1',
+      title: 'result.png',
+      name: 'result.png',
+      path: '/v1/result.png',
+      format: 'image',
+      selectedVersionId: 'v1'
+    }
+    store.activateProject('project-1')
+    store.upsertAndActivateItem(file)
+    store.setFileViewState('project-1', file.id, {
+      provenanceOpen: true,
+      provenanceTab: 'reproducibility'
+    })
+    const next = {
+      ...file,
+      managedFileId: 'artifact-1',
+      selectedVersionId: 'v2',
+      path: '/v2/result.png'
+    }
+    store.upsertAndActivateItem(next)
+    store.activateProject('project-2')
+    store.upsertAndActivateItem({ ...file, projectId: 'project-2' })
+    expect(usePreviewWorkbenchStore.getState().items[0].fileViewState).toBeUndefined()
+    store.activateProject('project-1', { items: [next], activeItemId: file.id, panelState: 'open' })
+    expect(usePreviewWorkbenchStore.getState().items[0]).toMatchObject({
+      selectedVersionId: 'v2',
+      fileViewState: { provenanceOpen: true, provenanceTab: 'reproducibility' }
+    })
+    store.removeItem(file.id)
+    // A late callback cannot recreate a removed tab.
+    store.setFileViewState('project-1', file.id, { provenanceOpen: true })
+    expect(usePreviewWorkbenchStore.getState().items).toEqual([])
+    store.upsertAndActivateItem(next)
+    expect(usePreviewWorkbenchStore.getState().items[0].fileViewState).toBeUndefined()
+  })
+
+  it('resets file view selection if a tab identity is reused for a different Artifact', () => {
+    const store = usePreviewWorkbenchStore.getState()
+    store.activateProject('project-1')
+    const file: PreviewItemInput = {
+      id: 'file-1',
+      sessionId: 'session-1',
+      type: 'file',
+      artifactId: 'artifact-1',
+      title: 'result.png',
+      name: 'result.png',
+      path: '/result.png',
+      format: 'image'
+    }
+    store.upsertAndActivateItem(file)
+    store.setFileViewState('project-1', file.id, { provenanceOpen: true, provenanceTab: 'review' })
+    store.upsertAndActivateItem({ ...file, artifactId: 'artifact-2' })
+    expect(usePreviewWorkbenchStore.getState().items[0].fileViewState).toBeUndefined()
+  })
+
   // Reset transient preview state so each assertion starts from an empty workbench.
   beforeEach(() => {
     vi.useFakeTimers()
@@ -287,6 +350,31 @@ describe('preview workbench store', () => {
         }
       ]
     })
+  })
+
+  it('reuses the Library tab and keeps it scoped to its project', () => {
+    const store = usePreviewWorkbenchStore.getState()
+    store.activateProject('project-a')
+    store.upsertAndActivateItem(createProjectLibraryPreviewItem())
+    store.upsertAndActivateItem(
+      createProjectLibraryPreviewItem({ collectionId: 'collection-a', collectionName: 'Evidence' })
+    )
+    expect(usePreviewWorkbenchStore.getState().items).toHaveLength(1)
+    expect(usePreviewWorkbenchStore.getState().items[0]).toMatchObject({
+      toolKind: 'library',
+      libraryScopeRequest: { collectionId: 'collection-a', collectionName: 'Evidence' }
+    })
+    store.upsertAndActivateItem(createProjectLibraryPreviewItem({ section: 'inbox' }))
+    store.upsertAndActivateItem(createProjectLibraryPreviewItem({ section: 'inbox' }))
+    expect(usePreviewWorkbenchStore.getState().items).toHaveLength(1)
+    expect(usePreviewWorkbenchStore.getState().items[0]).toMatchObject({
+      libraryScopeRequest: { section: 'inbox' }
+    })
+    expect(usePreviewWorkbenchStore.getState().panelState).toBe('open')
+    store.activateProject('project-b')
+    expect(usePreviewWorkbenchStore.getState().items).toHaveLength(0)
+    store.activateProject('project-a')
+    expect(usePreviewWorkbenchStore.getState().items).toHaveLength(1)
   })
 
   it('collapses the panel when the last preview item is removed', () => {

@@ -83,6 +83,7 @@ export class AcpProviderSessionAdopter {
     let capability: SessionCapabilityProvision | undefined
     let provisionalSession: ActiveSession | undefined
     let adoptedProviderSessionId: string | undefined
+    let wslSetup = false
     let identity = request.identity
     try {
       const startupBackend = this.deps.currentBackend()
@@ -99,8 +100,11 @@ export class AcpProviderSessionAdopter {
         projectId: request.projectId,
         memoryEnabled: request.memoryEnabled
       })
+      wslSetup = capability.wslSetup === true
       const hasAuthoritativeSpecialistBinding =
         request.specialistBindingPending === true || request.specialistId !== undefined
+      const specialistBindingRevision =
+        this.deps.registry.lookup(stableAppSessionId)?.aggregate.specialistBindingRevision() ?? 0
       const specialistId = hasAuthoritativeSpecialistBinding
         ? request.specialistId
         : this.deps.registry.lookup(stableAppSessionId)?.aggregate.snapshot().specialistId
@@ -120,6 +124,7 @@ export class AcpProviderSessionAdopter {
           skillImport: capability.descriptor.capabilities.includes('skill-import')
         },
         role: capability.descriptor.role,
+        shellRuntimeAgentContract: capability.shellRuntimeAgentContract,
         backendSystemPromptAppends: startupBackend.prompt.systemPromptAppends,
         extraSystemPromptAppends: [
           handoffAppend,
@@ -177,6 +182,15 @@ export class AcpProviderSessionAdopter {
         }
         diagnostics.phase('publish-provider-session')
         identity.assertCurrent()
+        if (
+          startupBackend.framework.id === 'codex' &&
+          startupBackend.session.options?.openScienceSkillRuntime &&
+          specialistBindingRevision !==
+            (this.deps.registry.lookup(stableAppSessionId)?.aggregate.specialistBindingRevision() ??
+              0)
+        ) {
+          throw new Error('ACP session startup was superseded.')
+        }
         const { aggregate } = this.deps.registry.publish(identity, stableAppSessionId, {
           session: provisionalSession,
           cwd: request.cwd,
@@ -197,6 +211,7 @@ export class AcpProviderSessionAdopter {
         }
         if (hasAuthoritativeSpecialistBinding) aggregate.setSpecialistId(specialistId)
         capability.commit(stableAppSessionId)
+        capability.registerBridgeMcpSession?.(stableAppSessionId, provisionalSession.sessionId)
         this.deps.commitClaudeReplay(stableAppSessionId)
         provisionalSession = undefined
         capability = undefined
@@ -219,7 +234,8 @@ export class AcpProviderSessionAdopter {
         cwd: request.cwd,
         frameworkId: backend.framework.id,
         ...(backend.backendId ? { backendId: backend.backendId } : {}),
-        contextReset: true
+        contextReset: true,
+        ...(wslSetup ? { wslSetup: true as const } : {})
       }
     } catch (caught) {
       let startupError = caught

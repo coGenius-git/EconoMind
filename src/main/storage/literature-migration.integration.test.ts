@@ -50,9 +50,9 @@ const put = async (path: string, bytes: Buffer | string): Promise<void> => {
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'literature-migration-'))
-  source = join(root, 'old', 'OpenScience')
+  source = join(root, 'old', 'EconoMind')
   parent = join(root, 'new')
-  target = join(parent, 'OpenScience')
+  target = join(parent, 'EconoMind')
   config = join(root, 'config')
   await Promise.all([source, parent, config].map((path) => mkdir(path, { recursive: true })))
   client = createProjectDbClient(config)

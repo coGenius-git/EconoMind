@@ -155,6 +155,7 @@ const settingsIntegrationApplicationCommands = Object.freeze({
     OwnerArgs<SkillIntegrationWorkflows, 'importSkillZip'>,
     OwnerResult<SkillIntegrationWorkflows, 'importSkillZip'>
   >('settings:import-skill-zip'),
+
   importSkillZipBatch: defineApplicationCommand<
     'settings:import-skill-zip-batch',
     OwnerArgs<SkillIntegrationWorkflows, 'importSkillZipBatch'>,
@@ -271,6 +272,7 @@ const settingsSkillApplicationCommandGroup = defineApplicationCommandGroup('sett
   settingsIntegrationApplicationCommands.deleteSkill,
   settingsIntegrationApplicationCommands.importSkill,
   settingsIntegrationApplicationCommands.importSkillZip,
+
   settingsIntegrationApplicationCommands.importSkillZipBatch
 ] as const)
 
@@ -343,6 +345,7 @@ const registerIntegrationSettingsApplicationCommands = (
       'settings:delete-skill': ({ args }) => dependencies.skills.deleteSkill(args[0]),
       'settings:import-skill': ({ args }) => dependencies.skills.importSkill(args[0]),
       'settings:import-skill-zip': ({ args }) => dependencies.skills.importSkillZip(args[0]),
+
       'settings:import-skill-zip-batch': ({ args }) =>
         dependencies.skills.importSkillZipBatch(args[0])
     })

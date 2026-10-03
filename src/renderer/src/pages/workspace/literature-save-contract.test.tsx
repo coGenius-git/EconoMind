@@ -3,6 +3,7 @@ import { cleanup, render, fireEvent } from '@testing-library/react'
 import { expect, it, vi } from 'vitest'
 import { WorkspaceLiteratureToolCard } from './WorkspaceLiteratureToolCard'
 import { buildLiteratureLibraryToolSummary } from './literature-tool-presentation'
+import { LibraryPreviewNavigationContext } from './previews/library-reference-actions'
 import { useNavigationStore } from '../../stores/navigation-store'
 it('does not describe an existing library receipt as an Inbox save', () => {
   const summary = buildLiteratureLibraryToolSummary(
@@ -36,7 +37,7 @@ it('does not describe an existing library receipt as an Inbox save', () => {
     const card = rendered.getByTestId('literature-tool-card')
     expect(card.textContent).not.toContain('Inbox')
     expect(card.textContent).toContain('Already in library: 1')
-    fireEvent.click(rendered.getByRole('button', { name: 'Open existing reference 1' }))
+    fireEvent.click(rendered.getByRole('button', { name: 'Open reference' }))
     expect(navigate).toHaveBeenCalledWith('existing', 'user')
   } finally {
     cleanup()
@@ -106,4 +107,53 @@ it('does not label dismissed receipts as pending review', () => {
     { results: [{ kind: 'candidate', id: 'dismissed', state: 'dismissed' }] }
   )
   expect(summary).toMatchObject({ savedCount: 0, otherCount: 1, existingItemIds: [] })
+})
+
+it('opens Inbox from a downloaded PDF receipt delivered through MCP text content', () => {
+  const summary = buildLiteratureLibraryToolSummary(
+    'save',
+    {},
+    {
+      content: [
+        { type: 'text', text: JSON.stringify({ status: 'pending-review', candidateId: 'pdf-1' }) }
+      ]
+    }
+  )
+  const inbox = vi.spyOn(useNavigationStore.getState(), 'openLibrary').mockImplementation(() => {})
+  try {
+    const rendered = render(<WorkspaceLiteratureToolCard summary={summary} />)
+    expect(rendered.getByText('PDF downloaded to Inbox')).toBeDefined()
+    expect(rendered.getByText('Pending review: 1')).toBeDefined()
+    fireEvent.click(rendered.getByRole('button', { name: 'Open Inbox' }))
+    expect(inbox).toHaveBeenCalledWith('user')
+  } finally {
+    cleanup()
+    inbox.mockRestore()
+  }
+})
+
+it('opens the contextual Preview Inbox without navigating away or inferring a new destination', () => {
+  const openPreview = vi.fn()
+  const navigate = vi
+    .spyOn(useNavigationStore.getState(), 'openLibrary')
+    .mockImplementation(() => {})
+  const summary = buildLiteratureLibraryToolSummary(
+    'save',
+    {},
+    { results: [{ kind: 'candidate', id: 'pending', state: 'pending' }] }
+  )
+  try {
+    const view = render(
+      <LibraryPreviewNavigationContext.Provider value={openPreview}>
+        <WorkspaceLiteratureToolCard summary={summary} />
+      </LibraryPreviewNavigationContext.Provider>
+    )
+    fireEvent.click(view.getByRole('button', { name: 'Open Inbox' }))
+    fireEvent.click(view.getByRole('button', { name: 'Open Inbox' }))
+    expect(openPreview.mock.calls).toEqual([[{ section: 'inbox' }], [{ section: 'inbox' }]])
+    expect(navigate).not.toHaveBeenCalled()
+  } finally {
+    cleanup()
+    navigate.mockRestore()
+  }
 })

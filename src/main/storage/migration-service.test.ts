@@ -14,7 +14,7 @@ import { dirname, join, relative } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 
 // classifyDataRoot now derives the target via storage-root's dataRootForParent, so migration-service
-// transitively needs the electron app stub too (packaged: folder name 'OpenScience').
+// transitively needs the electron app stub too (packaged: folder name 'EconoMind').
 vi.mock('electron', () => ({
   app: { getPath: () => '/home/user', isPackaged: true }
 }))
@@ -32,8 +32,10 @@ import {
   discardStagedCopy,
   MIGRATED_DIRS,
   PROJECT_DATABASE_FILE,
+  RUNTIME_ENVIRONMENT_LOCKS_DIR,
   RUNTIME_ENVIRONMENT_MANIFESTS_DIR,
   RUNTIME_REPAIR_REGISTRY_FILE,
+  RUNTIME_NPM_DIR,
   runDataRootMigration,
   validateNewDataRoot
 } from './migration-service'
@@ -49,7 +51,7 @@ import { operationJournalPath, RuntimeOperationJournal } from '../notebook/opera
 import type { Logger } from '../logger'
 import { DataRootCleanupJournal } from './data-root-cleanup'
 
-// Writes a verified staging marker for `<parent>/OpenScience`, as a completed copy phase would have.
+// Writes a verified staging marker for `<parent>/EconoMind`, as a completed copy phase would have.
 const seedVerifiedMarker = async (
   parent: string,
   source: string,
@@ -72,7 +74,7 @@ const seedVerifiedMarker = async (
 }
 
 // Data folder name mirrors dataFolderName() for a packaged build (see the electron mock above).
-const dataRootFor = (parent: string): string => join(parent, 'OpenScience')
+const dataRootFor = (parent: string): string => join(parent, 'EconoMind')
 
 let currentParent: string
 let currentDataRoot: string
@@ -80,17 +82,69 @@ let emptyParent: string
 
 beforeEach(async () => {
   currentParent = await mkdtemp(join(tmpdir(), 'ds-migsvc-current-'))
+  vi.stubEnv('OPEN_SCIENCE_E2E_STORAGE_ROOT', join(currentParent, 'config'))
   currentDataRoot = dataRootFor(currentParent)
   await mkdir(currentDataRoot)
   emptyParent = await mkdtemp(join(tmpdir(), 'ds-migsvc-target-'))
 })
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await rm(currentParent, { recursive: true, force: true })
   await rm(emptyParent, { recursive: true, force: true })
 })
 
 describe('migration reference safety', () => {
+  it('preserves global npm packages and command shims through a verified data-root move', async () => {
+    const relativePackage = join(RUNTIME_NPM_DIR, 'win32-x64', 'node_modules', 'fixture', 'cli.js')
+    const relativeCommand = join(RUNTIME_NPM_DIR, 'win32-x64', 'fixture.cmd')
+    await mkdir(dirname(join(currentDataRoot, relativePackage)), { recursive: true })
+    await writeFile(join(currentDataRoot, relativePackage), 'console.log("retained")')
+    await writeFile(
+      join(currentDataRoot, relativeCommand),
+      '@node "%~dp0node_modules/fixture/cli.js"'
+    )
+    const deps = { ...fakeDeps(), validateProvenanceState: async () => {} }
+    expect(await runDataRootMigration(deps, emptyParent, runOpts())).toEqual({ ok: true })
+    const target = dataRootFor(emptyParent)
+    const marker = await readMigrationMarker(target)
+    expect(marker?.migratedDirs).toContain(RUNTIME_NPM_DIR)
+    expect(
+      await commitDataRootSwitch({ ...deps, expectedToken: marker!.token }, emptyParent)
+    ).toMatchObject({ ok: true })
+    expect(await readFile(join(target, relativePackage), 'utf8')).toBe('console.log("retained")')
+    expect(await readFile(join(target, relativeCommand), 'utf8')).toBe(
+      '@node "%~dp0node_modules/fixture/cli.js"'
+    )
+    expect(existsSync(join(currentDataRoot, RUNTIME_NPM_DIR))).toBe(false)
+  })
+
+  it('preserves newly installed npm tools when an older staged move did not copy them', async () => {
+    await seedVerifiedMarker(emptyParent, currentDataRoot)
+    const installed = join(
+      currentDataRoot,
+      RUNTIME_NPM_DIR,
+      'linux-x64',
+      'lib',
+      'node_modules',
+      'fixture',
+      'cli.js'
+    )
+    await mkdir(dirname(installed), { recursive: true })
+    await writeFile(installed, 'retained')
+    const deps = {
+      ...fakeDeps(),
+      expectedToken: 'tok-test',
+      validateProvenanceState: async () => {}
+    }
+    expect(await commitDataRootSwitch(deps, emptyParent)).toMatchObject({
+      ok: false,
+      error: 'The staged copy does not include all current data. Run the move again.'
+    })
+    expect(deps.setDataRoot).not.toHaveBeenCalled()
+    expect(await readFile(installed, 'utf8')).toBe('retained')
+  })
+
   it('preserves the source and reports an uncommitted pointer when settings persistence returns EIO', async () => {
     const file = join(currentDataRoot, 'workspaces', 'session', 'data.csv')
     await mkdir(dirname(file), { recursive: true })
@@ -198,7 +252,7 @@ describe('classifyDataRoot', () => {
 
   it('treats picking the current data folder itself as "same", not a doubled nested path', async () => {
     // currentDataRoot's basename is already the data folder name, so it is used as-is (no second
-    // OpenScience appended) — the fix for the "<root>/OpenScience/OpenScience" not-found bug.
+    // EconoMind appended) — the fix for the "<root>/EconoMind/EconoMind" not-found bug.
     const result = await classifyDataRoot(currentDataRoot, currentDataRoot)
 
     expect(result).toEqual({
@@ -207,8 +261,8 @@ describe('classifyDataRoot', () => {
     })
   })
 
-  it('classifies a non-OpenScience subfolder of the current data root as invalid (inside)', async () => {
-    // A picked folder NOT named OpenScience gets the name appended, landing inside the current root.
+  it('classifies a non-EconoMind subfolder of the current data root as invalid (inside)', async () => {
+    // A picked folder NOT named EconoMind gets the name appended, landing inside the current root.
     const result = await classifyDataRoot(join(currentDataRoot, 'sub'), currentDataRoot)
 
     expect(result).toEqual({
@@ -231,11 +285,12 @@ describe('classifyDataRoot', () => {
     })
   })
 
-  it('adopts the picked OpenScience folder itself as-is, without appending a second folder', async () => {
-    // User navigates INTO and selects the OpenScience folder (which already holds data). It must be
-    // adopted directly, not derive <picked>/OpenScience (doubled, empty, not-found).
+  it('adopts the picked EconoMind folder itself as-is, without appending a second folder', async () => {
+    // User navigates INTO and selects the EconoMind folder (which already holds data). It must be
+    // adopted directly, not derive <picked>/EconoMind (doubled, empty, not-found).
     const picked = dataRootFor(emptyParent)
     await mkdir(join(picked, 'artifacts'), { recursive: true })
+    await writeFile(join(picked, 'artifacts', 'result.txt'), 'research')
 
     const result = await classifyDataRoot(picked, currentDataRoot)
 
@@ -483,30 +538,56 @@ describe('classifyDataRoot', () => {
     expect(result.error).toMatch(/can't write/i)
   })
 
-  it('classifies a parent with no OpenScience subdir as move', async () => {
+  it('classifies a parent with no EconoMind subdir as move', async () => {
     const result = await classifyDataRoot(emptyParent, currentDataRoot)
 
     expect(result).toEqual({ kind: 'move' })
   })
 
-  it('classifies an OpenScience folder containing a known data subdir as adopt', async () => {
+  it('classifies an EconoMind folder containing a known data subdir as adopt', async () => {
     await mkdir(join(dataRootFor(emptyParent), 'artifacts'), { recursive: true })
+    await writeFile(join(dataRootFor(emptyParent), 'artifacts', 'result.txt'), 'research')
 
     const result = await classifyDataRoot(emptyParent, currentDataRoot)
 
     expect(result).toEqual({ kind: 'adopt' })
   })
 
-  it('adopts on ANY known subdir, not all (a partial data folder still adopts)', async () => {
+  it('adopts a partial branded research folder without requiring all data directories', async () => {
     // Only notebooks/ present — no artifacts/uploads/runtime. A real data folder is often partial.
     await mkdir(join(dataRootFor(emptyParent), 'notebooks'), { recursive: true })
+    await writeFile(join(dataRootFor(emptyParent), 'notebooks', 'research.ipynb'), '{}')
 
     const result = await classifyDataRoot(emptyParent, currentDataRoot)
 
     expect(result).toEqual({ kind: 'adopt' })
   })
 
-  it('classifies an EMPTY OpenScience folder as move (populate it), not adopt', async () => {
+  it.each(['EconoMind', 'EconoMind-DEV', 'OpenScience', 'OpenScience-DEV', 'Open-Science'])(
+    'recognizes saved research in the exact %s root without modifying it',
+    async (folder) => {
+      const target = join(emptyParent, folder)
+      const evidence = join(target, 'artifacts', 'result.txt')
+      await mkdir(dirname(evidence), { recursive: true })
+      await writeFile(evidence, 'research retained')
+      expect(await classifyDataRoot(target, currentDataRoot, { exactTarget: true })).toEqual({
+        kind: 'adopt'
+      })
+      expect(await readFile(evidence, 'utf8')).toBe('research retained')
+      expect(existsSync(join(target, 'EconoMind'))).toBe(false)
+    }
+  )
+
+  it('does not treat an arbitrary folder containing artifacts as branded application data', async () => {
+    const target = join(emptyParent, 'unrelated')
+    const evidence = join(target, 'artifacts', 'result.txt')
+    await mkdir(dirname(evidence), { recursive: true })
+    await writeFile(evidence, 'unrelated research')
+    expect((await classifyDataRoot(target, currentDataRoot, { exactTarget: true })).kind).toBe('invalid')
+    expect(await readFile(evidence, 'utf8')).toBe('unrelated research')
+  })
+
+  it('classifies an EMPTY EconoMind folder as move (populate it), not adopt', async () => {
     await mkdir(dataRootFor(emptyParent))
 
     const result = await classifyDataRoot(emptyParent, currentDataRoot)
@@ -514,18 +595,18 @@ describe('classifyDataRoot', () => {
     expect(result).toEqual({ kind: 'move' })
   })
 
-  it('classifies a non-empty OpenScience folder with none of our subdirs as invalid (foreign)', async () => {
+  it('classifies a non-empty EconoMind folder with none of our subdirs as invalid (foreign)', async () => {
     await mkdir(join(dataRootFor(emptyParent), 'someone-elses-stuff'), { recursive: true })
 
     const result = await classifyDataRoot(emptyParent, currentDataRoot)
 
     expect(result).toEqual({
       kind: 'invalid',
-      error: 'A different folder named OpenScience already exists here. Choose another location.'
+      error: 'A different folder named EconoMind already exists here. Choose another location.'
     })
   })
 
-  it('classifies an OpenScience folder holding only runtime/ as move (runtime is not user data)', async () => {
+  it('classifies an EconoMind folder holding only runtime/ as move (runtime is not user data)', async () => {
     // A leftover runtime/ from a prior move (runtime is excluded from moves) must not look adoptable.
     await mkdir(join(dataRootFor(emptyParent), 'runtime'), { recursive: true })
 
@@ -536,6 +617,7 @@ describe('classifyDataRoot', () => {
 
   it('still adopts when user data is present even if runtime/ sits alongside it', async () => {
     await mkdir(join(dataRootFor(emptyParent), 'artifacts'), { recursive: true })
+    await writeFile(join(dataRootFor(emptyParent), 'artifacts', 'result.txt'), 'research')
     await mkdir(join(dataRootFor(emptyParent), 'runtime'), { recursive: true })
 
     const result = await classifyDataRoot(emptyParent, currentDataRoot)
@@ -554,7 +636,7 @@ describe('classifyDataRoot', () => {
 
     expect(result).toEqual({
       kind: 'invalid',
-      error: 'A different folder named OpenScience already exists here. Choose another location.'
+      error: 'A different folder named EconoMind already exists here. Choose another location.'
     })
   })
   it('classifies a verified marker-bearing staging dir as recoverable, never adoptable', async () => {
@@ -619,13 +701,13 @@ describe('validateNewDataRoot', () => {
     expect(result).toEqual({ ok: false, error: 'The selected folder does not exist.' })
   })
 
-  it('accepts a parent with no OpenScience subdir yet (move)', async () => {
+  it('accepts a parent with no EconoMind subdir yet (move)', async () => {
     const result = await validateNewDataRoot(emptyParent, currentDataRoot)
 
     expect(result).toEqual({ ok: true })
   })
 
-  it('accepts an EMPTY OpenScience folder as move', async () => {
+  it('accepts an EMPTY EconoMind folder as move', async () => {
     await mkdir(dataRootFor(emptyParent))
 
     const result = await validateNewDataRoot(emptyParent, currentDataRoot)
@@ -645,8 +727,9 @@ describe('validateNewDataRoot', () => {
     })
   })
 
-  it('is ok only for move - an OpenScience folder that already holds our data (adopt) is rejected', async () => {
+  it('is ok only for move - an EconoMind folder that already holds our data (adopt) is rejected', async () => {
     await mkdir(join(dataRootFor(emptyParent), 'artifacts'), { recursive: true })
+    await writeFile(join(dataRootFor(emptyParent), 'artifacts', 'result.txt'), 'research')
 
     const result = await validateNewDataRoot(emptyParent, currentDataRoot)
 
@@ -749,7 +832,7 @@ describe('runDataRootMigration (copy phase)', () => {
 
     expect(result).toEqual({
       ok: false,
-      error: 'Choose a location outside the current data folder.'
+      error: 'The selected data folder changed. Check the location and confirm it again.'
     })
     expect(copyAndVerify).not.toHaveBeenCalled()
     expect(await readMigrationMarker(redirectedTarget)).toBeNull()
@@ -863,12 +946,13 @@ describe('runDataRootMigration (copy phase)', () => {
 
         expect(result).toEqual({
           ok: false,
-          error: 'Could not prepare the new data location. Please try again.'
+          error:
+            "EconoMind can't write to this folder. Make sure you have permission to it — on macOS, grant access when prompted, or pick a folder inside your home directory."
         })
         expect(diagnosticRecords(logger)).toContainEqual(
           expect.objectContaining({
             operation: 'data-root-copy',
-            phase: 'prepare-staging',
+            phase: 'validate-target',
             outcome: 'failed'
           })
         )
@@ -919,7 +1003,9 @@ describe('runDataRootMigration (copy phase)', () => {
         dirs: [
           ...MIGRATED_DIRS,
           RUNTIME_ENVIRONMENT_MANIFESTS_DIR,
+          RUNTIME_ENVIRONMENT_LOCKS_DIR,
           RUNTIME_REPAIR_REGISTRY_FILE,
+          RUNTIME_NPM_DIR,
           join('runtime', 'pkgs')
         ]
       })
@@ -1158,6 +1244,12 @@ describe('runDataRootMigration (copy phase)', () => {
     const sourceManifest = join(currentDataRoot, RUNTIME_ENVIRONMENT_MANIFESTS_DIR, manifestName)
     await mkdir(join(currentDataRoot, RUNTIME_ENVIRONMENT_MANIFESTS_DIR), { recursive: true })
     await writeFile(sourceManifest, '{"schemaVersion":1}\n')
+    const lockName = `${'b'.repeat(64)}.json`
+    await mkdir(join(currentDataRoot, RUNTIME_ENVIRONMENT_LOCKS_DIR), { recursive: true })
+    await writeFile(
+      join(currentDataRoot, RUNTIME_ENVIRONMENT_LOCKS_DIR, lockName),
+      '{"schemaVersion":1}\n'
+    )
     const repairRegistry = {
       runtimeIds: ['managed:python:default-python'],
       reasons: { 'managed:python:default-python': 'interrupted-install' }
@@ -1168,15 +1260,6 @@ describe('runDataRootMigration (copy phase)', () => {
     )
 
     const target = dataRootFor(emptyParent)
-    const destinationInventory = join(
-      target,
-      'runtime',
-      'provenance',
-      'environment-inventory',
-      'stale-environment'
-    )
-    await mkdir(destinationInventory, { recursive: true })
-    await writeFile(join(destinationInventory, 'binding.json'), '{"state":"dirty"}\n')
     const result = await runDataRootMigration(
       { currentDataRoot, runtime: deps.runtime, notebook: deps.notebook },
       emptyParent,
@@ -1185,6 +1268,7 @@ describe('runDataRootMigration (copy phase)', () => {
 
     expect(result).toEqual({ ok: true })
     expect(existsSync(join(target, RUNTIME_ENVIRONMENT_MANIFESTS_DIR, manifestName))).toBe(true)
+    expect(existsSync(join(target, RUNTIME_ENVIRONMENT_LOCKS_DIR, lockName))).toBe(true)
     await expect(readFile(join(target, RUNTIME_REPAIR_REGISTRY_FILE), 'utf8')).resolves.toBe(
       `${JSON.stringify(repairRegistry)}\n`
     )
@@ -1910,7 +1994,7 @@ describe('commitDataRootSwitch (commit phase)', () => {
   })
 
   it('refuses to commit a marker staged against a different source (wrong current root)', async () => {
-    await seedVerifiedMarker(emptyParent, '/some/other/OpenScience')
+    await seedVerifiedMarker(emptyParent, '/some/other/EconoMind')
     const deps = fakeDeps()
     const deleteSources = vi.fn(async (): Promise<DeleteResult> => ({ deleted: [], failed: [] }))
 
@@ -1929,7 +2013,7 @@ describe('commitDataRootSwitch (commit phase)', () => {
 
   it('refuses to commit a marker whose recorded target differs from the derived one', async () => {
     const target = await seedVerifiedMarker(emptyParent, currentDataRoot, {
-      target: '/elsewhere/OpenScience'
+      target: '/elsewhere/EconoMind'
     })
     const deps = fakeDeps()
     const deleteSources = vi.fn(async (): Promise<DeleteResult> => ({ deleted: [], failed: [] }))
@@ -2388,7 +2472,7 @@ describe('discardStagedCopy', () => {
   })
 
   it('refuses when the marker was staged against a different source', async () => {
-    const target = await seedVerifiedMarker(emptyParent, '/some/other/OpenScience')
+    const target = await seedVerifiedMarker(emptyParent, '/some/other/EconoMind')
 
     const result = await discardStagedCopy(
       { currentDataRoot, expectedToken: 'tok-test' },
@@ -2467,7 +2551,9 @@ describe('runtime preservation + old-runtime cleanup', () => {
         dirs: [
           ...MIGRATED_DIRS,
           RUNTIME_ENVIRONMENT_MANIFESTS_DIR,
+          RUNTIME_ENVIRONMENT_LOCKS_DIR,
           RUNTIME_REPAIR_REGISTRY_FILE,
+          RUNTIME_NPM_DIR,
           join('runtime', 'pkgs')
         ]
       })
@@ -2500,7 +2586,9 @@ describe('runtime preservation + old-runtime cleanup', () => {
         dirs: [
           ...MIGRATED_DIRS,
           RUNTIME_ENVIRONMENT_MANIFESTS_DIR,
+          RUNTIME_ENVIRONMENT_LOCKS_DIR,
           RUNTIME_REPAIR_REGISTRY_FILE,
+          RUNTIME_NPM_DIR,
           join('runtime', 'pkgs')
         ]
       })
@@ -2537,7 +2625,9 @@ describe('runtime preservation + old-runtime cleanup', () => {
         dirs: [
           ...MIGRATED_DIRS,
           RUNTIME_ENVIRONMENT_MANIFESTS_DIR,
+          RUNTIME_ENVIRONMENT_LOCKS_DIR,
           RUNTIME_REPAIR_REGISTRY_FILE,
+          RUNTIME_NPM_DIR,
           join('runtime', 'pkgs')
         ]
       })

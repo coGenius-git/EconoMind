@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { PlanCommandError } from '../../shared/session-plan/contract'
 
 type SessionPlanInteractionIdentity = Readonly<{
@@ -7,6 +8,7 @@ type SessionPlanInteractionIdentity = Readonly<{
 
 type SessionPlanApprovalParking = Readonly<{
   interactionId: string
+  response: Promise<unknown>
   resolve: (result: unknown) => void
   reject: (error: Error) => void
 }>
@@ -16,7 +18,16 @@ type SessionPlanAgentDecisionAuthorization = Readonly<{
   interactionSequence: number
 }>
 
+type SessionPlanProviderPause = {
+  interactionSequence: number
+  response: Promise<unknown>
+  stopObserved: boolean
+  dispose: () => void
+}
+
 type SessionPlanInteractionRow = {
+  reviewRequest?: Readonly<{ artifactVersionId: string; id: string }>
+  providerPause?: SessionPlanProviderPause
   identity?: SessionPlanInteractionIdentity
   approvalReservation?: string
   approval?: SessionPlanApprovalParking
@@ -48,6 +59,11 @@ class SessionPlanInteractionOwner {
     delete row.identity
     this.prune(sessionId, row)
     return true
+  }
+
+  hasPendingApproval(sessionId: string): boolean {
+    const row = this.rows.get(sessionId)
+    return Boolean(row?.approvalReservation || row?.approval || row?.providerPause)
   }
 
   reserveApproval(sessionId: string, interactionId: string): void {
@@ -88,9 +104,80 @@ class SessionPlanInteractionOwner {
       )
     }
     this.rows.set(sessionId, row)
-    return new Promise((resolve, reject) => {
-      row.approval = { interactionId, resolve, reject }
+    let resolve!: (result: unknown) => void
+    let reject!: (error: Error) => void
+    const response = new Promise((accept, fail) => {
+      resolve = accept
+      reject = fail
     })
+    row.approval = { interactionId, response, resolve, reject }
+    if (row.identity) {
+      // Keep this identity after settlement so receipt refreshes do not reopen the
+      // submitted card. Only another actual approval wait creates a new review.
+      row.reviewRequest = { artifactVersionId: row.identity.artifactVersionId, id: randomUUID() }
+    }
+    return response
+  }
+
+  approvalResponseFor(sessionId: string): Promise<unknown> | undefined {
+    return this.rows.get(sessionId)?.approval?.response
+  }
+
+  reviewRequestIdFor(sessionId: string, artifactVersionId: string): string | undefined {
+    const review = this.rows.get(sessionId)?.reviewRequest
+    return review?.artifactVersionId === artifactVersionId ? review.id : undefined
+  }
+
+  suspendProvider(
+    sessionId: string,
+    interactionSequence: number,
+    response: Promise<unknown>,
+    requestStop: () => () => void
+  ): void {
+    const row = this.rows.get(sessionId)
+    if (!row?.approval || row.providerPause)
+      throw new Error('No Plan approval can suspend the Provider.')
+    // Publish ownership before requesting cancellation: an immediate provider stop must find it.
+    const pause: SessionPlanProviderPause = {
+      interactionSequence,
+      response,
+      stopObserved: false,
+      dispose: () => undefined
+    }
+    row.providerPause = pause
+    pause.dispose = requestStop()
+    if (pause.stopObserved) pause.dispose()
+  }
+
+  providerPauseFor(
+    sessionId: string,
+    interactionSequence?: number
+  ): SessionPlanProviderPause | undefined {
+    const pause = this.rows.get(sessionId)?.providerPause
+    return interactionSequence === undefined || pause?.interactionSequence === interactionSequence
+      ? pause
+      : undefined
+  }
+
+  observeProviderStop(
+    sessionId: string,
+    interactionSequence: number
+  ): SessionPlanProviderPause | undefined {
+    const pause = this.providerPauseFor(sessionId, interactionSequence)
+    if (pause) {
+      pause.stopObserved = true
+      pause.dispose()
+    }
+    return pause
+  }
+
+  releaseProviderPause(sessionId: string, expected: SessionPlanProviderPause): boolean {
+    const row = this.rows.get(sessionId)
+    if (row?.providerPause !== expected) return false
+    expected.dispose()
+    delete row.providerPause
+    this.prune(sessionId, row)
+    return true
   }
 
   approvalInteractionIdFor(sessionId: string): string | undefined {
@@ -167,17 +254,23 @@ class SessionPlanInteractionOwner {
     const row = this.rows.get(sessionId)
     if (!row) return
     this.rows.delete(sessionId)
+    row.providerPause?.dispose()
     row.approval?.reject(new Error(approvalReason))
   }
 
   clearAll(approvalReason: string): void {
     const approvals = [...this.rows.values()].flatMap((row) => (row.approval ? [row.approval] : []))
+    for (const row of this.rows.values()) {
+      row.providerPause?.dispose()
+    }
     this.rows.clear()
     for (const approval of approvals) approval.reject(new Error(approvalReason))
   }
 
   private prune(sessionId: string, row: SessionPlanInteractionRow): void {
     if (
+      !row.providerPause &&
+      !row.reviewRequest &&
       !row.identity &&
       !row.approvalReservation &&
       !row.approval &&

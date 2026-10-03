@@ -35,7 +35,7 @@ const createRequestLifecycle = ({ defaultTimeoutMs, signal, timeoutMs }) => {
   const resolvedTimeoutMs = resolveRequestTimeout(defaultTimeoutMs, timeoutMs)
   const timeoutController = new AbortController()
   const timeoutError = new OpenScienceApiError(
-    `Open Science request timed out after ${resolvedTimeoutMs} milliseconds.`,
+    `EconoMind request timed out after ${resolvedTimeoutMs} milliseconds.`,
     { code: 'timeout' }
   )
   const timeout = setTimeout(() => timeoutController.abort(timeoutError), resolvedTimeoutMs)
@@ -145,8 +145,8 @@ export class OpenScienceClient {
     sleep = defaultSleep,
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS
   }) {
-    if (!baseUrl) throw new Error('Open Science baseUrl is required.')
-    if (!token) throw new Error('Open Science token is required.')
+    if (!baseUrl) throw new Error('EconoMind baseUrl is required.')
+    if (!token) throw new Error('EconoMind token is required.')
     if (!fetchImpl) throw new Error('A Fetch implementation is required.')
     resolveRequestTimeout(requestTimeoutMs)
     this.baseUrl = baseUrl.replace(/\/$/, '')
@@ -169,7 +169,7 @@ export class OpenScienceClient {
           signal
         })
         if (!response.ok) {
-          throw new OpenScienceApiError('Open Science is not running.', {
+          throw new OpenScienceApiError('EconoMind is not running.', {
             code: 'daemon_unavailable',
             status: response.status
           })
@@ -177,6 +177,22 @@ export class OpenScienceClient {
         return await response.json()
       }
     )
+  }
+
+  bootstrap(request, options) {
+    return this.request('/api/v1/bootstrap', { ...options, method: 'POST', body: request })
+  }
+
+  installCli(options) {
+    return this.request('/api/v1/cli/install', { ...options, method: 'POST' })
+  }
+
+  doctor(options) {
+    return this.request('/api/v1/doctor', { ...options, method: 'GET' })
+  }
+
+  listRuntimes(options) {
+    return this.request('/api/v1/runtimes', { ...options, method: 'GET' })
   }
 
   listConnectors(options) {
@@ -324,7 +340,16 @@ export class OpenScienceClient {
     })
   }
 
-  startRun(request, options) {
+  async startRun(request, options) {
+    if (request.permissionPrompts === 'none') {
+      const bootstrap = await this.health(options)
+      if (!bootstrap.taskCapabilities?.includes('permission-prompts-none')) {
+        throw new OpenScienceApiError(
+          'This EconoMind server does not support unattended permission handling. Update the server before starting this run.',
+          { code: 'unsupported_capability' }
+        )
+      }
+    }
     return this.request('/api/v1/runs', { ...options, method: 'POST', body: request })
   }
 
@@ -346,6 +371,9 @@ export class OpenScienceClient {
     if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
       throw new TypeError('timeoutMs must be a positive number.')
     }
+    if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
+      throw new TypeError('pollIntervalMs must be a positive number.')
+    }
     const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs
     for (;;) {
       signal?.throwIfAborted()
@@ -355,14 +383,13 @@ export class OpenScienceClient {
       const remainingMs = deadline === undefined ? undefined : Math.max(1, deadline - Date.now())
       let run
       try {
-        run = await this.getRun(runId, { signal, timeoutMs: remainingMs })
+        run = await this.getRun(runId, {
+          signal,
+          timeoutMs: Math.min(this.requestTimeoutMs, remainingMs ?? this.requestTimeoutMs)
+        })
       } catch (error) {
         signal?.throwIfAborted()
-        if (
-          deadline !== undefined &&
-          (Date.now() >= deadline ||
-            (error instanceof OpenScienceApiError && error.code === 'timeout'))
-        ) {
+        if (deadline !== undefined && Date.now() >= deadline) {
           throw new OpenScienceApiError(`Timed out waiting for run ${runId}.`, { code: 'timeout' })
         }
         throw error
@@ -456,7 +483,7 @@ export class OpenScienceClient {
       if (!readySettled) {
         settleReady(
           error ??
-            new OpenScienceApiError('Open Science event stream closed before it was ready.', {
+            new OpenScienceApiError('EconoMind event stream closed before it was ready.', {
               code: 'event_stream_failed'
             })
         )
@@ -477,7 +504,7 @@ export class OpenScienceClient {
       idleTimer = setTimeout(
         () =>
           fail(
-            `Open Science event stream timed out after ${idleTimeoutMs} milliseconds.`,
+            `EconoMind event stream timed out after ${idleTimeoutMs} milliseconds.`,
             'timeout'
           ),
         idleTimeoutMs
@@ -486,7 +513,7 @@ export class OpenScienceClient {
     const enqueue = (event) => {
       if (queue.length >= MAX_BUFFERED_EVENTS) {
         fail(
-          'Open Science event stream exceeded its buffered event limit.',
+          'EconoMind event stream exceeded its buffered event limit.',
           'event_stream_overflow'
         )
         return
@@ -526,7 +553,7 @@ export class OpenScienceClient {
           parsed = JSON.parse(String(event.data))
         } catch {
           fail(
-            'Open Science event stream returned an invalid message.',
+            'EconoMind event stream returned an invalid message.',
             'event_stream_invalid_message'
           )
           return
@@ -539,7 +566,7 @@ export class OpenScienceClient {
             !Number.isSafeInteger(parsed.data?.latestSequence)
           ) {
             fail(
-              'Open Science event stream returned an invalid message.',
+              'EconoMind event stream returned an invalid message.',
               'event_stream_invalid_message'
             )
             return
@@ -555,7 +582,7 @@ export class OpenScienceClient {
             !Number.isSafeInteger(parsed.data?.latestSequence)
           ) {
             fail(
-              'Open Science event stream returned an invalid message.',
+              'EconoMind event stream returned an invalid message.',
               'event_stream_invalid_message'
             )
             return
@@ -580,7 +607,7 @@ export class OpenScienceClient {
       current.addEventListener('error', () => {
         if (finished || socket !== current) return
         if (!readySettled) {
-          fail('Open Science event stream failed.', 'event_stream_failed')
+          fail('EconoMind event stream failed.', 'event_stream_failed')
         } else {
           current.close()
         }
@@ -590,7 +617,7 @@ export class OpenScienceClient {
         if (!connectionOpened && !readySettled) {
           finish({
             error: new OpenScienceApiError(
-              'Open Science event stream closed before it was ready.',
+              'EconoMind event stream closed before it was ready.',
               { code: 'event_stream_failed' }
             ),
             discardQueue: true
@@ -605,8 +632,8 @@ export class OpenScienceClient {
           finish({
             error: new OpenScienceApiError(
               event.code === 1008
-                ? 'Open Science event stream access was revoked.'
-                : 'Open Science event stream closed permanently.',
+                ? 'EconoMind event stream access was revoked.'
+                : 'EconoMind event stream closed permanently.',
               { code: 'event_stream_failed' }
             ),
             discardQueue: true
@@ -679,7 +706,7 @@ export class OpenScienceClient {
       error = undefined
     }
     throw new OpenScienceApiError(
-      error?.message ?? `Open Science request failed (${response.status}).`,
+      error?.message ?? `EconoMind request failed (${response.status}).`,
       {
         code: error?.code,
         status: response.status
@@ -714,7 +741,9 @@ export const connectToOpenScience = async ({
         return true
       } catch (error) {
         signal?.throwIfAborted()
-        lastError = error
+        // A stale candidate must not hide an earlier authorization or configuration failure.
+        const transportCode = error?.cause?.code ?? error?.code
+        if (transportCode !== 'ECONNREFUSED') lastError = error
         return false
       }
     }
@@ -722,7 +751,7 @@ export const connectToOpenScience = async ({
   if (!client) {
     if (lastError) throw lastError
     throw new OpenScienceApiError(
-      'Open Science is not running. Start it with "open-science start".',
+      'EconoMind is not running. Start it with "open-science start".',
       {
         code: 'daemon_unavailable'
       }

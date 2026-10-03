@@ -11,6 +11,8 @@ import {
 import type { TextAnnotation } from '../../../../shared/annotations'
 
 import type { ComposerDoc } from './composer/composer-doc'
+import { useWorkspaceComposerController } from './workspace-composer-controller'
+import { WorkspaceComposerDraftsProvider } from './workspace-composer-drafts'
 import {
   useWorkspaceConversationController,
   type WorkspaceConversationController,
@@ -177,7 +179,6 @@ const options = (
       ensureSessionReady: vi.fn(() => Promise.resolve())
     },
     sideChatOpen: false,
-    setAutoReviewEnabled: vi.fn(),
     resetNewConversationSettings: vi.fn(),
     abortFixLoop: vi.fn(() => Promise.resolve()),
     getSession: (sessionId) => (sessionId === 'session-a' ? session() : undefined),
@@ -222,6 +223,37 @@ afterEach(() => {
 })
 
 describe('workspace conversation controller', () => {
+  it.each([
+    ['claude-code', 'claude-code', 'claude-code:anthropic'],
+    ['opencode', 'opencode', 'opencode:provider-1'],
+    ['codebuddy', 'codebuddy', 'codebuddy:provider-1'],
+    ['codex-response', 'codex', 'codex:responses-provider'],
+    ['codex-bridge', 'codex', 'codex:bridge-provider']
+  ] as const)(
+    'allows a new message after a failed initial session connection (%s)',
+    async (_path, agentFrameworkId, agentBackendId) => {
+      const failedSession = session({
+        status: 'error',
+        isPending: true,
+        agentFrameworkId,
+        agentBackendId,
+        error: 'Agent startup failed'
+      })
+      const input = options({
+        activeSession: failedSession,
+        actionability: projectSessionActionability(failedSession)
+      })
+      const hook = renderController(input)
+      mounted.push(hook)
+
+      expect(hook.result.current.availability.submit).toBe(true)
+      await act(async () => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+      expect(input.runtime.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: failedSession.id, text: 'hello' })
+      )
+    }
+  )
+
   it('admits and sends a structured annotation without message text', async () => {
     const annotation = {
       id: 'annotation-1',
@@ -361,6 +393,127 @@ describe('workspace conversation controller', () => {
     )
   })
 
+  it.each(['success', 'undefined', 'rejection'])(
+    'admits a distinct new draft and keeps its guard after the earlier send settles with %s',
+    async (outcome) => {
+      const first = options({ activeSession: undefined, currentDraftKey: 'new:project-a' })
+      first.composer.lifecycle.captureSend = vi.fn(() => ({
+        draftKey: 'new:project-a',
+        version: 1,
+        doc: textDoc('first'),
+        annotations: [],
+        attachments: []
+      }))
+      let finish!: (value: { sessionId: string; messageId: string } | undefined) => void
+      let fail!: (error: Error) => void
+      first.runtime.sendMessage = vi.fn<
+        WorkspaceConversationControllerOptions['runtime']['sendMessage']
+      >(
+        () =>
+          new Promise((resolve, reject) => {
+            finish = resolve
+            fail = reject
+          })
+      )
+      const hook = renderController(first)
+      mounted.push(hook)
+      act(() => {
+        hook.result.current.actions.submit.draft({ forcedSkillIds: [] })
+        hook.result.current.actions.submit.draft({ forcedSkillIds: [] })
+      })
+      expect(first.runtime.sendMessage).toHaveBeenCalledOnce()
+      const second = options({ activeSession: undefined, currentDraftKey: 'new:project-a' })
+      second.composer.lifecycle.captureSend = vi.fn(() => ({
+        draftKey: 'new:project-a',
+        version: 2,
+        doc: textDoc('second'),
+        annotations: [],
+        attachments: []
+      }))
+      second.runtime.sendMessage = vi.fn<
+        WorkspaceConversationControllerOptions['runtime']['sendMessage']
+      >(() => new Promise(() => undefined))
+      hook.rerender(second)
+      act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+      expect(second.runtime.sendMessage).toHaveBeenCalledOnce()
+      await act(async () => {
+        if (outcome === 'rejection') fail(new Error('preparation failed'))
+        else
+          finish(
+            outcome === 'success'
+              ? { sessionId: 'first-session', messageId: 'first-message' }
+              : undefined
+          )
+      })
+      act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+      expect(second.runtime.sendMessage).toHaveBeenCalledOnce()
+    }
+  )
+
+  it('suppresses synchronous duplicate clicks after the real composer clears a new draft', () => {
+    const input = options({ activeSession: undefined, currentDraftKey: 'new:project-a' })
+    input.runtime.sendMessage = vi.fn<
+      WorkspaceConversationControllerOptions['runtime']['sendMessage']
+    >(() => new Promise(() => undefined))
+    let composer!: ReturnType<typeof useWorkspaceComposerController>
+    let controller!: WorkspaceConversationController
+    const root = createRoot(document.createElement('div'))
+    const Harness = (): null => {
+      composer = useWorkspaceComposerController({
+        currentDraftKey: input.currentDraftKey,
+        newConversationDraftKey: input.currentDraftKey,
+        activeProjectId: input.projectId,
+        activeSession: undefined,
+        pendingCustomizePrefill: undefined,
+        onCustomizePrefillApplied: vi.fn(),
+        historyEntries: [],
+        historyPolicy: {
+          catalogSkillIds: new Set(),
+          allowedSkillIds: undefined,
+          skillCatalogReady: true,
+          refreshSkillCatalog: false,
+          specialistCatalogReady: true,
+          specialistId: undefined,
+          loadSkills: vi.fn(),
+          loadSpecialists: vi.fn()
+        },
+        canStageAttachments: true,
+        supportsImageInput: true,
+        uploads: {
+          stageLocalFile: vi.fn(),
+          beginTransfer: vi.fn(),
+          appendTransfer: vi.fn(),
+          getTransferStatus: vi.fn(),
+          finishTransfer: vi.fn(),
+          abortTransfer: vi.fn().mockResolvedValue(undefined),
+          deleteUpload: vi.fn(),
+          onTransferProgress: vi.fn(() => () => undefined)
+        }
+      })
+      controller = useWorkspaceConversationController({ ...input, composer })
+      return null
+    }
+    try {
+      act(() =>
+        root.render(createElement(WorkspaceComposerDraftsProvider, null, createElement(Harness)))
+      )
+      act(() => composer.actions.changeDoc(textDoc('same text')))
+      const firstVersion = composer.lifecycle.captureSend().version
+      act(() => {
+        controller.actions.submit.draft({ forcedSkillIds: [] })
+        controller.actions.submit.draft({ forcedSkillIds: [] })
+      })
+      expect(input.runtime.sendMessage).toHaveBeenCalledOnce()
+      expect(composer.lifecycle.captureSend().version).toBe(firstVersion)
+      act(() => composer.actions.changeDoc(textDoc('same text')))
+      expect(composer.lifecycle.captureSend().version).toBeGreaterThan(firstVersion)
+      act(() => controller.actions.submit.draft({ forcedSkillIds: [] }))
+      expect(input.runtime.sendMessage).toHaveBeenCalledTimes(2)
+    } finally {
+      act(() => root.unmount())
+    }
+  })
+
   it('exposes the submitted draft immediately while runtime admission is pending', async () => {
     let resolveAdmission!: (value: { sessionId: string; messageId: string }) => void
     const admission = new Promise<{ sessionId: string; messageId: string }>((resolve) => {
@@ -382,6 +535,58 @@ describe('workspace conversation controller', () => {
 
     await act(async () => resolveAdmission({ sessionId: 'session-a', messageId: 'message-a' }))
     expect(hook.result.current.optimisticMessage).toBeUndefined()
+  })
+
+  it('removes only this send preview when its real message appears before admission settles', async () => {
+    let resolveAdmission!: (value: { sessionId: string; messageId: string }) => void
+    let onMessageAppended: ((message: { sessionId: string; messageId: string }) => void) | undefined
+    const input = options()
+    input.runtime.sendMessage = vi.fn((request) => {
+      onMessageAppended = request.onMessageAppended
+      return new Promise<{ sessionId: string; messageId: string }>((resolve) => {
+        resolveAdmission = resolve
+      })
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+    act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+    expect(hook.result.current.optimisticMessage?.content).toBe('hello')
+
+    act(() => onMessageAppended?.({ sessionId: 'session-a', messageId: 'real-message-1' }))
+    expect(hook.result.current.optimisticMessage).toBeUndefined()
+    // Clearing the preview must not unlock a send that is still in flight.
+    act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+    expect(input.runtime.sendMessage).toHaveBeenCalledOnce()
+    await act(async () => resolveAdmission({ sessionId: 'session-a', messageId: 'real-message-1' }))
+
+    const previousNotification = onMessageAppended
+    act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+    expect(hook.result.current.optimisticMessage?.content).toBe('hello')
+    // Identical text (even a reused draft version) is a different submission.
+    act(() => previousNotification?.({ sessionId: 'session-a', messageId: 'real-message-1' }))
+    expect(hook.result.current.optimisticMessage?.content).toBe('hello')
+    await act(async () => resolveAdmission({ sessionId: 'session-a', messageId: 'real-message-2' }))
+  })
+
+  it('restores a failed draft even after its preview handed off to the real message', async () => {
+    let rejectAdmission!: (error: Error) => void
+    let onMessageAppended: (() => void) | undefined
+    const input = options()
+    input.runtime.sendMessage = vi.fn((request) => {
+      onMessageAppended = () =>
+        request.onMessageAppended?.({ sessionId: 'session-a', messageId: 'real-message' })
+      return new Promise<{ sessionId: string; messageId: string }>((_resolve, reject) => {
+        rejectAdmission = reject
+      })
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+    act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+    act(() => onMessageAppended?.())
+    expect(hook.result.current.optimisticMessage).toBeUndefined()
+    await act(async () => rejectAdmission(new Error('save failed')))
+    expect(input.composer.lifecycle.restoreFailedSend).toHaveBeenCalledOnce()
+    expect(input.composer.actions.setError).toHaveBeenCalledWith('save failed')
   })
 
   it('branches from a completed Agent Message without consuming the composer draft', async () => {
@@ -710,7 +915,7 @@ describe('workspace conversation controller', () => {
     expect(input.runtime.resendEditedMessage).not.toHaveBeenCalled()
   })
 
-  it('keeps send and message branching available while history replay is pending', () => {
+  it('keeps send and message branching available while history replay is pending', async () => {
     const replaySession = session({ pendingHistoryReplay: { kind: 'all' } })
     const startSideChat = vi.fn(async () => true)
     const input = options({
@@ -726,14 +931,14 @@ describe('workspace conversation controller', () => {
       branch: true
     })
     act(() => hook.result.current.actions.branch('agent-message-a'))
-    act(() => hook.result.current.actions.sideChat.start())
+    await act(async () => hook.result.current.actions.sideChat.start())
     expect(input.runtime.sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         branchSourceSessionId: 'session-a',
         branchSourceMessageId: 'agent-message-a'
       })
     )
-    expect(startSideChat).not.toHaveBeenCalled()
+    expect(startSideChat).toHaveBeenCalledOnce()
 
     vi.mocked(input.runtime.sendMessage).mockClear()
     act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
@@ -799,6 +1004,79 @@ describe('workspace conversation controller', () => {
     ])
     expect(input.runtime.sendMessage).not.toHaveBeenCalled()
   })
+
+  it.each([
+    ['idle', 'draft'],
+    ['error', 'draft'],
+    ['idle', 'revision'],
+    ['error', 'revision']
+  ] as const)(
+    'keeps %s projection %s queued until Main releases ownership',
+    async (status, kind) => {
+      let currentSession = { ...runningSession(), status, agentPromptInFlight: true }
+      const input = options({
+        activeSession: currentSession,
+        // The store may accept live ownership before React receives the runtime snapshot.
+        promptInFlightSessionIds: [],
+        getSession: () => currentSession
+      })
+      const hook = renderController(input)
+      mounted.push(hook)
+
+      expect(hook.result.current.availability).toMatchObject({
+        submit: true,
+        submitMode: 'queue',
+        revise: true
+      })
+      await act(async () => {
+        if (kind === 'draft') hook.result.current.actions.submit.draft({ forcedSkillIds: [] })
+        else {
+          expect(
+            await hook.result.current.actions.revise('message-user-a', textDoc('changed'), [])
+          ).toEqual({ ok: true, disposition: 'queued' })
+        }
+      })
+      expect(hook.result.current.queue.items).toEqual([
+        expect.objectContaining({ text: kind === 'draft' ? 'hello' : 'changed', phase: 'queued' })
+      ])
+      expect(input.runtime.sendMessage).not.toHaveBeenCalled()
+      expect(input.runtime.resendEditedMessage).not.toHaveBeenCalled()
+
+      // A state-only release must drain the queue without requiring another provider stop event.
+      currentSession = { ...currentSession, agentPromptInFlight: false }
+      hook.rerender({
+        ...input,
+        activeSession: currentSession,
+        actionability: projectSessionActionability(currentSession)
+      })
+      await vi.waitFor(() =>
+        expect(
+          kind === 'draft' ? input.runtime.sendMessage : input.runtime.resendEditedMessage
+        ).toHaveBeenCalledOnce()
+      )
+    }
+  )
+
+  it.each(['waiting-for-user', 'waiting-permission', 'waiting-plan-approval'] as const)(
+    'does not queue over %s even while Main owns the prompt',
+    async (status) => {
+      const activeSession = { ...runningSession(), status, agentPromptInFlight: true }
+      const input = options({ activeSession, getSession: () => activeSession })
+      const hook = renderController(input)
+      mounted.push(hook)
+
+      expect(hook.result.current.availability).toMatchObject({ submit: false, revise: false })
+      await act(async () => {
+        hook.result.current.actions.submit.draft({ forcedSkillIds: [] })
+        expect(
+          await hook.result.current.actions.revise('message-user-a', textDoc('changed'), [])
+        ).toEqual({ ok: false })
+      })
+      expect(hook.result.current.queue.items).toEqual([])
+      expect(input.runtime.sendMessage).not.toHaveBeenCalled()
+      expect(input.runtime.resendEditedMessage).not.toHaveBeenCalled()
+    }
+  )
 
   it('blocks sending and queueing while a Reading context mutation is pending', () => {
     const idleInput = options()
@@ -988,6 +1266,23 @@ describe('workspace conversation controller', () => {
     expect(input.composer.lifecycle.clearDraft).toHaveBeenCalledWith('session-a', 7)
   })
 
+  it('uses independent Side chat admission when the main model and main preparation are unavailable', async () => {
+    const input = options({
+      agentConfigurationReady: false,
+      sendPreparationInFlightSessionIds: ['session-a'],
+      sideChat: { start: vi.fn(async () => true) }
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+    await act(async () => hook.result.current.actions.sideChat.start())
+    expect(input.sideChat?.start).toHaveBeenCalledOnce()
+    expect(input.composer.lifecycle.clearDraft).toHaveBeenCalledWith(
+      'session-a',
+      expect.any(Number)
+    )
+    expect(input.runtime.sendMessage).not.toHaveBeenCalled()
+  })
+
   it('starts Side chat from an annotation-only captured draft', async () => {
     const annotation = quotedAnnotation()
     const input = options({ sideChat: { start: vi.fn(async () => true) } })
@@ -1040,6 +1335,25 @@ describe('workspace conversation controller', () => {
     expect(input.composer.lifecycle.clearDraft).not.toHaveBeenCalled()
   })
 
+  it('starts a captured draft only once while Side chat admission is pending', async () => {
+    let resolveAdmission!: (admitted: boolean) => void
+    const admission = new Promise<boolean>((resolve) => {
+      resolveAdmission = resolve
+    })
+    const input = options({ sideChat: { start: vi.fn(() => admission) } })
+    const hook = renderController(input)
+    mounted.push(hook)
+
+    act(() => {
+      hook.result.current.actions.sideChat.start()
+      hook.result.current.actions.sideChat.start()
+    })
+
+    expect(input.sideChat?.start).toHaveBeenCalledOnce()
+    await act(async () => resolveAdmission(true))
+    expect(input.composer.lifecycle.clearDraft).toHaveBeenCalledOnce()
+  })
+
   it('does not start Side chat for a Session without a prior main user message', () => {
     const input = options({
       activeSession: session({ messages: [] }),
@@ -1055,7 +1369,7 @@ describe('workspace conversation controller', () => {
   })
 
   it.each(['waiting-for-user', 'waiting-permission', 'waiting-plan-approval'] as const)(
-    'does not start Side chat while the main Session is %s',
+    'starts Side chat while the main Session is %s',
     (status) => {
       const input = options({
         activeSession: session({ status }),
@@ -1066,12 +1380,12 @@ describe('workspace conversation controller', () => {
 
       act(() => hook.result.current.actions.sideChat.start())
 
-      expect(input.sideChat?.start).not.toHaveBeenCalled()
+      expect(input.sideChat?.start).toHaveBeenCalledOnce()
       expect(input.composer.lifecycle.clearDraft).not.toHaveBeenCalled()
     }
   )
 
-  it('blocks main submit, revise, resume, and cancel while Side chat owns the Session', async () => {
+  it('allows main submit, revise, resume, and cancel while Side chat is open', async () => {
     const input = options({ sideChatOpen: true })
     const hook = renderController(input)
     mounted.push(hook)
@@ -1084,14 +1398,14 @@ describe('workspace conversation controller', () => {
     await act(async () => hook.result.current.actions.cancel())
 
     expect(hook.result.current.availability).toMatchObject({
-      submit: false,
-      revise: false,
-      resume: false
+      submit: true,
+      revise: true,
+      resume: true
     })
-    expect(input.runtime.sendMessage).not.toHaveBeenCalled()
-    expect(input.runtime.resendEditedMessage).not.toHaveBeenCalled()
-    expect(input.runtime.resumeInterruptedSession).not.toHaveBeenCalled()
-    expect(input.runtime.cancelRun).not.toHaveBeenCalled()
+    expect(input.runtime.sendMessage).toHaveBeenCalled()
+    expect(input.runtime.resendEditedMessage).toHaveBeenCalled()
+    expect(input.runtime.resumeInterruptedSession).toHaveBeenCalled()
+    expect(input.runtime.cancelRun).toHaveBeenCalled()
   })
 
   it('orders Specialist preparation before draft clear and runtime submit', async () => {
@@ -1212,7 +1526,7 @@ describe('workspace conversation controller', () => {
     expect(hook.result.current.optimisticMessage).toBeUndefined()
   })
 
-  it('includes new-Session Memory and Compute intent and stamps Review after submit succeeds', async () => {
+  it('includes new-Session Review, Memory and Compute intent in the initial send', async () => {
     const input = options({
       activeSession: undefined,
       currentDraftKey: 'new:project-a',
@@ -1238,17 +1552,39 @@ describe('workspace conversation controller', () => {
     act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
     await vi.waitFor(() => expect(input.resetNewConversationSettings).toHaveBeenCalled())
 
-    expect(input.setAutoReviewEnabled).toHaveBeenCalledWith('pending-session', true)
     expect(input.runtime.sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         agentConfiguration: input.agentConfiguration,
         memoryEnabled: false,
+        autoReviewEnabled: true,
         delegationPolicy: 'deny',
         enabledComputeHosts: ['ssh:lab', 'ssh:available'],
         selectedComputeHosts: ['ssh:lab']
       })
     )
     expect(input.session.actions.resetNewConversationSpecialist).toHaveBeenCalledOnce()
+  })
+
+  it('sends an explicit disabled Review setting for a new conversation', async () => {
+    const input = options({ activeSession: undefined, newConversationAutoReviewEnabled: false })
+    const hook = renderController(input)
+    mounted.push(hook)
+    act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+    await vi.waitFor(() => expect(input.runtime.sendMessage).toHaveBeenCalled())
+    expect(input.runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ autoReviewEnabled: false })
+    )
+  })
+
+  it('does not apply the new-conversation Review preference to an existing Session', async () => {
+    const input = options({ newConversationAutoReviewEnabled: true })
+    const hook = renderController(input)
+    mounted.push(hook)
+    act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+    await vi.waitFor(() => expect(input.runtime.sendMessage).toHaveBeenCalled())
+    expect(vi.mocked(input.runtime.sendMessage).mock.calls[0][0]).not.toHaveProperty(
+      'autoReviewEnabled'
+    )
   })
 
   it('keeps revise stable while applying the latest gate and runtime mapping', async () => {
@@ -1415,6 +1751,32 @@ describe('workspace conversation controller', () => {
     expect(order).toEqual(['review', 'runtime'])
   })
 
+  it.each(['configuration', 'prompt', 'preparation', 'permission', 'graph', 'compaction'] as const)(
+    'keeps interrupted recovery blocked by current %s ownership',
+    async (blocker) => {
+      const activeSession = session({
+        status: 'error',
+        interrupted: true,
+        conversationGraphSyncBlocked: blocker === 'graph' || undefined,
+        compacting: blocker === 'compaction' || undefined
+      })
+      const input = options({
+        activeSession,
+        agentConfigurationReady: blocker !== 'configuration',
+        promptInFlightSessionIds: blocker === 'prompt' ? ['session-a'] : [],
+        sendPreparationInFlightSessionIds: blocker === 'preparation' ? ['session-a'] : [],
+        actionability: projectSessionActionability(activeSession, {
+          rootPermissionPending: blocker === 'permission'
+        })
+      })
+      const hook = renderController(input)
+      mounted.push(hook)
+      expect(hook.result.current.availability.resume).toBe(false)
+      await act(async () => hook.result.current.actions.resume())
+      expect(input.runtime.resumeInterruptedSession).not.toHaveBeenCalled()
+    }
+  )
+
   it('gates resume and delegates deletion to the Session transaction owner', async () => {
     const input = options({ isPersistenceReady: false })
     const hook = renderController(input)
@@ -1430,4 +1792,73 @@ describe('workspace conversation controller', () => {
     expect(input.runtime.resumeInterruptedSession).toHaveBeenCalledWith('session-a')
     expect(input.session.actions.confirmDelete).toHaveBeenCalledOnce()
   })
+})
+
+it('keeps persistent Plan read failures in one background retry chain and stops on unmount', async () => {
+  vi.useFakeTimers()
+  const activeSession = session({ status: 'waiting-plan-approval' })
+  const ports = {
+    getProjection: vi.fn().mockRejectedValue(new Error('Offline')),
+    getSession: () => activeSession,
+    setProjection: vi.fn(),
+    finishRun: vi.fn()
+  }
+  const input = options({ activeSession, planProjectionRecovery: ports })
+  const hook = renderController(input)
+  try {
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(hook.result.current.planProjectionRecoveryError).toBe(true)
+    for (const delay of [1000, 2000, 4000, 8000, 16000, 30000, 30000]) {
+      expect(vi.getTimerCount()).toBe(1)
+      await act(async () => vi.advanceTimersByTimeAsync(delay))
+    }
+    expect(ports.getProjection).toHaveBeenCalledTimes(8)
+    expect(input.runtime.sendMessage).not.toHaveBeenCalled()
+    expect(input.composer.actions.setError).not.toHaveBeenCalled()
+    expect(ports.finishRun).not.toHaveBeenCalled()
+    hook.unmount()
+    await act(async () => vi.advanceTimersByTimeAsync(120000))
+    expect(ports.getProjection).toHaveBeenCalledTimes(8)
+    expect(vi.getTimerCount()).toBe(0)
+  } finally {
+    hook.unmount()
+    vi.useRealTimers()
+  }
+})
+
+it('does not overlap a hanging Plan read or apply its result after leaving the Session', async () => {
+  vi.useFakeTimers()
+  let reject!: (error: Error) => void
+  const activeSession = session({ status: 'waiting-plan-approval' })
+  const ports = {
+    getProjection: vi.fn(
+      () =>
+        new Promise<null>((_, fail) => {
+          reject = fail
+        })
+    ),
+    getSession: () => activeSession,
+    setProjection: vi.fn(),
+    finishRun: vi.fn()
+  }
+  const input = options({ activeSession, planProjectionRecovery: ports })
+  const hook = renderController(input)
+  try {
+    await act(async () => vi.advanceTimersByTimeAsync(120000))
+    expect(ports.getProjection).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+    hook.rerender(
+      options({ activeSession: session({ id: 'other-session' }), planProjectionRecovery: ports })
+    )
+    await act(async () => reject(new Error('Late failure')))
+    expect(hook.result.current.planProjectionRecoveryError).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(ports.setProjection).not.toHaveBeenCalled()
+    expect(ports.finishRun).not.toHaveBeenCalled()
+  } finally {
+    hook.unmount()
+    vi.useRealTimers()
+  }
 })

@@ -18,18 +18,37 @@ export type ConnectorMeta = {
 }
 
 // Static connector metadata for the settings UI (tool lists come from the registry).
-// EconoMind is domain-tuned for economics & management research: the literature graph
-// (OpenAlex + arXiv) is the sole built-in research connector.
 export const CONNECTOR_CATALOG: ConnectorMeta[] = [
   {
     id: 'literature',
     displayName: 'Literature Graph',
-    description:
-      'Scholarly literature graph — OpenAlex works/authors/venues/citations, arXiv metadata.',
+    description: 'Literature and research data via OpenAlex, arXiv, Crossref and DataCite.',
     useWhen:
-      'Use when exploring the scholarly literature graph — searching works/papers by topic with citation counts and authors, following a work’s citations or references, looking up authors (ORCID, h-index, institution) or a venue/journal, or searching arXiv preprints. Sourced from OpenAlex and arXiv.',
-    sources: ['OpenAlex', 'arXiv'],
+      'Use when exploring the scholarly literature graph — searching works/papers by topic with citation counts and authors, following a work’s citations or references, looking up authors (ORCID, h-index, institution) or a venue/journal, searching arXiv preprints, checking Crossref bibliographic metadata and deposited corrections/retractions, or discovering DataCite datasets/software and their publication relationships. Sourced from OpenAlex, arXiv, Crossref and DataCite.',
+    sources: ['OpenAlex', 'arXiv', 'Crossref', 'DataCite'],
     termsUrl: 'https://docs.openalex.org/additional-help/terms',
+    requiresNcbi: false
+  },
+
+  {
+    id: 'research-resources',
+    displayName: 'Research Resources',
+    description: 'Funding-opportunity search via Grants.gov.',
+    useWhen:
+      'Use when researching U.S. federal funding opportunities by keyword, agency, status, eligibility or funding category. Sourced from Grants.gov.',
+    sources: ['Grants.gov'],
+    termsUrl: 'https://www.grants.gov/',
+    requiresNcbi: false
+  },
+
+  {
+    id: 'zenodo',
+    displayName: 'Zenodo',
+    description: 'Public research records, versions and file metadata from Zenodo.',
+    useWhen:
+      'Use when discovering datasets, software or publications deposited in Zenodo, inspecting record and concept DOIs, or listing file names, sizes, checksums and download links for a record. Searches fetch one page of public metadata; file access may be restricted. No uploads or file downloads.',
+    sources: ['Zenodo'],
+    termsUrl: 'https://about.zenodo.org/terms/',
     requiresNcbi: false
   }
 ]

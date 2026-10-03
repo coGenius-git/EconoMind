@@ -249,8 +249,12 @@ const classifyUpdaterDownloadStatus = (downloaded, expectedVersion) => {
   return 'unexpected'
 }
 
-const waitForInstallerExit = async ({ installer, env, signal, runProcessImpl = runProcess }) => {
+const observeInstaller = ({ installer, env, signal, runProcessImpl = runProcess }) => {
+  const { promise: ready, resolve: markReady, reject: failReady } = Promise.withResolvers()
+  // Consumers await readiness before applying; handle an early observer exit immediately too.
+  void ready.catch(() => undefined)
   const script = String.raw`
+$ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -273,8 +277,13 @@ public static class OpenScienceProcessObserver
 }
 '@
 $target = [IO.Path]::GetFullPath($env:OPEN_SCIENCE_INSTALLER_WATCH_TARGET)
+# Warm up CIM before acknowledging readiness: starting PowerShell is not enough.
+Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $PID" | Out-Null
+[Console]::Out.WriteLine('OPEN_SCIENCE_INSTALLER_OBSERVER_READY')
+[Console]::Out.Flush()
 $deadline = [DateTime]::UtcNow.AddMinutes(1)
 $candidate = $null
+$handle = [IntPtr]::Zero
 do {
   $candidate = Get-CimInstance -ClassName Win32_Process -Filter "Name = '$([IO.Path]::GetFileName($target).Replace("'", "''"))'" |
     Where-Object {
@@ -282,18 +291,22 @@ do {
       [String]::Equals([IO.Path]::GetFullPath($_.ExecutablePath), $target, [StringComparison]::OrdinalIgnoreCase)
     } |
     Select-Object -First 1
-  if (-not $candidate) { Start-Sleep -Milliseconds 50 }
-} while (-not $candidate -and [DateTime]::UtcNow -lt $deadline)
+  if ($candidate) {
+    $access = 0x00100000 -bor 0x00001000
+    $handle = [OpenScienceProcessObserver]::OpenProcess($access, $false, [uint32]$candidate.ProcessId)
+  }
+  if ($handle -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 50 }
+} while ($handle -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
 if (-not $candidate) {
   [Console]::Error.Write("The updater installer process did not appear at $target.")
   exit 124
 }
-$access = 0x00100000 -bor 0x00001000
-$handle = [OpenScienceProcessObserver]::OpenProcess($access, $false, [uint32]$candidate.ProcessId)
 if ($handle -eq [IntPtr]::Zero) {
-  [Console]::Error.Write("Could not observe updater installer process $($candidate.ProcessId).")
+  [Console]::Error.Write("Could not observe updater installer process $($candidate.ProcessId) after retrying.")
   exit 126
 }
+[Console]::Out.WriteLine('OPEN_SCIENCE_INSTALLER_OBSERVER_ACQUIRED')
+[Console]::Out.Flush()
 $wait = [OpenScienceProcessObserver]::WaitForSingleObject($handle, 300000)
 if ($wait -eq 0x00000102) {
   [OpenScienceProcessObserver]::CloseHandle($handle) | Out-Null
@@ -310,12 +323,27 @@ if ($wait -ne 0 -or -not [OpenScienceProcessObserver]::GetExitCodeProcess($handl
 [Console]::Out.Write("installer pid=$($candidate.ProcessId) exit=$exitCode")
 exit $exitCode
 `.trim()
-  return runProcessImpl('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-    allowNonZero: true,
-    env: { ...env, OPEN_SCIENCE_INSTALLER_WATCH_TARGET: installer },
-    signal,
-    timeoutMs: 370_000
-  })
+  const exit = runProcessImpl(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', script],
+    {
+      allowNonZero: true,
+      env: { ...env, OPEN_SCIENCE_INSTALLER_WATCH_TARGET: installer },
+      signal,
+      timeoutMs: 370_000,
+      onStdout: (output) => {
+        if (output.split(/\r?\n/).includes('OPEN_SCIENCE_INSTALLER_OBSERVER_READY')) markReady()
+      }
+    }
+  )
+  void exit.then(
+    (result) =>
+      failReady(
+        new Error(`Installer observer exited before readiness (${result.code}).\n${result.stderr}`)
+      ),
+    failReady
+  )
+  return { ready, exit }
 }
 
 const runElectronUpdater = async ({
@@ -401,14 +429,16 @@ const runElectronUpdater = async ({
     // electron-updater intentionally detaches NSIS, so the app exit is not evidence that the
     // installation handoff finished. Attach a read-only watcher before applying the update to avoid
     // racing the new executable and to retain the real installer exit code when the handoff fails.
-    installerExit = waitForInstallerExit({
+    const observer = observeInstaller({
       installer: expectedInstaller,
       env,
       signal: installerObserver.signal
     })
+    installerExit = observer.exit
     // The observer starts before update:apply to avoid racing detached NSIS. Mark its rejection as
     // handled immediately; the original promise is still awaited below or during failure cleanup.
     void installerExit.catch(() => undefined)
+    await withTimeout(observer.ready, 'installer observer readiness', 60_000)
     const closed = waitForShutdownExit(exit, child, diagnosticOutput)
     const applied = await invokeWebRpc({
       endpoint,
@@ -666,7 +696,7 @@ export {
   classifyUpdaterDownloadStatus,
   invokeWebRpc,
   redactPackagedAppOutput,
-  waitForInstallerExit,
+  observeInstaller,
   parseArguments,
   parseSingleRange,
   rewriteFeedPaths

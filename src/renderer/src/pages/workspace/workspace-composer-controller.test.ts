@@ -1,15 +1,19 @@
+import { useSessionReplayStore } from '@/stores/session-replay-store'
+import type { SessionDiscussionCapture } from './replay/replay-context'
 // @vitest-environment jsdom
+import { configureComposerDraftStorage, revokeComposerDraftStorage } from './composer-draft-storage'
+import { literatureItemInputSchema } from '../../../../shared/literature'
 import { act, createElement, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { UploadedAttachment } from '../../../../shared/uploads'
-import type { TextAnnotation } from '../../../../shared/annotations'
+import type { PdfAnnotation, TextAnnotation } from '../../../../shared/annotations'
 import {
   SessionSizeLimitError,
   type SessionPdfContext
 } from '../../../../shared/session-persistence'
-import type { CustomizePrefillIntent } from '@/stores/navigation-store'
+import type { CustomizePrefillIntent, WslSupportPrefillIntent } from '@/stores/navigation-store'
 import {
   createInitialPreviewWorkbenchState,
   createPendingPdfContext,
@@ -27,6 +31,7 @@ import {
 } from './composer/composer-doc'
 import { WorkspaceComposerDraftsProvider } from './workspace-composer-drafts'
 import { useWorkspaceComposerController } from './workspace-composer-controller'
+import { createSessionDiscussionAnnotation } from './session-discussion-annotation'
 import type { ComposerHistoryEntry } from './composer/composer-history'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -86,6 +91,7 @@ type ControllerHook = {
     session: Parameters<typeof useWorkspaceComposerController>[0]['activeSession']
   ) => void
   setCustomizePrefill: (prefill: CustomizePrefillIntent) => void
+  setWslPrefill: (prefill: WslSupportPrefillIntent) => void
   remount: () => void
   unmount: () => void
 }
@@ -111,6 +117,7 @@ const renderController = (
   let currentDraftKey = 'session-a'
   let selectedActiveSession = activeSession ?? undefined
   let pendingCustomizePrefill: CustomizePrefillIntent | undefined
+  let pendingWslSupportPrefill: WslSupportPrefillIntent | undefined
   const container = document.createElement('div')
   const root = createRoot(container)
   const result = {
@@ -122,7 +129,9 @@ const renderController = (
       newConversationDraftKey: 'new:project',
       activeProjectId: 'project',
       pendingCustomizePrefill,
+      pendingWslSupportPrefill,
       onCustomizePrefillApplied: vi.fn(),
+      onWslSupportPrefillApplied: vi.fn(),
       historyEntries,
       activeSession: selectedActiveSession,
       historyPolicy: {
@@ -165,7 +174,15 @@ const renderController = (
     },
     setCustomizePrefill: (prefill: CustomizePrefillIntent): void => {
       pendingCustomizePrefill = prefill
+      pendingWslSupportPrefill = undefined
       currentDraftKey = 'new:project'
+      render()
+    },
+    setWslPrefill: (prefill: WslSupportPrefillIntent): void => {
+      pendingWslSupportPrefill = prefill
+      pendingCustomizePrefill = undefined
+      currentDraftKey = 'new:project'
+      selectedActiveSession = undefined
       render()
     },
     remount: (): void => {
@@ -180,12 +197,326 @@ const mounted: Array<ReturnType<typeof renderController>> = []
 const originalApi = window.api
 
 afterEach(() => {
+  useSessionReplayStore.setState({ playhead: undefined })
   for (const hook of mounted.splice(0)) hook.unmount()
   usePreviewWorkbenchStore.setState(createInitialPreviewWorkbenchState())
   window.api = originalApi
+  revokeComposerDraftStorage()
+  sessionStorage.clear()
 })
 
 describe('workspace composer controller', () => {
+  it('replaces a discussion source atomically, preserves ordinary annotations, and allows undo', () => {
+    const hook = renderController(uploads(), undefined, [], null)
+    mounted.push(hook)
+    const selected = (sourceSessionId: string, stepId: string): TextAnnotation =>
+      createSessionDiscussionAnnotation(
+        {
+          projectId: 'project',
+          sourceSessionId,
+          sourceTitle: sourceSessionId,
+          fingerprint: 'fp',
+          branchId: 'main',
+          stepId,
+          stepOffsetMs: 0,
+          excerpt: '',
+          evidence: [
+            { kind: 'message', id: stepId, projectId: 'project', sessionId: sourceSessionId }
+          ]
+        },
+        stepId
+      )!
+    const first = selected('source-a', 'first')
+    const second = selected('source-a', 'second')
+    const replacement = selected('source-b', 'replacement')
+    act(() => {
+      hook.result.current.actions.addAnnotation(annotation())
+      hook.result.current.actions.addAnnotation(first)
+      hook.result.current.actions.addAnnotation(second)
+    })
+    expect(hook.result.current.view.annotations).toEqual([annotation(), first, second])
+    act(() => hook.result.current.actions.addAnnotation(replacement))
+    expect(hook.result.current.view.annotations).toEqual([annotation(), replacement])
+    act(() => hook.result.current.actions.undo())
+    expect(hook.result.current.view.annotations).toEqual([annotation(), first, second])
+  })
+
+  it('captures the linked replay only at Send without changing the draft or an earlier snapshot', () => {
+    const hook = renderController()
+    mounted.push(hook)
+    const context: SessionDiscussionCapture = {
+      projectId: 'project',
+      sourceSessionId: 'source',
+      sourceTitle: 'Study',
+      fingerprint: 'fp',
+      branchId: 'main',
+      stepId: 'one',
+      stepNumber: 1,
+      stepOffsetMs: 0,
+      excerpt: '',
+      evidence: [{ kind: 'message', id: 'one', projectId: 'project', sessionId: 'source' }]
+    }
+    const capture = vi.fn(() => context)
+    act(() => {
+      hook.selectSession({
+        id: 'session-a',
+        projectId: 'project',
+        runtimeContext: {
+          revision: 1,
+          sessionContext: {
+            version: 1,
+            bindings: [
+              {
+                projectId: 'project',
+                sessionId: 'source',
+                contextId: 'old',
+                title: 'Study',
+                branchId: 'main',
+                promptMessageId: 'previous'
+              }
+            ]
+          }
+        }
+      })
+      hook.result.current.actions.changeDoc(textDoc('Explain this step.'))
+      useSessionReplayStore.setState({ playhead: { ...context, capture } })
+    })
+    context.stepId = 'two'
+    context.stepNumber = 2
+    expect(capture).not.toHaveBeenCalled()
+    const sent = hook.result.current.lifecycle.captureSend()
+    context.stepId = 'three'
+    context.stepNumber = 3
+    expect(sent.discussionFocus).toMatchObject({ stepId: 'two', stepNumber: 2 })
+    expect(hook.result.current.view.annotations).toEqual([])
+    expect(docToText(hook.result.current.view.doc)).toBe('Explain this step.')
+    expect(hook.result.current.lifecycle.captureSend().discussionFocus?.stepId).toBe('three')
+    expect(hook.result.current.lifecycle.captureSend(false).discussionFocus).toBeUndefined()
+  })
+
+  it('replaces repeated Ask snapshots by logical step and keeps whole-research scope singular', () => {
+    const hook = renderController(uploads(), undefined, [], null)
+    mounted.push(hook)
+    const selected = (
+      stepId: string,
+      snapshotId: string,
+      scope?: 'session',
+      branchId = 'main'
+    ): TextAnnotation =>
+      createSessionDiscussionAnnotation(
+        {
+          projectId: 'project',
+          sourceSessionId: 'source',
+          sourceTitle: 'Study',
+          fingerprint: 'fp',
+          branchId,
+          stepId,
+          stepOffsetMs: snapshotId.length,
+          scope,
+          excerpt: '',
+          evidence: [{ kind: 'message', id: stepId, projectId: 'project', sessionId: 'source' }]
+        },
+        snapshotId
+      )!
+    const first = selected('one', 'first')
+    const repeated = selected('one', 'new-snapshot')
+    const second = selected('two', 'second')
+    act(() => {
+      hook.result.current.actions.addAnnotation(annotation())
+      hook.result.current.actions.addAnnotation(first)
+      hook.result.current.actions.addAnnotation(repeated)
+      hook.result.current.actions.addAnnotation(second)
+    })
+    expect(hook.result.current.view.annotations).toEqual([annotation(), repeated, second])
+    const whole = selected('one', 'whole', 'session')
+    const wholeAgain = selected('one', 'whole-again', 'session')
+    act(() => {
+      hook.result.current.actions.addAnnotation(whole)
+      hook.result.current.actions.addAnnotation(wholeAgain)
+    })
+    expect(hook.result.current.view.annotations).toEqual([annotation(), wholeAgain])
+    act(() => hook.result.current.actions.addAnnotation(first))
+    expect(hook.result.current.view.annotations).toEqual([annotation(), first])
+    const alternative = selected('one', 'alternative', undefined, 'other')
+    act(() => hook.result.current.actions.addAnnotation(alternative))
+    expect(hook.result.current.view.annotations).toEqual([annotation(), first, alternative])
+    act(() => hook.result.current.actions.undo())
+    expect(hook.result.current.view.annotations).toEqual([annotation(), first])
+  })
+
+  it('keeps first-message PDF evidence with its draft through undo, switching and failed-send recovery', () => {
+    const hook = renderController(uploads(), undefined, [], null)
+    mounted.push(hook)
+    hook.selectSession(undefined)
+    const evidence: PdfAnnotation = {
+      id: 'pdf-draft',
+      kind: 'pdf',
+      target: 'agent',
+      source: {
+        kind: 'literature-attachment-version',
+        projectId: 'project',
+        versionId: 'version-1',
+        path: 'literature-attachment-version:version-1',
+        name: 'paper.pdf',
+        checksum: 'a'.repeat(64)
+      },
+      selector: {
+        kind: 'region',
+        pageNumber: 1,
+        pageRotation: 0,
+        rect: { x: 0.1, y: 0.1, width: 0.2, height: 0.2 },
+        image: { data: 'AQID', mimeType: 'image/png', byteLength: 3 }
+      }
+    }
+    act(() => {
+      expect(hook.result.current.actions.addAnnotation(evidence)).toBeUndefined()
+    })
+    act(() => {
+      expect(hook.result.current.actions.undo()).toBe(true)
+    })
+    expect(hook.result.current.view.annotations).toEqual([])
+    act(() => {
+      expect(hook.result.current.actions.redo()).toBe(true)
+    })
+    hook.selectSession({ id: 'session-b', projectId: 'project' })
+    expect(hook.result.current.view.annotations).toEqual([])
+    hook.selectSession(undefined)
+    expect(hook.result.current.view.annotations).toEqual([evidence])
+    const snapshot = hook.result.current.lifecycle.captureSend()
+    expect(snapshot.annotations).toEqual([evidence])
+    expect(snapshot.draftKey).toBe('new:project')
+    act(() => {
+      hook.result.current.lifecycle.clearDraft(snapshot.draftKey, snapshot.version)
+    })
+    act(() => {
+      expect(hook.result.current.lifecycle.restoreFailedSend(snapshot, true)).toBe(true)
+    })
+    expect(hook.result.current.view.annotations).toEqual([evidence])
+    act(() => hook.result.current.actions.removeAnnotation(evidence.id))
+    expect(hook.result.current.lifecycle.captureSend().annotations).toEqual([])
+  })
+
+  it('keeps setup authority outside the document and clears it with the draft', () => {
+    const hook = renderController(uploads(), undefined, [], null)
+    mounted.push(hook)
+    hook.setWslPrefill({
+      projectId: 'project',
+      doc: textDoc('visible diagnostics'),
+      setupSessionToken: 'secret-setup-token',
+      requestId: 1
+    })
+
+    expect(hook.result.current.view.isWslSetupDraft).toBe(true)
+    expect(JSON.stringify(hook.result.current.view.doc)).not.toContain('secret-setup-token')
+    expect(hook.result.current.lifecycle.captureSend().setupSessionToken).toBe('secret-setup-token')
+
+    const snapshot = hook.result.current.lifecycle.captureSend()
+    act(() => hook.result.current.lifecycle.clearDraft(snapshot.draftKey, snapshot.version))
+    expect(hook.result.current.view.isWslSetupDraft).toBe(false)
+    expect(hook.result.current.lifecycle.captureSend().setupSessionToken).toBeUndefined()
+  })
+
+  it('discards only the active unsent WSL2 setup draft', () => {
+    const hook = renderController(uploads(), undefined, [], null)
+    mounted.push(hook)
+    hook.setWslPrefill({
+      projectId: 'project',
+      doc: textDoc('visible diagnostics'),
+      setupSessionToken: 'secret-setup-token',
+      requestId: 1
+    })
+
+    act(() => expect(hook.result.current.actions.discardWslSetupDraft()).toBe(true))
+
+    expect(hook.result.current.view.isWslSetupDraft).toBe(false)
+    expect(hook.result.current.view.doc).toEqual(emptyDoc)
+    expect(hook.result.current.lifecycle.captureSend().setupSessionToken).toBeUndefined()
+
+    hook.selectDraft('session-other')
+    hook.selectDraft('new:project')
+    expect(hook.result.current.view.isWslSetupDraft).toBe(false)
+    expect(hook.result.current.view.doc).toEqual(emptyDoc)
+  })
+
+  it('does not discard an ordinary conversation draft through the WSL2 setup action', () => {
+    const hook = renderController()
+    mounted.push(hook)
+    act(() => hook.result.current.actions.changeDoc(textDoc('ordinary unsent message')))
+
+    act(() => expect(hook.result.current.actions.discardWslSetupDraft()).toBe(false))
+
+    expect(hook.result.current.view.doc).toEqual(textDoc('ordinary unsent message'))
+  })
+
+  it('restores an active scratch from a new provider after reload and removes sent drafts', () => {
+    configureComposerDraftStorage('scope')
+    const first = renderController(uploads(), undefined, [
+      { id: 'old', messageId: 'old', doc: textDoc('old prompt') }
+    ])
+    act(() => first.result.current.actions.changeDoc(textDoc('unsent long draft')))
+    act(() => first.result.current.actions.addAnnotation(annotation()))
+    act(() => first.result.current.actions.navigateHistory('previous'))
+    const saved = sessionStorage.getItem('open-science-composer-drafts-v1')!
+    first.unmount()
+    sessionStorage.setItem('open-science-composer-drafts-v1', saved)
+    configureComposerDraftStorage('scope')
+    const reloaded = renderController()
+    expect(reloaded.result.current.view.doc).toEqual(textDoc('unsent long draft'))
+    expect(reloaded.result.current.view.annotations).toEqual([annotation()])
+    const snapshot = reloaded.result.current.lifecycle.captureSend()
+    act(() => reloaded.result.current.lifecycle.clearDraft(snapshot.draftKey, snapshot.version))
+    reloaded.unmount()
+    configureComposerDraftStorage('scope')
+    const afterSend = renderController()
+    mounted.push(afterSend)
+    expect(afterSend.result.current.view.doc).toEqual(emptyDoc)
+  })
+
+  it('revalidates completed attachments after provider recreation while retaining interrupted file notices', async () => {
+    configureComposerDraftStorage('scope')
+    const file = {
+      id: 'f',
+      sessionId: '.pending',
+      name: 'finished.txt',
+      originalName: 'finished.txt',
+      path: '/pending/f',
+      size: 4,
+      draftReceipt: 'receipt'
+    }
+    const staging = deferred<UploadedAttachment>()
+    const first = renderController(
+      uploads(
+        vi
+          .fn()
+          .mockResolvedValueOnce(file)
+          .mockImplementationOnce(() => staging.promise)
+      )
+    )
+    act(() => first.result.current.actions.changeDoc(textDoc('keep text')))
+    act(() => first.result.current.actions.stageFiles([new File(['done'], 'finished.txt')]))
+    await flushAsyncWork()
+    act(() => first.result.current.actions.stageFiles([new File(['wait'], 'pending.txt')]))
+    await flushAsyncWork()
+    const saved = sessionStorage.getItem('open-science-composer-drafts-v1')!
+    first.unmount()
+    sessionStorage.setItem('open-science-composer-drafts-v1', saved)
+    configureComposerDraftStorage('scope')
+    window.api = {
+      ...originalApi,
+      uploads: { ...originalApi?.uploads, recoverDraft: vi.fn().mockResolvedValue(file) }
+    } as Window['api']
+    const restored = renderController()
+    mounted.push(restored)
+    expect(restored.result.current.view.attachments).toEqual([])
+    await flushAsyncWork()
+    expect(window.api.uploads.recoverDraft).toHaveBeenCalledWith({ receipt: 'receipt' })
+    expect(restored.result.current.view.attachments).toEqual([file])
+    expect(restored.result.current.view.transfers).toEqual([
+      expect.objectContaining({ name: 'pending.txt', status: 'error' })
+    ])
+    expect(restored.result.current.view.doc).toEqual(textDoc('keep text'))
+  })
+
   it('DF-01 retains both conversation drafts and annotations after route remount', () => {
     const hook = renderController()
     mounted.push(hook)
@@ -1098,6 +1429,126 @@ describe('workspace composer controller', () => {
     })
   })
 
+  it.each([false, true])(
+    'keeps removed draft Reading unlinked on send (literature mention: %s)',
+    (withMention) => {
+      const preview = usePreviewWorkbenchStore.getState()
+      preview.activateProject('project')
+      preview.upsertItem({
+        id: 'literature:version-1',
+        projectId: 'project',
+        sessionId: 'literature-library',
+        type: 'file',
+        source: 'literature',
+        title: 'paper.pdf',
+        name: 'paper.pdf',
+        format: 'pdf',
+        path: 'literature-attachment-version:version-1',
+        mimeType: 'application/pdf',
+        size: 100
+      })
+      preview.setPendingPdfContext('project', {
+        kind: 'version',
+        sourceKind: 'literature-attachment-version',
+        sourceVersionId: 'version-1',
+        previewItemId: 'literature:version-1'
+      })
+      const hook = renderController(uploads(), undefined, [], null)
+      mounted.push(hook)
+      act(() =>
+        hook.result.current.actions.unlinkReadingContext(
+          'version:literature-attachment-version:version-1'
+        )
+      )
+      act(() =>
+        hook.result.current.actions.changeDoc({
+          nodes: [
+            { type: 'text', text: 'Summarize this' },
+            ...(withMention
+              ? [
+                  {
+                    type: 'literature' as const,
+                    itemId: 'paper',
+                    metadataRevision: 1,
+                    item: literatureItemInputSchema.parse({
+                      itemType: 'journalArticle',
+                      title: 'Paper'
+                    }),
+                    attachmentVersionId: 'version-1'
+                  }
+                ]
+              : [])
+          ]
+        })
+      )
+      expect(hook.result.current.view.readingContext.bindings).toEqual([])
+      const snapshot = hook.result.current.lifecycle.captureSend()
+      expect(snapshot.pendingPdfContextVersions).toBeUndefined()
+      expect(snapshot.automaticReadingEnabled).toBe(true)
+      expect(snapshot.doc.nodes.some((node) => node.type === 'literature')).toBe(withMention)
+      act(() => {
+        hook.result.current.lifecycle.clearDraft(snapshot.draftKey, snapshot.version)
+      })
+      act(() => {
+        hook.result.current.lifecycle.restoreFailedSend(snapshot)
+      })
+      expect(hook.result.current.lifecycle.captureSend().pendingPdfContextVersions).toBeUndefined()
+      // The removed Literature PDF can still be explicitly selected again.
+      act(() =>
+        preview.setPendingPdfContext('project', {
+          kind: 'version',
+          sourceKind: 'literature-attachment-version',
+          sourceVersionId: 'version-1',
+          previewItemId: 'literature:version-1'
+        })
+      )
+      expect(hook.result.current.lifecycle.captureSend().pendingPdfContextVersions).toEqual([
+        { sourceKind: 'literature-attachment-version', sourceVersionId: 'version-1' }
+      ])
+    }
+  )
+
+  it('preserves automatic PDF file mentions when an unrelated pending PDF is removed', () => {
+    const preview = usePreviewWorkbenchStore.getState()
+    preview.activateProject('project')
+    preview.setPendingPdfContext('project', {
+      kind: 'version',
+      sourceKind: 'literature-attachment-version',
+      sourceVersionId: 'removed-version',
+      previewItemId: 'literature:removed-version'
+    })
+    const hook = renderController(uploads(), undefined, [], null)
+    mounted.push(hook)
+    act(() =>
+      hook.result.current.actions.changeDoc({
+        nodes: [
+          {
+            type: 'artifact',
+            id: 'other-paper',
+            name: 'other-paper.pdf',
+            path: '/other-paper.pdf',
+            source: 'artifact',
+            sourceFileId: 'other-paper',
+            mimeType: 'application/pdf',
+            versionId: 'other-version'
+          }
+        ]
+      })
+    )
+    act(() =>
+      hook.result.current.actions.unlinkReadingContext(
+        'version:literature-attachment-version:removed-version'
+      )
+    )
+    expect(hook.result.current.lifecycle.captureSend().pendingPdfContextVersions).toEqual([
+      {
+        sourceKind: 'artifact-version',
+        sourceFileId: 'other-paper',
+        sourceVersionId: 'other-version'
+      }
+    ])
+  })
+
   it('previews and removes individual PDFs from a three-document draft and sends the remaining sources', () => {
     const preview = usePreviewWorkbenchStore.getState()
     preview.activateProject('project')
@@ -1799,6 +2250,98 @@ describe('workspace composer controller', () => {
     expect(hook.result.current.view.transfers).toHaveLength(1)
     expect(hook.result.current.view.transfers[0].transferId).not.toBe(originalTransferId)
     expect(uploadApi.stageLocalFile).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries only the failed file in a mixed batch and deduplicates repeated clicks', async () => {
+    const retryResult = deferred<UploadedAttachment | null>()
+    const attachment = (name: string): UploadedAttachment => ({
+      id: name,
+      sessionId: '.pending',
+      name,
+      originalName: name,
+      path: `/uploads/.pending/${name}`,
+      size: 1
+    })
+    const stageLocalFile = vi
+      .fn()
+      .mockResolvedValueOnce(attachment('a.txt'))
+      .mockRejectedValueOnce(new Error('disk full'))
+      .mockResolvedValueOnce(attachment('c.txt'))
+      .mockReturnValueOnce(retryResult.promise)
+    const uploadApi = uploads(stageLocalFile)
+    const hook = renderController(uploadApi)
+    mounted.push(hook)
+    const files = ['a.txt', 'b.txt', 'c.txt'].map((name) => new File(['x'], name))
+    act(() => hook.result.current.actions.stageFiles(files))
+    await flushAsyncWork()
+    const completed = hook.result.current.view.attachments
+    expect(completed.map((item) => item.id)).toEqual(['a.txt', 'c.txt'])
+    const failed = hook.result.current.view.transfers[0]
+    expect(failed).toMatchObject({ name: 'b.txt', status: 'error', canRetry: true })
+    act(() => {
+      hook.result.current.actions.retryTransfer(failed)
+      hook.result.current.actions.retryTransfer(failed)
+    })
+    expect(stageLocalFile).toHaveBeenCalledTimes(4)
+    expect(stageLocalFile.mock.calls[3][0]).toBe(files[1])
+    expect(stageLocalFile.mock.calls[3][1].transferId).not.toBe(failed.transferId)
+    retryResult.resolve(attachment('b.txt'))
+    await flushAsyncWork()
+    expect(hook.result.current.view.transfers).toEqual([])
+    expect(hook.result.current.view.attachments).toEqual([...completed, attachment('b.txt')])
+    expect(uploadApi.deleteUpload).not.toHaveBeenCalled()
+    act(() => hook.result.current.actions.retryTransfer(failed))
+    expect(stageLocalFile).toHaveBeenCalledTimes(4)
+  })
+
+  it('cancels a retry without removing earlier successful attachments', async () => {
+    const pending = deferred<UploadedAttachment | null>()
+    const successful: UploadedAttachment = {
+      id: 'done',
+      sessionId: '.pending',
+      name: 'done.txt',
+      originalName: 'done.txt',
+      path: '/uploads/.pending/done.txt',
+      size: 1
+    }
+    const stageLocalFile = vi
+      .fn()
+      .mockResolvedValueOnce(successful)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockReturnValueOnce(pending.promise)
+    const uploadApi = uploads(stageLocalFile)
+    const hook = renderController(uploadApi)
+    mounted.push(hook)
+    act(() =>
+      hook.result.current.actions.stageFiles([
+        new File(['x'], 'done.txt'),
+        new File(['y'], 'retry.txt')
+      ])
+    )
+    await flushAsyncWork()
+    act(() => hook.result.current.actions.retryTransfer(hook.result.current.view.transfers[0]))
+    const retry = hook.result.current.view.transfers[0]
+    act(() => hook.result.current.actions.cancelTransfer(retry))
+    pending.resolve({ ...successful, id: 'cancelled', path: '/uploads/.pending/cancelled.txt' })
+    await flushAsyncWork()
+    expect(hook.result.current.view.transfers).toEqual([])
+    expect(hook.result.current.view.attachments).toEqual([successful])
+    expect(uploadApi.deleteUpload).toHaveBeenCalledWith({ path: '/uploads/.pending/cancelled.txt' })
+    expect(uploadApi.deleteUpload).not.toHaveBeenCalledWith({ path: successful.path })
+  })
+
+  it('ignores a retry requested from a different active draft', async () => {
+    const stageLocalFile = vi.fn().mockRejectedValue(new Error('offline'))
+    const hook = renderController(uploads(stageLocalFile))
+    mounted.push(hook)
+    act(() => hook.result.current.actions.stageFiles([new File(['x'], 'a.txt')]))
+    await flushAsyncWork()
+    const failed = hook.result.current.view.transfers[0]
+    act(() => hook.selectDraft('session-b'))
+    act(() => hook.result.current.actions.retryTransfer(failed))
+    expect(stageLocalFile).toHaveBeenCalledOnce()
+    act(() => hook.selectDraft('session-a'))
+    expect(hook.result.current.view.transfers[0]).toMatchObject({ canRetry: true, status: 'error' })
   })
 
   it('restores a failed upload on redo without retrying it', async () => {
@@ -2760,6 +3303,7 @@ describe('workspace composer controller', () => {
     act(() => hook.result.current.actions.changeDoc(textDoc('new intent')))
     act(() => hook.result.current.lifecycle.restoreFailedSend(superseded))
     expect(hook.result.current.view.doc).toEqual(textDoc('new intent'))
+    expect(hook.result.current.view.errorDetail).toBe('original')
   })
 
   it.each(['ordinary', 'revision'] as const)(
@@ -2924,4 +3468,30 @@ describe('workspace composer controller', () => {
 
     expect(loadSkills).toHaveBeenCalledOnce()
   })
+})
+
+it('appends Library references to the restored target draft, preserves undo, and rejects stale targets', () => {
+  const hook = renderController()
+  mounted.push(hook)
+  const reference = {
+    type: 'literature' as const,
+    itemId: 'paper',
+    metadataRevision: 1,
+    item: literatureItemInputSchema.parse({ itemType: 'journalArticle', title: 'Paper' })
+  }
+  act(() => hook.result.current.actions.changeDoc(textDoc('Draft A')))
+  hook.selectDraft('session-b')
+  act(() => hook.result.current.actions.changeDoc(textDoc('Draft B')))
+  act(() =>
+    expect(hook.result.current.actions.appendLiterature('session-a', [reference])).toBe(false)
+  )
+  expect(docToText(hook.result.current.view.doc)).toBe('Draft B')
+  act(() =>
+    expect(hook.result.current.actions.appendLiterature('session-b', [reference])).toBe(true)
+  )
+  expect(docToText(hook.result.current.view.doc)).toBe('Draft B @Paper')
+  act(() => hook.result.current.actions.undo())
+  expect(docToText(hook.result.current.view.doc)).toBe('Draft B')
+  hook.selectDraft('session-a')
+  expect(docToText(hook.result.current.view.doc)).toBe('Draft A')
 })

@@ -56,7 +56,10 @@ const parseCsvRows = (
   }
 }
 
-export const CsvPreviewRenderer = ({ item }: PreviewFileRendererProps): React.JSX.Element => {
+export const CsvPreviewRenderer = ({
+  item,
+  presentation
+}: PreviewFileRendererProps): React.JSX.Element => {
   const { t } = useTranslation()
   const state = usePreviewFileContent({ ...item, encoding: 'base64' })
 
@@ -112,7 +115,13 @@ export const CsvPreviewRenderer = ({ item }: PreviewFileRendererProps): React.JS
   const totalKnown = !state.preview.truncated && !rowTruncated
 
   return (
-    <div className="flex size-full flex-col overflow-hidden bg-bg-10">
+    <div
+      className={
+        presentation === 'search'
+          ? 'search-csv-preview'
+          : 'flex size-full flex-col overflow-hidden bg-bg-10'
+      }
+    >
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border-300 bg-bg-000 px-3 py-2 text-[12px] text-text-300">
         {totalKnown ? (
           <span>
@@ -175,7 +184,7 @@ export const CsvPreviewRenderer = ({ item }: PreviewFileRendererProps): React.JS
           </thead>
           <tbody className="bg-bg-000 text-text-100">
             {dataRows.map((row, rowIndex) => (
-              <tr key={rowIndex} className="odd:bg-bg-10">
+              <tr key={rowIndex} className="bg-bg-000 odd:bg-bg-10">
                 <td className="sticky left-0 z-[1] w-12 border-b border-r border-border-300 bg-inherit px-3 py-1.5 text-right font-mono text-text-300">
                   {rowIndex + 1}
                 </td>

@@ -112,6 +112,59 @@ afterEach(async () => {
 })
 
 describe('durable literature screening', () => {
+  it('extracts findings despite presentation wrappers, numeric page strings and optional metadata gaps', async () => {
+    let w = await execute(await prepared(), 'screen')
+    w = (
+      await owner.run({
+        action: 'review',
+        workflowId: w.id,
+        expectedUpdatedAt: w.updatedAt,
+        itemIds: ['paper-1'],
+        acceptSuggestions: true
+      })
+    ).workflow!
+    w = (
+      await owner.run({
+        action: 'confirm',
+        workflowId: w.id,
+        expectedUpdatedAt: w.updatedAt,
+        stage: 'screen'
+      })
+    ).workflow!
+    generate.mockClear().mockResolvedValue(
+      '提取结果：\n```json\n' +
+        JSON.stringify({
+          overallSummary: '原文支持融资效率改善。',
+          findings: [
+            {
+              group: 'viewpoints',
+              dimension: 'Financing efficiency',
+              hasContent: true,
+              confidence: 0.9,
+              points: [
+                {
+                  summary: 'Financing improves',
+                  evidence: [{ quote, page: '99', matched: true, location: 'body' }]
+                }
+              ]
+            }
+          ],
+          metadata: { authors: null, doi: null }
+        }) +
+        '\n```'
+    )
+    w = await execute(w, 'extract')
+    expect(w.documents[0].extractionStatus).toBe('done')
+    expect(w.documents[0].findings[0].points[0].evidence).toEqual([
+      { quote, page: 2, matched: true }
+    ])
+    expect(w.documents[0].title).toBe('paper-1')
+    expect(w.documents[0].error).toBeUndefined()
+    expect(generate).toHaveBeenCalledOnce()
+    await owner.close()
+    owner = createOwner()
+    expect((await get(w.id)).documents[0].findings).toEqual(w.documents[0].findings)
+  })
   it('regenerates malformed JSON for the third paper without losing the other results', async () => {
     const valid = JSON.stringify({
       decision: 'included',

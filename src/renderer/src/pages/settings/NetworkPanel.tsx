@@ -1,3 +1,4 @@
+import { InlineNotice } from '@/components/ui/inline-notice'
 import { EthernetPort, Network, RefreshCw, Wifi, WifiOff } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -16,10 +17,9 @@ import { ExternalTextLink } from '@/components/ExternalTextLink'
 import { isMirrorConfigured, mirrorStatusText, MIRROR_HELP_URL } from './mirror-view'
 import { NetworkProxyForm } from './NetworkProxyForm'
 import { NotebookNetworkDomainsForm } from './NotebookNetworkDomainsForm'
+import { SettingsSection } from './SettingsLayout'
 
 const fieldLabelClassName = 'text-xs font-medium text-muted-foreground'
-const actionButtonClassName =
-  'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50'
 
 // Package-mirror list vs. configure form. The configure form is a settings-nav sub-view (not local
 // state) so the shared header shows a "Network / Package mirror" breadcrumb with back/forward.
@@ -71,6 +71,7 @@ const NetworkPanel = ({
   const [draft, setDraft] = useState<PackageMirror>({})
   const [isSaving, setIsSaving] = useState(false)
   const [saveConfirmationOpen, setSaveConfirmationOpen] = useState(false)
+  const [discardConfirmationOpen, setDiscardConfirmationOpen] = useState(false)
   const [message, setMessage] = useState<string | undefined>(undefined)
   const [networkInfo, setNetworkInfo] = useState<NetworkInfo | null>(null)
   const [networkInfoError, setNetworkInfoError] = useState(false)
@@ -132,7 +133,24 @@ const NetworkPanel = ({
 
   const handleConfigure = (): void => onNavigate({ kind: 'mirror' })
 
+  // Dirty check compares the draft against the saved mirror so Cancel can confirm before
+  // discarding real edits while a clean form still returns to the list immediately.
+  const isDraftDirty =
+    (draft.condaChannel ?? '') !== (packageMirror?.condaChannel ?? '') ||
+    (draft.pypiIndex ?? '') !== (packageMirror?.pypiIndex ?? '') ||
+    (draft.caBundle ?? '') !== (packageMirror?.caBundle ?? '')
+
   const handleCancel = (): void => {
+    if (isDraftDirty) {
+      setDiscardConfirmationOpen(true)
+      return
+    }
+    setMessage(undefined)
+    onNavigate({ kind: 'list' })
+  }
+
+  const discardDraft = (): void => {
+    setDiscardConfirmationOpen(false)
     setMessage(undefined)
     onNavigate({ kind: 'list' })
   }
@@ -172,7 +190,7 @@ const NetworkPanel = ({
         .filter((part) => part !== null)
         .join(' · ') || undefined
 
-  const networkLabel = t('Internet connection')
+  const networkLabel = t('Package registry connectivity')
 
   // The Network status row is an EnvironmentCheckItem so it renders with the exact same row
   // component as the onboarding environment step's network check. A live link with unreachable
@@ -228,40 +246,29 @@ const NetworkPanel = ({
   return (
     <div className="space-y-6 p-5">
       {!isConfiguring ? (
-        <section aria-label={t('Network status')}>
-          <h3 className="mb-1 text-sm font-semibold text-foreground">{t('Network status')}</h3>
-          <p className="mb-3 text-xs text-muted-foreground">
-            {t('Whether this machine can currently reach the package registries.')}
-          </p>
-
+        <SettingsSection
+          title={t('Network status')}
+          description={t('Whether this machine can currently reach the package registries.')}
+          aria-label={t('Network status')}
+        >
           <div className="rounded-xl border border-border px-4">
-            <ul aria-live="polite">
-              {isChecking ? (
-                <PendingCheckRow
-                  id={NETWORK_CHECK_ID}
-                  label={networkLabel}
-                  pendingText={t('Checking…')}
-                />
-              ) : (
-                <EnvironmentCheckRow check={networkCheck} icon={networkIcon} />
-              )}
-            </ul>
-
-            <div className="pb-4">
-              {!isOnline || connectivity === 'unreachable' || connectivity === 'probe-failed' ? (
-                <div className="mb-4 rounded-lg bg-bg-10 px-4 py-4 ring-1 ring-border-200">
-                  <ol className="list-decimal space-y-1 pl-5 text-xs leading-relaxed text-muted-foreground">
-                    {!isOnline ? <li>{t('Check your cable or Wi-Fi connection.')}</li> : null}
-                    <li>{t('Check proxy, VPN, or firewall settings.')}</li>
-                    <li>{t('Check the package mirror configuration below.')}</li>
-                  </ol>
-                </div>
-              ) : null}
+            <div className="flex flex-wrap items-center gap-3 py-4">
+              <ul className="min-w-0 flex-1 basis-64 [&>li]:py-0" aria-live="polite">
+                {isChecking ? (
+                  <PendingCheckRow
+                    id={NETWORK_CHECK_ID}
+                    label={networkLabel}
+                    pendingText={t('Checking…')}
+                  />
+                ) : (
+                  <EnvironmentCheckRow check={networkCheck} icon={networkIcon} />
+                )}
+              </ul>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                className="mt-3"
+                className="ml-auto shrink-0"
                 onClick={handleRetry}
                 disabled={isChecking}
               >
@@ -269,18 +276,28 @@ const NetworkPanel = ({
                 {isChecking ? t('Checking…') : t('Check again')}
               </Button>
             </div>
+            {!isOnline || connectivity === 'unreachable' || connectivity === 'probe-failed' ? (
+              <div className="mb-4 rounded-lg bg-bg-10 px-4 py-4 ring-1 ring-border-200">
+                <ol className="list-decimal space-y-1 pl-5 text-xs leading-relaxed text-muted-foreground">
+                  {!isOnline ? <li>{t('Check your cable or Wi-Fi connection.')}</li> : null}
+                  <li>{t('Check proxy, VPN, or firewall settings.')}</li>
+                  <li>{t('Check the package mirror configuration below.')}</li>
+                </ol>
+              </div>
+            ) : null}
           </div>
-        </section>
+        </SettingsSection>
       ) : null}
 
       {!isConfiguring && notebookNetworkAvailable ? (
-        <section aria-label={t('Notebook network access')}>
-          <h3 className="mb-1 text-sm font-semibold text-foreground">
-            {t('Notebook network access')}
-          </h3>
-          <p className="mb-3 text-xs text-muted-foreground">
-            {t('Control which internet domains Notebook Python, R, REPL, and Bash can reach.')}
-          </p>
+        <SettingsSection
+          title={t('Notebook network access')}
+          description={t(
+            'Control which internet domains Notebook Python, R, REPL, and Bash can reach.'
+          )}
+          aria-label={t('Notebook network access')}
+          data-settings-anchor="network.domains"
+        >
           <div className="rounded-xl border border-border p-4">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
@@ -292,24 +309,27 @@ const NetworkPanel = ({
                   })}
                 </p>
               </div>
-              <button
+              <Button
                 type="button"
+                variant="outline"
                 onClick={() => onNavigate({ kind: 'domains' })}
-                className={actionButtonClassName}
               >
                 {t('Configure domains')}
-              </button>
+              </Button>
             </div>
           </div>
-        </section>
+        </SettingsSection>
       ) : null}
 
       {!isConfiguring ? (
-        <section aria-label={t('Proxy')}>
-          <h3 className="mb-1 text-sm font-semibold text-foreground">{t('Proxy')}</h3>
-          <p className="mb-3 text-xs text-muted-foreground">
-            {t('How EconoMind, ACP agents, notebook runtimes, and installers reach the internet.')}
-          </p>
+        <SettingsSection
+          title={t('Proxy')}
+          description={t(
+            'How EconoMind, ACP agents, notebook runtimes, and installers reach the internet.'
+          )}
+          aria-label={t('Proxy')}
+          data-settings-anchor="network.proxy"
+        >
           <div className="rounded-xl border border-border p-4">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
@@ -330,33 +350,29 @@ const NetworkPanel = ({
                       : t('Connects without a proxy')}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => onNavigate({ kind: 'proxy' })}
-                className={actionButtonClassName}
-              >
+              <Button type="button" variant="outline" onClick={() => onNavigate({ kind: 'proxy' })}>
                 {t('Configure proxy')}
-              </button>
+              </Button>
             </div>
           </div>
-        </section>
+        </SettingsSection>
       ) : null}
 
-      <section aria-label={t('Package mirror')}>
-        <h3 className="mb-1 text-sm font-semibold text-foreground">{t('Package mirror')}</h3>
-        <p className="mb-3 text-xs text-muted-foreground">
-          {t(
-            'Where the notebook environment fetches conda and Python packages from when installing or updating.'
-          )}
-        </p>
-
+      <SettingsSection
+        title={t('Package mirror')}
+        description={t(
+          'Where the notebook environment fetches conda and Python packages from when installing or updating.'
+        )}
+        aria-label={t('Package mirror')}
+        data-settings-anchor="network.mirror"
+      >
         <div className="rounded-xl border border-border p-4">
           {!isConfiguring ? (
             <div className="flex items-center justify-between gap-3">
               <span className="text-sm text-foreground">{mirrorStatusText(packageMirror, t)}</span>
-              <button type="button" onClick={handleConfigure} className={actionButtonClassName}>
+              <Button type="button" variant="outline" onClick={handleConfigure}>
                 {isMirrorConfigured(packageMirror) ? t('Edit') : t('Configure')}
-              </button>
+              </Button>
             </div>
           ) : (
             <div className="flex flex-col gap-3">
@@ -412,28 +428,18 @@ const NetworkPanel = ({
               </div>
 
               {message ? (
-                <p className="text-xs text-destructive" role="alert">
+                <InlineNotice level="error" role="alert">
                   {t('Could not save the package mirror.')}
-                </p>
+                </InlineNotice>
               ) : null}
 
               <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={handleCancel}
-                  disabled={isSaving}
-                  className="rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-muted disabled:opacity-50"
-                >
+                <Button type="button" variant="outline" onClick={handleCancel} disabled={isSaving}>
                   {t('Cancel')}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSave}
-                  disabled={isSaving}
-                  className="rounded-lg border border-primary bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-                >
+                </Button>
+                <Button type="button" onClick={handleSave} disabled={isSaving}>
                   {isSaving ? t('Saving…') : t('Save')}
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -442,7 +448,7 @@ const NetworkPanel = ({
         <p className="mt-3 text-xs text-muted-foreground">
           <ExternalTextLink href={MIRROR_HELP_URL}>{t('View available mirrors')}</ExternalTextLink>
         </p>
-      </section>
+      </SettingsSection>
       <ConfirmActionDialog
         open={saveConfirmationOpen}
         title={t('Package mirror')}
@@ -454,6 +460,19 @@ const NetworkPanel = ({
         testId="package-mirror-confirmation"
         onCancel={() => setSaveConfirmationOpen(false)}
         onConfirm={() => void savePackageMirror()}
+      />
+      <ConfirmActionDialog
+        open={discardConfirmationOpen}
+        title={t('Discard unsaved changes?')}
+        description={t(
+          'Your edits to the package mirror have not been saved. Discard them and go back?'
+        )}
+        cancelLabel={t('Keep editing')}
+        confirmLabel={t('Discard changes')}
+        destructive
+        testId="package-mirror-discard-confirmation"
+        onCancel={() => setDiscardConfirmationOpen(false)}
+        onConfirm={discardDraft}
       />
     </div>
   )

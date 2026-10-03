@@ -780,7 +780,7 @@ describe('TagsPanel', () => {
 
     const alert = container.querySelector<HTMLElement>('[role="alert"]')
     expect(alert?.textContent).toBe('Could not update Tags.')
-    expect(alert?.className).toContain('text-destructive')
+    expect(alert?.closest('[data-notice-level]')?.getAttribute('data-notice-level')).toBe('error')
     expect(alert?.className).not.toContain('sr-only')
   })
 
@@ -891,7 +891,7 @@ describe('TagsPanel', () => {
       true
     )
     expect(container.textContent).toContain('Analyze data')
-    expect(container.textContent).toContain('Biomedical literature')
+    expect(container.textContent).toContain('Research data from NCBI.')
     expect(container.textContent).toContain('Research specialist')
     expect(
       Array.from(container.querySelectorAll('[data-slot="tag-resource-row"]')).map((row) =>
@@ -899,7 +899,7 @@ describe('TagsPanel', () => {
       )
     ).toEqual([
       'AnalysisAnalyze data',
-      'PubMedBiomedical literature',
+      'PubMedResearch data from NCBI.',
       'Auto ResearchResearch specialist'
     ])
 
@@ -1101,4 +1101,35 @@ describe('TagsPanel', () => {
     expect(reorder).toHaveBeenCalledWith({ tagIds: ['tag-b', 'tag-a'] })
     expect(handle.releasePointerCapture).toHaveBeenCalledWith(1)
   })
+})
+
+it('includes PDF annotations in global Tag resources and routes them to their owner', async () => {
+  const onOpenResource = vi.fn()
+  useTagStore.setState({
+    assignments: [
+      { tagId: 'tag-favorite', resourceType: 'pdf.annotation', resourceId: 'a1', createdAt: 1 }
+    ],
+    pdfAnnotations: [
+      {
+        id: 'a1',
+        projectId: 'p1',
+        sessionId: 's1',
+        name: 'Methods.pdf',
+        note: 'Check the sample size'
+      }
+    ]
+  })
+  await act(async () =>
+    root.render(
+      <TagsPanel view={{ kind: 'list' }} onNavigate={vi.fn()} onOpenResource={onOpenResource} />
+    )
+  )
+  expect(container.textContent).toContain('PDF annotations (1)')
+  const row = container.querySelector<HTMLButtonElement>('[data-slot="tag-resource-row"]')!
+  expect(row.textContent).toContain('Methods.pdf')
+  expect(row.textContent).toContain('Check the sample size')
+  act(() => row.click())
+  expect(onOpenResource).toHaveBeenCalledWith(
+    expect.objectContaining({ resourceType: 'pdf.annotation', resourceId: 'a1' })
+  )
 })

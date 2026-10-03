@@ -2,8 +2,17 @@ import { createHash } from 'node:crypto'
 import { cp, lstat, readFile, readdir, stat } from 'node:fs/promises'
 import { basename, join, relative } from 'node:path'
 
-import type { AgentHomeSkillRef, AgentHomeSkillSource } from '../../shared/settings'
-import { SKILL_IMPORT_LIMITS, isAppOwnedSkillRootFile } from '../../shared/skill-import-limits'
+import type {
+  AgentHomeSkillRef,
+  AgentHomeSkillSource,
+  SkillReplacementPreview
+} from '../../shared/settings'
+import {
+  SKILL_IMPORT_LIMITS,
+  isAppOwnedSkillRootFile,
+  isSkillPackageIgnoredPath
+} from '../../shared/skill-import-limits'
+import { inspectSkillPackage } from './skill-package-inspection'
 import { parseSkillDocument } from './frontmatter'
 import type {
   SkillPackageTransactionOwner,
@@ -259,6 +268,7 @@ class AgentHomeSkillOwner {
       for (const entry of children) {
         const path = join(dir, entry.name)
         const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name
+        if (isSkillPackageIgnoredPath(relativePath)) continue
         const entryStat = await lstat(path)
         if (entryStat.isSymbolicLink()) {
           throw new Error('Refusing to read an agent-home Skill containing a symbolic link.')
@@ -360,7 +370,9 @@ class AgentHomeSkillOwner {
         force: false,
         errorOnExist: true,
         filter: async (entry) => {
-          if (isAppOwnedSkillRootFile(relative(sourcePath, entry))) {
+          const relativePath = relative(sourcePath, entry).replaceAll('\\', '/')
+          if (isSkillPackageIgnoredPath(relativePath)) return false
+          if (isAppOwnedSkillRootFile(relativePath)) {
             throw new Error(
               `Skill import may not include the reserved file ${relative(sourcePath, entry)}.`
             )
@@ -443,7 +455,11 @@ class AgentHomeSkillOwner {
   // Reads a selected installed skill for preview without copying it. The same structural limits and
   // symlink policy as import apply before SKILL.md is returned, while only renderer-safe relative file
   // names and parsed content leave this repository interface.
-  async previewAgentHomeSkill(root: string): Promise<ParsedSkillPreview> {
+  async previewAgentHomeSkill(
+    root: string,
+    skill?: AgentHomeSkillRef,
+    aliases: readonly AgentHomeSkillRef[] = []
+  ): Promise<ParsedSkillPreview> {
     const entries = await this.inspectAgentHomeSkill(root)
     const files = entries.filter(
       (entry): entry is Extract<AgentHomeTreeEntry, { kind: 'file' }> => entry.kind === 'file'
@@ -459,11 +475,61 @@ class AgentHomeSkillOwner {
     const raw = await readFile(skillMd.path, 'utf8')
     if (Buffer.byteLength(raw) > SKILL_IMPORT_LIMITS.maxPreviewContentBytes) previewTooLarge()
 
-    return parsedSkillPreview(
+    const preview = parsedSkillPreview(
       raw,
       files.map((file) => file.relativePath),
       basename(root)
     )
+    if (!skill) return preview
+    return this.transactions.runRecovered(async () => {
+      const directoryName = await this.findImportedDirectoryNameByAgentHome(skill, aliases)
+      if (!directoryName) return preview
+      const source = await this.transactions.readImportedSource(directoryName)
+      const ref = source?.agentHome
+      const sourceRoot =
+        ref?.source === 'agents'
+          ? '~/.agents/skills'
+          : ref?.source === 'claude'
+            ? '~/.claude/skills'
+            : '~/.codex/skills'
+      const replacement: SkillReplacementPreview = {
+        targetId: `imported-${directoryName}`,
+        ...(ref ? { sourceLabel: `${sourceRoot}/${ref.slug}` } : {}),
+        added: [],
+        modified: [],
+        removed: []
+      }
+      try {
+        const installed = await inspectSkillPackage(
+          this.store.skillDirectory('imported', directoryName),
+          { storageRoot: this.store.runtimeStorageRoot() }
+        )
+        const byPath = new Map(installed.map((file) => [file.relativePath, file]))
+        for (const file of files) {
+          const target = byPath.get(file.relativePath)
+          if (!target) replacement.added.push(file.relativePath)
+          else {
+            // Agent Home copies preserve SKILL.md bytes; unlike ZIP/GitHub they do not rename it.
+            if (
+              target.size !== file.size ||
+              !(await readFile(target.absolutePath)).equals(await readFile(file.path))
+            )
+              replacement.modified.push(file.relativePath)
+            byPath.delete(file.relativePath)
+          }
+        }
+        replacement.removed = [...byPath.keys()]
+        replacement.added.sort()
+        replacement.modified.sort()
+        replacement.removed.sort()
+      } catch {
+        replacement.added = []
+        replacement.modified = []
+        replacement.removed = []
+        replacement.comparisonUnavailable = true
+      }
+      return { ...preview, replacement }
+    })
   }
 
   // Imports a single agent-home skill by copying its source subtree under the imported-skill store.

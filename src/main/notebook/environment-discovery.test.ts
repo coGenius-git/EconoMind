@@ -13,7 +13,87 @@ import {
 } from './environment-discovery'
 import { DEFAULT_PY_ENV, DEFAULT_R_ENV, envPrefix, rBin, rScriptBin } from './runtime-paths'
 
-describe('defaultDiscoveryDeps Windows conda R probes', () => {
+describe('defaultDiscoveryDeps Windows conda probes', () => {
+  it.each(['TRUE', 'FALSE'])(
+    'reads R version and jsonlite=%s in one activated, bounded process',
+    async (jsonlite) => {
+      const prefix = 'C:\\Users\\HM\\miniconda3\\envs\\analysis'
+      const interpreter = `${prefix}\\Lib\\R\\bin\\R.exe`
+      const exec = vi.fn(async () => ({
+        stdout: `profile output\nOPEN_SCIENCE_R_PROBE=4.4.3;${jsonlite}\r\n`,
+        stderr: ''
+      }))
+      const defaults = defaultDiscoveryDeps('/runtime', undefined, { platform: 'win32', exec })
+      const [found] = await discoverInterpreters('r', {
+        ...defaults,
+        candidatePaths: async () => [interpreter]
+      })
+
+      expect(found).toMatchObject({ version: '4.4.3', runnable: jsonlite === 'TRUE' })
+      if (jsonlite === 'FALSE') expect(found.detail).toBe('Needs jsonlite')
+      expect(exec).toHaveBeenCalledExactlyOnceWith(
+        `${prefix}\\Lib\\R\\bin\\Rscript.exe`,
+        ['-e', expect.stringContaining('requireNamespace("jsonlite", quietly=TRUE)')],
+        expect.objectContaining({
+          timeout: 15_000,
+          windowsHide: true,
+          env: expect.objectContaining({ PATH: expect.stringMatching(/^C:\\Users\\HM/) })
+        })
+      )
+    }
+  )
+
+  it.each(['malformed', 'timeout'])(
+    'preserves the version-only diagnostic after a %s combined R probe',
+    async (failure) => {
+      const exec = vi.fn(async (_file: string, args: readonly string[]) => {
+        if (args[0] === '--version') return { stdout: '', stderr: 'R version 4.4.3' }
+        if (failure === 'timeout') throw new Error('timed out')
+        return { stdout: 'OPEN_SCIENCE_R_PROBE=4.4.3;garbage', stderr: '' }
+      })
+      const defaults = defaultDiscoveryDeps('/runtime', undefined, { exec })
+      const [found] = await discoverInterpreters('r', {
+        ...defaults,
+        candidatePaths: async () => ['/R']
+      })
+      expect(found).toMatchObject({ version: '4.4.3', runnable: false, detail: 'Needs jsonlite' })
+      expect(exec).toHaveBeenCalledTimes(2)
+    }
+  )
+
+  it('keeps a rebuilt Windows conda Python runnable when its DLLs require an activated PATH', async () => {
+    const prefix = 'C:\\Program Files\\OpenScience\\runtime\\envs\\.p'
+    const interpreter = `${prefix}\\python.exe`
+    const exec = vi.fn(
+      async (
+        _file: string,
+        _args: readonly string[],
+        options: { env?: NodeJS.ProcessEnv }
+      ): Promise<{ stdout: string; stderr: string }> => {
+        if (options.env?.PATH?.split(';')[0] !== prefix) {
+          throw new Error('conda DLL search path was not activated')
+        }
+        return { stdout: 'Python 3.12.10', stderr: '' }
+      }
+    )
+    const defaults = defaultDiscoveryDeps('C:\\Program Files\\OpenScience\\runtime', undefined, {
+      platform: 'win32',
+      env: { PATH: 'C:\\Windows\\System32' },
+      exec
+    })
+
+    const [found] = await discoverInterpreters('python', {
+      ...defaults,
+      candidatePaths: async () => [interpreter]
+    })
+
+    expect(found).toMatchObject({
+      interpreterPath: interpreter,
+      runnable: true,
+      version: '3.12.10'
+    })
+  })
+
   it('probes an R environment version through Rscript instead of launching R.exe', async () => {
     const interpreter = 'C:\\Program Files\\R\\R-4.6.0\\bin\\x64\\R.exe'
     const exec = vi.fn(async (): Promise<{ stdout: string; stderr: string }> => ({
@@ -57,41 +137,44 @@ describe('defaultDiscoveryDeps Windows conda R probes', () => {
     expect(exec).toHaveBeenCalledWith('/python', ['--version'], expect.objectContaining({ env }))
   })
 
-  it('activates the interpreter own conda prefix for version and jsonlite probes', async () => {
-    const prefix = 'C:\\Users\\HM\\OpenScience\\runtime\\envs\\default-r'
-    const interpreter = `${prefix}\\Lib\\R\\bin\\R.exe`
-    const exec = vi.fn(
-      async (
-        _file: string,
-        args: readonly string[],
-        options: { env?: NodeJS.ProcessEnv }
-      ): Promise<{ stdout: string; stderr: string }> => {
-        const expectedStart = [
-          prefix,
-          `${prefix}\\Library\\mingw-w64\\bin`,
-          `${prefix}\\Library\\usr\\bin`,
-          `${prefix}\\Library\\bin`,
-          `${prefix}\\Scripts`,
-          `${prefix}\\bin`
-        ].join(';')
-        expect(options.env?.PATH?.split(';').slice(0, 6).join(';')).toBe(expectedStart)
-        return args.includes('--version')
-          ? { stdout: '', stderr: 'R version 4.4.3 (2025-02-28 ucrt)' }
-          : { stdout: 'TRUE', stderr: '' }
-      }
-    )
-    const deps = defaultDiscoveryDeps('C:\\Users\\HM\\OpenScience\\runtime', undefined, {
-      platform: 'win32',
-      exec
-    })
+  it.each(['', 'x64\\'])(
+    'activates the interpreter own conda prefix for version and jsonlite probes in bin/%s',
+    async (architectureDirectory) => {
+      const prefix = 'C:\\Users\\HM\\OpenScience\\runtime\\envs\\default-r'
+      const interpreter = `${prefix}\\Lib\\R\\bin\\${architectureDirectory}R.exe`
+      const exec = vi.fn(
+        async (
+          _file: string,
+          args: readonly string[],
+          options: { env?: NodeJS.ProcessEnv }
+        ): Promise<{ stdout: string; stderr: string }> => {
+          const expectedStart = [
+            prefix,
+            `${prefix}\\Library\\mingw-w64\\bin`,
+            `${prefix}\\Library\\usr\\bin`,
+            `${prefix}\\Library\\bin`,
+            `${prefix}\\Scripts`,
+            `${prefix}\\bin`
+          ].join(';')
+          expect(options.env?.PATH?.split(';').slice(0, 6).join(';')).toBe(expectedStart)
+          return args.includes('--version')
+            ? { stdout: '', stderr: 'R version 4.4.3 (2025-02-28 ucrt)' }
+            : { stdout: 'TRUE', stderr: '' }
+        }
+      )
+      const deps = defaultDiscoveryDeps('C:\\Users\\HM\\OpenScience\\runtime', undefined, {
+        platform: 'win32',
+        exec
+      })
 
-    await expect(deps.probeVersion(interpreter, 'r')).resolves.toBe('4.4.3')
-    await expect(deps.rRunnable(interpreter)).resolves.toBe(true)
-    expect(exec.mock.calls.map(([file]) => file)).toEqual([
-      `${prefix}\\Lib\\R\\bin\\Rscript.exe`,
-      `${prefix}\\Lib\\R\\bin\\Rscript.exe`
-    ])
-  })
+      await expect(deps.probeVersion(interpreter, 'r')).resolves.toBe('4.4.3')
+      await expect(deps.rRunnable(interpreter)).resolves.toBe(true)
+      expect(exec.mock.calls.map(([file]) => file)).toEqual([
+        `${prefix}\\Lib\\R\\bin\\${architectureDirectory}Rscript.exe`,
+        `${prefix}\\Lib\\R\\bin\\${architectureDirectory}Rscript.exe`
+      ])
+    }
+  )
 
   it('does not inject conda activation into an external Windows R installation', async () => {
     const interpreter = 'C:\\Program Files\\R\\R-4.4.3\\bin\\R.exe'
@@ -361,6 +444,66 @@ describe('collapseRscript', () => {
 })
 
 describe('defaultCandidatePaths (targeted enumeration)', () => {
+  it('shares in-flight conda enumeration across languages but enumerates again on Recheck', async () => {
+    let finish!: (result: { stdout: string; stderr: string }) => void
+    const pending = new Promise<{ stdout: string; stderr: string }>((resolve) => {
+      finish = resolve
+    })
+    const exec = vi.fn(async (file: string) =>
+      file === 'conda' ? pending : { stdout: '', stderr: '' }
+    )
+    const candidates = defaultCandidatePaths('/missing-runtime', undefined, {
+      platform: 'linux',
+      home: '/missing-home',
+      exec
+    })
+    const python = candidates('python')
+    const r = candidates('r')
+    await vi.waitFor(() =>
+      expect(exec.mock.calls.filter(([file]) => file === 'which')).toHaveLength(4)
+    )
+    expect(exec.mock.calls.filter(([file]) => file === 'conda')).toHaveLength(1)
+    finish({ stdout: '{"envs":[]}', stderr: '' })
+    await Promise.all([python, r])
+
+    await candidates('python')
+    expect(exec.mock.calls.filter(([file]) => file === 'conda')).toHaveLength(2)
+  })
+
+  it.each(['x64-only', 'root-only', 'both'])(
+    'discovers Windows conda and app R with %s binaries and an unactivated PATH',
+    async (layout) => {
+      const root = mkdtempSync(join(tmpdir(), 'os-disc-conda-r-'))
+      const runtimeRoot = join(root, 'runtime')
+      const prefixes = [
+        join(root, 'miniconda3', 'envs', 'analysis'),
+        envPrefix(runtimeRoot, DEFAULT_R_ENV, 'win32')
+      ]
+      const expected: string[] = []
+      try {
+        for (const prefix of prefixes) {
+          const bin = join(prefix, 'Lib', 'R', 'bin')
+          mkdirSync(join(bin, 'x64'), { recursive: true })
+          if (layout !== 'x64-only') writeFileSync(join(bin, 'R.exe'), 'fixture')
+          if (layout !== 'root-only') writeFileSync(join(bin, 'x64', 'R.exe'), 'fixture')
+          expected.push(join(bin, ...(layout === 'x64-only' ? ['x64'] : []), 'R.exe'))
+        }
+        const paths = await defaultCandidatePaths(runtimeRoot, undefined, {
+          platform: 'win32',
+          home: root,
+          env: { PATH: join(root, 'empty-path') }
+        })('r')
+
+        expect(paths.filter((path) => path.startsWith(root))).toEqual(
+          expect.arrayContaining(expected)
+        )
+        expect(paths.filter((path) => path.startsWith(root))).toHaveLength(2)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    }
+  )
+
   it('uses the injected platform for app-managed interpreter paths', async () => {
     const root = mkdtempSync(join(tmpdir(), 'os-disc-platform-'))
     const platform: NodeJS.Platform = process.platform === 'win32' ? 'linux' : 'win32'

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { execFile, spawn } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { createReadStream, type Dirent } from 'node:fs'
 import {
   chmod,
@@ -28,7 +28,12 @@ import {
   ACP_MODEL_TURN_COUNT_META_KEY,
   ACP_TURN_TOKEN_USAGE_META_KEY
 } from '../../shared/acp'
-import { MINIMUM_CODEX_ACP_VERSION } from '../../shared/codex-runtime'
+import {
+  MANAGED_CODEX_VERSION,
+  MINIMUM_CODEX_ACP_VERSION,
+  isSupportedCodexCliVersion,
+  CODEX_CLI_INCOMPATIBLE_MESSAGE
+} from '../../shared/codex-runtime'
 import {
   DEFAULT_REGISTRIES,
   defaultFetchJson,
@@ -40,13 +45,13 @@ import {
 } from './managed-claude'
 import { createLogger } from '../logger'
 import { stripCodexCredentialEnv } from './process-tree'
-import { terminateProcessTree } from '../process-tree'
+import { onProcessTreeReaped, terminateProcessTree } from '../process-tree'
 import { toErrorMessage } from '../error-message'
 
 const execFileAsync = promisify(execFile)
 
 export const CODEX_ACP_VERSION = MINIMUM_CODEX_ACP_VERSION
-export const CODEX_VERSION = '0.144.6'
+export const CODEX_VERSION = MANAGED_CODEX_VERSION
 
 const log = createLogger('managed-codex')
 const MAX_INITIALIZE_DIAGNOSTIC_CHARS = 4 * 1024
@@ -56,17 +61,17 @@ export const CODEX_ACP_INTEGRITY =
 
 export const CODEX_INTEGRITIES: Readonly<Record<string, string>> = {
   'darwin-arm64':
-    'sha512-6zgvh70MzBNSeT17HEhSOrmmGGZGAKzSC7x6JAq+edkJkdPYA9P0I1tG7aJ49GlBkBxuC+MKBH1qm6+2Cghcww==',
+    'sha512-62/e4TZ34z93KK3FYIHmo/K88aH0JRPA8x7SAVBdK4iG9f9HPO2tsDrJcmOj9z6DrFpMvPEVymomCbYpqN+ylQ==',
   'darwin-x64':
-    'sha512-THRyPG0zSU6M8NQAge1LHEHsJDnoH4BpKsfJHB/qe3Fm+Wf6zqAmWJFlOKzBm27m0K2Hq3za4Ac2I5p5i4yp/A==',
+    'sha512-PscZvqKD4zlaSw1nM5Sh4lU1M+01sr4b3qzGx8pf+4OLyULg1z1yAyTR1c35C3t62H8DXy/14y7oazTR3JMMKA==',
   'linux-arm64':
-    'sha512-PGiLXMN+2IQRkf7tOLi64dMInjU1pRLbz0Rwfj/yt2Y97SZQqAjFQoi2wmswmqtqMDnfwCPTC1DRXVQkvU6T6Q==',
+    'sha512-nEaBZT3ldrtqUNaBlvI+Y+fg+LbNCTsQjbUnl7Q45rl9vSSqHU2vRj1l6iJDwupZkrpeIJ/ClHIwxgMKv1SKHg==',
   'linux-x64':
-    'sha512-4E7EnzCg0OnBxCyYnwJ+qnZwWHYe0YScr5ucKWbngE9u4+0XrpWELqq2Kn9jl5GZK8MDjU7PrJwFIwusHOHjuw==',
+    'sha512-Eac8XlC0nCXSeUjDU9l8yLJ6P9evv1mO+AnvILoNwlegBC7B3AVXqJ05QcMhQX7RcJ3Lk2618ykCb2X2ui8VAQ==',
   'win32-arm64':
-    'sha512-SpMjXJLW43JzMP0K62mVcYfmFcpk0BK4AOgYmWSfyZHs3iRtHMd0UYw7605n/9lwkT2EqbwQLT2omZFeKJFzwA==',
+    'sha512-tFkxdrSXPUDQXXp3JwTxNOgI17RQcexyuaZTiNmL1A/UaVtVmVBNe+8cBk3r8b7dLpaoWFbjPwL7p5SBCrkLQg==',
   'win32-x64':
-    'sha512-dN39VnjEthKz5io1RNWwZDtErdSn07nW3pGUgvlA6DMxgm/nuGaIAZO/sG/Hgxq/x5j9HteAENfrFgVkpZ0lFg=='
+    'sha512-vgqs/VRXNwhLYMsZDgYfnRSXpRh5Nm782L8lacGskw86kOxbMaquvQKxkuZHUBrJA2XGcksB7rMUHy1XaCJgrA=='
 }
 
 export type ManagedCodexPlatform = {
@@ -112,6 +117,67 @@ export const managedCodexBinary = (
   platform: ManagedCodexPlatform = resolveManagedCodexPlatform()
 ): string =>
   join(managedCodexRoot(dataRoot), 'codex', 'vendor', platform.target, 'bin', platform.binName)
+
+// Main-process admission for app-launched Codex processes and replacement of their files.
+// Acquire synchronously before spawn/download: checking only UI prompt state leaves a start race.
+const codexProcessUsers = new Map<string, number>()
+const codexInstallPaths = new Set<string>()
+const codexPathKey = (path: string): string => {
+  const absolute = resolve(path)
+  return process.platform === 'win32' ? absolute.toLowerCase() : absolute
+}
+
+export const spawnCodexWithInstallAdmission = <T extends ChildProcess>(
+  paths: readonly string[],
+  spawnProcess: () => T
+): T => {
+  const keys = [...new Set(paths.map(codexPathKey))]
+  if (keys.some((key) => codexInstallPaths.has(key))) {
+    throw new Error(
+      'Codex is being updated. Wait for the update to finish before starting a session.'
+    )
+  }
+  for (const key of keys) codexProcessUsers.set(key, (codexProcessUsers.get(key) ?? 0) + 1)
+  const release = (): void => {
+    for (const key of keys) {
+      const remaining = (codexProcessUsers.get(key) ?? 1) - 1
+      if (remaining > 0) codexProcessUsers.set(key, remaining)
+      else codexProcessUsers.delete(key)
+    }
+  }
+  try {
+    const child = spawnProcess()
+    onProcessTreeReaped(child, release)
+    return child
+  } catch (error) {
+    release()
+    throw error
+  }
+}
+
+export const installManagedCodex = async (
+  options: InstallManagedCodexOptions
+): Promise<ManagedCodexInstallOutcome> => {
+  const keys = [
+    managedCodexAdapterEntry(options.dataRoot),
+    managedCodexBinary(options.dataRoot, options.platform)
+  ].map(codexPathKey)
+  if (keys.some((key) => codexProcessUsers.has(key) || codexInstallPaths.has(key))) {
+    return {
+      result: {
+        installId: options.installId,
+        ok: false,
+        error: 'Codex is in use. Close Codex sessions and stop background tasks before updating.'
+      }
+    }
+  }
+  for (const key of keys) codexInstallPaths.add(key)
+  try {
+    return await installManagedCodexFiles(options)
+  } finally {
+    for (const key of keys) codexInstallPaths.delete(key)
+  }
+}
 
 const adapterEntryInRoot = (root: string): string => join(root, 'adapter', 'dist', 'index.js')
 
@@ -758,11 +824,117 @@ export const patchCodexAcpModelCatalogStartupSource = (source: string): string =
   )
 }
 
+const CODEX_ACP_PROMPT_FAILURE_SOURCE =
+  '    return createAgentTextMessageChunk(`${params.error.message}\n\n`);'
+const CODEX_ACP_PROMPT_FAILURE_REPLACEMENT = [
+  '    if (!this.failure) {',
+  '      this.failure = RequestError.internalError(',
+  '        this.createTurnErrorData(params.error), params.error.message',
+  '      );',
+  '    }',
+  CODEX_ACP_PROMPT_FAILURE_SOURCE
+].join('\n')
+
+// 1.6.2 records only auth/quota failures for clients without the AIR extension. Other terminal
+// errors become assistant prose followed by end_turn. Preserve the existing RequestError boundary
+// after the upstream current-turn/retry guards, without interpreting assistant text in the app.
+export const patchCodexAcpPromptFailureSource = (source: string): string => {
+  if (source.includes(CODEX_ACP_PROMPT_FAILURE_REPLACEMENT)) return source
+  const matches = source.split(CODEX_ACP_PROMPT_FAILURE_SOURCE).length - 1
+  if (matches === 1) {
+    return source.replace(CODEX_ACP_PROMPT_FAILURE_SOURCE, CODEX_ACP_PROMPT_FAILURE_REPLACEMENT)
+  }
+  if (matches > 1 || source.includes('createErrorEvent(params)')) {
+    throw new Error('Pinned Codex ACP prompt-failure patch no longer matches the adapter bundle')
+  }
+  // Small installation fixtures omit the error handler, like the usage-patch fixtures above.
+  return source
+}
+
+// The pinned adapter waits only for a successful compaction item. Capture the native turn as
+// well so failed/interrupted compactions settle and Cancel can address the actual turn.
+const CODEX_ACP_COMPACTION_PATCHES = [
+  [
+    `  async runCompact(params) {
+    const compactionCompleted = this.awaitCompactionCompleted(params.threadId);
+    await this.threadCompactStart(params);
+    return await compactionCompleted;
+  }`,
+    `  async runCompact(params, onTurnStarted) {
+    let turnId;
+    let observe;
+    let releaseCompletion;
+    const completion = new Promise((resolve, reject) => {
+      releaseCompletion = this.captureTurnCompletions(params.threadId, (event) => {
+        if (event.turn.id === turnId) resolve(event);
+      });
+      observe = (event) => {
+        if (event.eventType !== "notification" || event.params?.threadId !== params.threadId) return;
+        if (event.method === "turn/started") {
+          turnId = event.params.turn.id;
+          onTurnStarted?.(turnId, params.threadId);
+        } else if (event.method === "error" && event.params.turnId === turnId && event.params.willRetry === false) {
+          reject(RequestError.internalError(event.params.error, event.params.error.message));
+        } else if (isCompactionCompletedNotification(event)) {
+          resolve(undefined);
+        }
+      };
+      this.codexEventHandlers.push(observe);
+    });
+    // A notification can reject before thread/compact/start acknowledges the request.
+    void completion.catch(() => {});
+    try {
+      await this.threadCompactStart(params);
+      return await completion;
+    } finally {
+      releaseCompletion();
+      const index = this.codexEventHandlers.indexOf(observe);
+      if (index >= 0) this.codexEventHandlers.splice(index, 1);
+    }
+  }`
+  ],
+  [
+    `  async runCompact(sessionId) {
+    await this.codexClient.runCompact({ threadId: sessionId });
+  }`,
+    `  async runCompact(sessionId, onTurnStarted) {
+    return await this.codexClient.runCompact({ threadId: sessionId }, onTurnStarted);
+  }`
+  ],
+  [
+    `      case "compact": {
+        await this.runWithProcessCheck(() => this.codexAcpClient.runCompact(sessionId));
+        return { handled: true };
+      }`,
+    `      case "compact": {
+        options.onTurnStartPending?.();
+        const turnCompleted = await this.runWithProcessCheck(() => this.codexAcpClient.runCompact(sessionId, options.onTurnStarted));
+        return { handled: true, turnCompleted };
+      }`
+  ]
+] as const
+
+export const patchCodexAcpCompactionSource = (source: string): string => {
+  if (!source.includes('async runCompact(')) return source
+  for (const [before, after] of CODEX_ACP_COMPACTION_PATCHES) {
+    if (source.includes(after)) continue
+    if (source.split(before).length !== 2) {
+      throw new Error('Pinned Codex ACP compaction patch no longer matches the adapter bundle')
+    }
+    source = source.replace(before, after)
+  }
+  return source
+}
+
 export const ensureManagedCodexContextUsage = async (adapterPath: string): Promise<void> => {
   const source = await readFile(adapterPath, 'utf8')
   const patched = patchCodexAcpModelCatalogStartupSource(
     patchCodexAcpSkillInputSource(
-      patchCodexAcpTurnUsageSource(patchCodexAcpContextUsageSource(source))
+      patchCodexAcpTurnUsageSource(
+        patchCodexAcpContextUsageSource(
+          patchCodexAcpPromptFailureSource(patchCodexAcpCompactionSource(source))
+        )
+      )
     )
   )
 
@@ -1384,7 +1556,7 @@ const replaceDirectory = async (staged: string, destination: string): Promise<vo
   if (hasBackup) await rm(backup, { recursive: true, force: true }).catch(() => undefined)
 }
 
-export const installManagedCodex = async (
+const installManagedCodexFiles = async (
   options: InstallManagedCodexOptions
 ): Promise<ManagedCodexInstallOutcome> => {
   const {
@@ -1502,6 +1674,8 @@ export const installManagedCodex = async (
         const verifiedVersion = await verifyCodex(codexPath, signal)
         signal?.throwIfAborted()
         if (!verifiedVersion) throw new Error('Installed Codex binary failed its --version check')
+        if (!isSupportedCodexCliVersion(verifiedVersion))
+          throw new Error(CODEX_CLI_INCOMPATIBLE_MESSAGE)
         // Smoke home lives in scratch (auto-removed), NEVER inside stagedRoot: stagedRoot is moved to
         // the final runtime, so anything Codex might write here must not ride along into the install.
         const smokeHome = join(scratch, 'smoke-home')
@@ -1517,7 +1691,7 @@ export const installManagedCodex = async (
           stream: 'system',
           chunk: `Existing Codex CLI is incompatible with the managed adapter; falling back to the managed Codex CLI.\n`
         })
-        return installManagedCodex({ ...options, existingCodexPath: undefined })
+        return installManagedCodexFiles({ ...options, existingCodexPath: undefined })
       }
 
       signal?.throwIfAborted()

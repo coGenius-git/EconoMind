@@ -1,4 +1,7 @@
-import { BookOpen, File, FolderOpen, Globe2, X } from 'lucide-react'
+import { OverlayLayerProvider } from '@/components/ui/overlay-layer'
+import { annotationTransfers, ANNOTATION_DRAG_TYPE } from './annotations/annotation-transfer'
+import { SideChatWorkbenchContent } from './SideChatWorkbench'
+import { BookOpen, Cpu, FolderOpen, Globe2, Play, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { PanelImperativeHandle, PanelSize } from 'react-resizable-panels'
@@ -20,6 +23,7 @@ import { usePreviewWorkbenchStore } from '@/stores/preview-workbench-store'
 import { workbenchPreviewGuardScope } from '@/stores/preview-leave-guard'
 
 import { ExtensionPreservingFileName } from './ExtensionPreservingFileName'
+import { FileTypeIcon } from './file-type-icon'
 import { PreviewFileSurface, type PreviewFileSurfaceHandle } from './PreviewFileSurface'
 import {
   createPreviewTabActionBindings,
@@ -59,10 +63,12 @@ type PreviewPanelSurfaceProps = PreviewInteractionPort & {
 // Renders the active tab's content, or an empty state when nothing is previewed yet.
 const PreviewActiveContent = ({
   item,
+  isActive = true,
   restoredPlanResponder,
   ...annotationPort
 }: {
   item: PreviewItem | undefined
+  isActive?: boolean
   restoredPlanResponder?: RestoredPlanResponder
 } & PreviewAnnotationPort): React.JSX.Element | null => {
   const { t } = useTranslation()
@@ -75,8 +81,17 @@ const PreviewActiveContent = ({
     )
   }
 
+  if (item.type === 'tool' && item.toolKind === 'side-chat')
+    return <SideChatWorkbenchContent item={item} />
+
   if (item.type === 'tool') {
-    return <PreviewToolContent item={item} restoredPlanResponder={restoredPlanResponder} />
+    return (
+      <PreviewToolContent
+        item={item}
+        isActive={isActive}
+        restoredPlanResponder={restoredPlanResponder}
+      />
+    )
   }
 
   if (item.type === 'source') return <SourceWebPreview item={item} />
@@ -85,7 +100,7 @@ const PreviewActiveContent = ({
 }
 
 const previewTabClassName =
-  'group flex h-8 max-w-[160px] shrink-0 items-center gap-1 rounded-md pl-2 pr-1 text-[12px] transition-colors'
+  'group flex h-8 max-w-[160px] shrink-0 items-center gap-1.5 rounded-md pl-2 pr-1 text-[12px] transition-colors'
 
 const getPreviewTabId = (itemId: string): string => `preview-tab-${encodeURIComponent(itemId)}`
 const getPreviewPanelId = (itemId: string): string => `preview-panel-${encodeURIComponent(itemId)}`
@@ -136,6 +151,10 @@ const PreviewTabActionTarget = ({
   }
   const stageLocalPath = window.api.uploads?.stageLocalPath
   const deps: PreviewTabActionDeps = {
+    viewSession: (item) => {
+      if (item.projectId)
+        useNavigationStore.getState().openSession(item.projectId, item.sessionId, 'user')
+    },
     closeTab: removeItem,
     closeOtherTabs: removeOtherItems,
     saveManagedFile: (request) => window.api.saveManagedFile(request),
@@ -278,7 +297,20 @@ const PreviewTab = ({
   onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => void
 }): React.JSX.Element => {
   const { t } = useTranslation()
-  const tabTitle = tab.title
+  const dragHoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const clearDragHover = (): void => {
+    clearTimeout(dragHoverTimer.current)
+    dragHoverTimer.current = undefined
+  }
+  useEffect(() => () => clearTimeout(dragHoverTimer.current), [tab.id])
+  const tabTitle =
+    tab.type === 'tool' && tab.toolKind === 'side-chat'
+      ? t('Side chat')
+      : tab.type === 'tool' && tab.toolKind === 'library'
+        ? t('Library')
+        : tab.type === 'tool' && tab.toolKind === 'files'
+          ? t('Files')
+          : tab.title
 
   return (
     <div
@@ -308,19 +340,35 @@ const PreviewTab = ({
           aria-selected={isActive}
           aria-keyshortcuts="Delete Backspace"
           tabIndex={isActive ? 0 : -1}
-          className="flex min-w-0 items-center gap-1 self-stretch text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
-          onClick={(event) => {
-            if (event.target instanceof Element && event.target.closest('[data-preview-close]')) {
-              onClose(tab.id)
+          className="flex min-w-0 items-center gap-1 self-stretch rounded-md px-1 text-left focus-visible:keyboard-focus focus-visible:-outline-offset-2"
+          onClick={() => onActivate(tab.id)}
+          onDragOver={(event) => {
+            const transfer = annotationTransfers.read()
+            if (
+              !event.dataTransfer.types.includes(ANNOTATION_DRAG_TYPE) ||
+              tab.type !== 'tool' ||
+              tab.toolKind !== 'side-chat' ||
+              transfer?.parentSessionId !== tab.sessionId ||
+              transfer.projectId !== tab.projectId
+            )
               return
-            }
-            onActivate(tab.id)
+            event.preventDefault()
+            if (!isActive && dragHoverTimer.current === undefined)
+              dragHoverTimer.current = setTimeout(() => {
+                dragHoverTimer.current = undefined
+                if (annotationTransfers.read() === transfer) onActivate(tab.id)
+              }, 500)
+          }}
+          onDragLeave={clearDragHover}
+          onDrop={(event) => {
+            clearDragHover()
+            event.preventDefault()
           }}
           onKeyDown={onKeyDown}
           title={tabTitle}
         >
           {tab.type === 'file' ? (
-            <File className="size-3.5 shrink-0" aria-hidden="true" />
+            <FileTypeIcon name={tab.name} mimeType={tab.mimeType} />
           ) : tab.type === 'source' ? (
             <Globe2
               data-source-preview-tab-icon=""
@@ -329,7 +377,11 @@ const PreviewTab = ({
             />
           ) : tab.toolKind === 'files' ? (
             <FolderOpen className="size-3.5 shrink-0" aria-hidden="true" />
-          ) : tab.toolKind === 'notebook' ? (
+          ) : tab.toolKind === 'compute' ? (
+            <Cpu className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+          ) : tab.toolKind === 'replay' ? (
+            <Play className="size-3.5 shrink-0" aria-hidden="true" />
+          ) : tab.toolKind === 'notebook' || tab.toolKind === 'library' ? (
             <BookOpen className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
           ) : null}
           {tab.type === 'file' ? (
@@ -337,19 +389,22 @@ const PreviewTab = ({
           ) : (
             <span className="min-w-0 truncate">{tabTitle}</span>
           )}
-          <span
-            data-preview-close={tabTitle}
-            aria-hidden="true"
-            title={t('Close preview of {{title}}', { title: tabTitle })}
-            className={cn(
-              'shrink-0 rounded-sm p-0.5 hover:bg-bg-000/60',
-              isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-            )}
-          >
-            <X className="size-3.5" />
-          </span>
         </button>
       </PreviewTabActionTarget>
+      <button
+        type="button"
+        data-preview-close={tabTitle}
+        aria-label={t('Close preview of {{title}}', { title: tabTitle })}
+        title={t('Close preview of {{title}}', { title: tabTitle })}
+        tabIndex={isActive ? 0 : -1}
+        className={cn(
+          'flex size-5 shrink-0 items-center justify-center rounded-sm hover:bg-bg-000/60 focus-visible:keyboard-focus focus-visible:-outline-offset-2',
+          isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
+        )}
+        onClick={() => onClose(tab.id)}
+      >
+        <X className="size-3.5" aria-hidden="true" />
+      </button>
     </div>
   )
 }
@@ -378,7 +433,15 @@ const PreviewTabBar = ({
   onLinkReadingContext?: PreviewInteractionPort['onLinkReadingContext']
   onUnlinkReadingContext?: PreviewInteractionPort['onUnlinkReadingContext']
 }): React.JSX.Element => {
-  const tabListRef = useHorizontalScrollFade<HTMLDivElement>()
+  const tabListFadeRef = useHorizontalScrollFade<HTMLDivElement>()
+  const tabListRef = useRef<HTMLDivElement | null>(null)
+  const attachTabListRef = useCallback(
+    (node: HTMLDivElement | null): void => {
+      tabListRef.current = node
+      tabListFadeRef(node)
+    },
+    [tabListFadeRef]
+  )
   const tabContainerRefs = useRef<Array<HTMLDivElement | null>>([])
   const { t } = useTranslation()
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
@@ -427,17 +490,27 @@ const PreviewTabBar = ({
     tabRefs.current[index]?.focus()
   }
 
+  const closeTab = (index: number): boolean => {
+    const tab = tabs[index]
+    if (!tab || !onClose(tab.id)) return false
+    const fallbackIndex =
+      tab.id === activeItemId
+        ? index < tabs.length - 1
+          ? index + 1
+          : index - 1
+        : tabs.findIndex((item) => item.id === activeItemId)
+    if (fallbackIndex >= 0) moveToTab(fallbackIndex)
+    else requestComposerFocus()
+    return true
+  }
+
   const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number): void => {
     const lastIndex = tabs.length - 1
     let nextIndex: number | undefined
 
     if (event.key === 'Delete' || event.key === 'Backspace') {
-      const tab = tabs[index]
-      if (!tab) return
-
       event.preventDefault()
-      const fallbackIndex = index < lastIndex ? index + 1 : index - 1
-      if (onClose(tab.id) && fallbackIndex >= 0) moveToTab(fallbackIndex)
+      closeTab(index)
       return
     }
 
@@ -453,12 +526,18 @@ const PreviewTabBar = ({
 
   return (
     <div
-      ref={tabListRef}
-      role="tablist"
-      aria-label={t('Open previews')}
-      aria-orientation="horizontal"
+      ref={attachTabListRef}
+      data-testid="preview-tab-strip"
       className="scroll-fade-x flex min-w-0 flex-1 basis-0 shrink-0 items-center gap-1 overflow-x-auto pb-2"
     >
+      {/* Keep sibling close buttons outside the tablist's accessible ownership. */}
+      <div
+        role="tablist"
+        aria-label={t('Open previews')}
+        aria-orientation="horizontal"
+        aria-owns={tabs.map((tab) => getPreviewTabId(tab.id)).join(' ')}
+        className="sr-only"
+      />
       {tabs.map((tab, index) => (
         <PreviewTab
           key={tab.id}
@@ -478,7 +557,7 @@ const PreviewTabBar = ({
           onLinkReadingContext={onLinkReadingContext}
           onUnlinkReadingContext={onUnlinkReadingContext}
           onActivate={onActivate}
-          onClose={onClose}
+          onClose={() => closeTab(index)}
           onKeyDown={(event) => handleTabKeyDown(event, index)}
         />
       ))}
@@ -604,12 +683,12 @@ const PreviewFilePanel = ({
   })
 
   return (
-    <>
+    <OverlayLayerProvider value={isFullScreenOpen ? 60 : 40}>
       {isFullScreenOpen ? (
         <div
           aria-hidden="true"
           data-state="open"
-          className={`${dialogOverlayClassName} z-[60] cursor-default`}
+          className={`${dialogOverlayClassName} z-[55] cursor-default`}
           onClick={() => closeFullScreen(true)}
         />
       ) : null}
@@ -621,12 +700,12 @@ const PreviewFilePanel = ({
         aria-label={isFullScreenOpen ? t('Preview {{title}}', { title: item.title }) : undefined}
         id={isFullScreenOpen ? undefined : getPreviewPanelId(item.id)}
         aria-labelledby={isFullScreenOpen ? undefined : getPreviewTabId(item.id)}
-        tabIndex={isFullScreenOpen ? -1 : 0}
+        tabIndex={-1}
         data-state={isFullScreenOpen ? 'open' : undefined}
         className={
           isFullScreenOpen
             ? dialogPanelClassName(
-                'z-[61] flex h-[90vh] w-[90vw] max-w-none min-h-0 flex-col overflow-hidden overscroll-contain p-0'
+                'z-[56] box-border flex h-[90vh] w-[90vw] max-h-[calc(100svh-2rem)] max-w-[calc(100vw-2rem)] min-h-0 min-w-0 flex-col overflow-hidden overscroll-contain p-0'
               )
             : cn(
                 'flex h-full min-h-0 w-full flex-col overflow-hidden rounded-md bg-bg-000 shadow-card'
@@ -638,7 +717,7 @@ const PreviewFilePanel = ({
           item={item}
           contentKey={contentKey}
           onPdfPageCountChange={reportPdfPageCount}
-          // Full-screen mode floats above the modal panel (z-[61]); tooltips must follow.
+          // Floating controls inherit the expanded surface layer through portals.
           tooltipClassName={isFullScreenOpen ? 'z-[70]' : undefined}
           actionMenuContentClassName={isFullScreenOpen ? 'z-[70]' : undefined}
           onClose={isFullScreenOpen ? () => closeFullScreen(true) : () => onClose(item.id)}
@@ -654,7 +733,7 @@ const PreviewFilePanel = ({
           {...annotationPort}
         />
       </section>
-    </>
+    </OverlayLayerProvider>
   )
 }
 
@@ -692,7 +771,7 @@ const PreviewToolPanel = ({
   })
 
   return (
-    <>
+    <OverlayLayerProvider value={isExpanded ? 60 : 40}>
       {isExpanded ? (
         <div
           aria-hidden="true"
@@ -708,20 +787,24 @@ const PreviewToolPanel = ({
         aria-label={isExpanded ? item.title : undefined}
         id={isExpanded ? undefined : getPreviewPanelId(item.id)}
         aria-labelledby={isExpanded ? undefined : getPreviewTabId(item.id)}
-        tabIndex={isExpanded ? -1 : 0}
+        tabIndex={-1}
         hidden={!isActive && !isExpanded}
         data-state={isExpanded ? 'open' : undefined}
         className={
           isExpanded
             ? dialogPanelClassName(
-                'z-[56] flex h-[90vh] w-[90vw] max-w-none min-h-0 flex-col overflow-hidden overscroll-contain p-0'
+                'z-[56] box-border flex h-[90vh] w-[90vw] max-h-[calc(100svh-2rem)] max-w-[calc(100vw-2rem)] min-h-0 min-w-0 flex-col overflow-hidden overscroll-contain p-0'
               )
-            : 'h-full min-h-0 w-full overflow-y-auto'
+            : 'scrollbar-auto-hide h-full min-h-0 w-full overflow-y-auto'
         }
       >
-        <PreviewActiveContent item={item} restoredPlanResponder={restoredPlanResponder} />
+        <PreviewActiveContent
+          item={item}
+          isActive={isActive}
+          restoredPlanResponder={restoredPlanResponder}
+        />
       </section>
-    </>
+    </OverlayLayerProvider>
   )
 }
 
@@ -738,11 +821,11 @@ const PreviewSourcePanel = ({
     role="tabpanel"
     id={getPreviewPanelId(item.id)}
     aria-labelledby={getPreviewTabId(item.id)}
-    tabIndex={0}
+    tabIndex={-1}
     hidden={!isActive}
     className="flex h-full min-h-0 w-full flex-col overflow-hidden rounded-md bg-bg-000 shadow-card"
   >
-    <SourceWebPreview item={item} onClose={() => onClose(item.id)} />
+    <SourceWebPreview item={item} isActive={isActive} onClose={() => onClose(item.id)} />
   </section>
 )
 
@@ -867,7 +950,7 @@ const PreviewPanelSurface = ({
       <aside
         id="right-panel"
         className={cn(
-          'relative flex h-full w-full flex-col overflow-hidden bg-bg-10 py-[0.7px]',
+          'relative flex h-full min-w-0 w-full flex-col overflow-hidden bg-bg-10 py-[0.7px]',
           className
         )}
       >
@@ -918,7 +1001,7 @@ const PreviewPanelSurface = ({
         ) : null}
         <div
           className={cn(
-            'min-h-0 flex-1',
+            'min-h-0 min-w-0 flex-1',
             (activeItem?.type === 'file' || activeItem?.type === 'source') && 'pl-2 pr-1'
           )}
         >

@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import type { RemoteAccessSnapshot } from '../shared/remote-access'
 import { RENDERER_CONTRACT_GROUPS } from '../shared/renderer-contract-catalog'
 import type { UpdateStatus } from '../shared/update'
 import {
@@ -23,38 +22,48 @@ import {
 
 const HOST_CAPABILITIES = [
   'cli',
+  'github',
   'local-fs',
   'logs',
   'notifications',
   'remote-access',
   'reviewer',
   'storage',
-  'update'
+  'update',
+  'local-models',
+  'pdf-structure'
 ] as const
-
-const remoteSnapshot: RemoteAccessSnapshot = {
-  canManage: true,
-  canManagePairing: true,
-  mode: 'off',
-  enabled: false,
-  lifecycle: 'disabled',
-  remoteIt: { installed: false, loggedIn: false, registered: false },
-  pendingRequests: [],
-  trustedBrowsers: [
-    {
-      id: 'trusted-browser',
-      browser: 'Safari',
-      platform: 'macOS',
-      createdAt: 1,
-      lastSeenAt: 2,
-      expiresAt: 3
-    }
-  ]
-}
 
 const updateStatus: UpdateStatus = { state: 'idle', current: '1.0.0' }
 
 const createDependencies = (): HostApplicationCommandDependencies => ({
+  pdfStructure: {
+    readCached: vi.fn(async () => undefined),
+    parse: vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      extractionId: '00000000-0000-4000-8000-000000000001',
+      engineFingerprint: 'a'.repeat(64),
+      sourceChecksum: 'b'.repeat(64),
+      sourceSizeBytes: 10,
+      requestedPages: [1],
+      processedPages: [1],
+      pageCount: 1,
+      pages: [{ page: 1, width: 10, height: 10, rotation: 0 as const }],
+      elements: [],
+      thumbnails: [],
+      navigation: [],
+      issues: []
+    })),
+    cancel: vi.fn(),
+    readThumbnail: vi.fn(),
+    clearCache: vi.fn(async () => ({ removedBytes: 0, retainedEntries: 0 }))
+  },
+  localModels: {
+    getSnapshot: vi.fn(),
+    install: vi.fn(),
+    cancel: vi.fn(),
+    remove: vi.fn()
+  },
   cli: {
     getStatus: vi.fn(async () => ({
       installed: false,
@@ -64,6 +73,7 @@ const createDependencies = (): HostApplicationCommandDependencies => ({
     install: vi.fn(async () => ({ installed: true, target: '/bin/open-science', onPath: true })),
     uninstall: vi.fn(async () => ({ installed: false, target: '/bin/open-science', onPath: true }))
   },
+  github: { getStars: vi.fn(async () => 42) },
   localFs: {
     getRoots: vi.fn(() => ({ home: '/home/scientist', machineName: 'Lab' })),
     grantRoot: vi.fn(async () => []),
@@ -105,16 +115,7 @@ const createDependencies = (): HostApplicationCommandDependencies => ({
     peekPendingOpenSession: vi.fn(() => ({ sessionId: 'session-1', token: 7 })),
     takePendingOpenSession: vi.fn(() => ({ sessionId: 'session-1', token: 7 }))
   },
-  remoteAccess: {
-    snapshot: vi.fn(() => remoteSnapshot),
-    detect: vi.fn(async () => remoteSnapshot),
-    probe: vi.fn(async () => remoteSnapshot),
-    setMode: vi.fn(async () => remoteSnapshot),
-    disable: vi.fn(async () => remoteSnapshot),
-    approve: vi.fn(async () => remoteSnapshot),
-    reject: vi.fn(() => remoteSnapshot),
-    revoke: vi.fn(async () => remoteSnapshot)
-  } as unknown as HostApplicationCommandDependencies['remoteAccess'],
+
   reviewer: {
     run: vi.fn(async () => ({ started: true })),
     getForSession: vi.fn(async () => []),
@@ -194,7 +195,7 @@ const commandByName = (name: string): ApplicationCommand<string, readonly unknow
 }
 
 describe('Host application commands', () => {
-  it('defines the exact 56 Electron request channels in their existing capability groups', () => {
+  it('defines the exact 57 Electron request channels in their existing capability groups', () => {
     const expected = RENDERER_CONTRACT_GROUPS.filter(({ capability }) =>
       HOST_CAPABILITIES.includes(capability as (typeof HOST_CAPABILITIES)[number])
     ).map(({ capability, contracts }) => {
@@ -214,7 +215,7 @@ describe('Host application commands', () => {
       }
     })
 
-    expect(expected.flatMap(({ channels }) => channels)).toHaveLength(55)
+    expect(expected.flatMap(({ channels }) => channels)).toHaveLength(57)
     expect(
       hostApplicationCommandGroups.map(({ name, commands }) => ({
         capability: name,
@@ -230,7 +231,7 @@ describe('Host application commands', () => {
       {} as HostApplicationCommandDependencies
     )
 
-    expect(router.dispatcher.commandNames()).toHaveLength(55)
+    expect(router.dispatcher.commandNames()).toHaveLength(57)
     installation.uninstall()
     expect(router.dispatcher.commandNames()).toEqual([])
   })
@@ -257,6 +258,7 @@ describe('Host application commands', () => {
     await router.dispatcher.invoke(hostApplicationCommands.cli.getStatus, invocation([]))
     await router.dispatcher.invoke(hostApplicationCommands.cli.install, invocation([]))
     await router.dispatcher.invoke(hostApplicationCommands.cli.uninstall, invocation([]))
+    await router.dispatcher.invoke(hostApplicationCommands.github.getStars, invocation([]))
     await router.dispatcher.invoke(hostApplicationCommands.localFs.getRoots, invocation([]))
     await router.dispatcher.invoke(
       hostApplicationCommands.localFs.grantRoot,
@@ -309,26 +311,7 @@ describe('Host application commands', () => {
       hostApplicationCommands.notifications.takePendingOpenSession,
       invocation([7])
     )
-    await router.dispatcher.invoke(
-      hostApplicationCommands.remoteAccess.approve,
-      invocation([{ requestId: 'pair-1', decision: 'once' }])
-    )
-    await router.dispatcher.invoke(hostApplicationCommands.remoteAccess.detect, invocation([]))
-    await router.dispatcher.invoke(hostApplicationCommands.remoteAccess.probe, invocation([]))
-    await router.dispatcher.invoke(hostApplicationCommands.remoteAccess.disable, invocation([]))
-    await router.dispatcher.invoke(hostApplicationCommands.remoteAccess.getSnapshot, invocation([]))
-    await router.dispatcher.invoke(
-      hostApplicationCommands.remoteAccess.reject,
-      invocation([{ requestId: 'pair-2' }])
-    )
-    await router.dispatcher.invoke(
-      hostApplicationCommands.remoteAccess.revokeBrowser,
-      invocation([{ browserId: 'browser-1' }])
-    )
-    await router.dispatcher.invoke(
-      hostApplicationCommands.remoteAccess.setMode,
-      invocation([{ mode: 'remoteit' }])
-    )
+
     await router.dispatcher.invoke(
       hostApplicationCommands.reviewer.abort,
       invocation([reviewSession])
@@ -394,6 +377,9 @@ describe('Host application commands', () => {
     await router.dispatcher.invoke(hostApplicationCommands.update.getAppInfo, invocation([]))
     await router.dispatcher.invoke(hostApplicationCommands.update.getStatus, invocation([]))
 
+    for (const command of Object.values(hostApplicationCommands.localModels)) {
+      await router.dispatcher.invoke(command, invocation([]))
+    }
     expect(dependencies.localFs.listDir).toHaveBeenCalledWith('/data')
     expect(dependencies.localFs.readPreview).toHaveBeenCalledWith(previewRequest)
     expect(dependencies.notifications.takePendingOpenSession).toHaveBeenCalledWith(7)
@@ -402,16 +388,7 @@ describe('Host application commands', () => {
     expect(dependencies.notifications.markSessionCompletionsRead).toHaveBeenCalledWith(
       markSessionCompletionsReadRequest
     )
-    expect(dependencies.remoteAccess.approve).toHaveBeenCalledWith(
-      { requestId: 'pair-1', decision: 'once' },
-      true,
-      true
-    )
-    expect(dependencies.remoteAccess.detect).toHaveBeenCalledOnce()
-    expect(dependencies.remoteAccess.probe).toHaveBeenCalledOnce()
-    expect(dependencies.remoteAccess.reject).toHaveBeenCalledWith('pair-2', true, true)
-    expect(dependencies.remoteAccess.revoke).toHaveBeenCalledWith('browser-1', true, true)
-    expect(dependencies.remoteAccess.setMode).toHaveBeenCalledWith('remoteit')
+
     expect(dependencies.reviewer.run).toHaveBeenCalledWith(reviewRun)
     expect(dependencies.reviewer.getForSession).toHaveBeenCalledWith(reviewSession)
     expect(dependencies.reviewer.abort).toHaveBeenCalledWith(reviewSession)
@@ -428,6 +405,37 @@ describe('Host application commands', () => {
     expect(dependencies.update.apply).toHaveBeenCalledWith({ relaunch: false })
     expect(dependencies.update.download).toHaveBeenCalledWith({ nonInteractive: true })
 
+    const pdfRequest = {
+      attachmentVersionId: 'version-1',
+      page: 1,
+      requestId: '00000000-0000-4000-8000-000000000001'
+    }
+    const imageRequest = {
+      attachmentVersionId: 'version-1',
+      page: 1,
+      extractionId: '00000000-0000-4000-8000-000000000001',
+      thumbnailId: 'image-1'
+    }
+    await router.dispatcher.invoke(
+      hostApplicationCommands.pdfStructure.readCached,
+      invocation([{ attachmentVersionId: 'version-1', page: 1 }])
+    )
+    const parseInvocation = invocation([pdfRequest] as const)
+    await router.dispatcher.invoke(hostApplicationCommands.pdfStructure.parse, parseInvocation)
+    await router.dispatcher.invoke(
+      hostApplicationCommands.pdfStructure.cancel,
+      invocation(['00000000-0000-4000-8000-000000000001'])
+    )
+    await router.dispatcher.invoke(
+      hostApplicationCommands.pdfStructure.readThumbnail,
+      invocation([imageRequest])
+    )
+    await router.dispatcher.invoke(hostApplicationCommands.pdfStructure.clearCache, invocation([]))
+    expect(dependencies.pdfStructure.parse).toHaveBeenCalledWith(
+      pdfRequest,
+      parseInvocation.callerContext,
+      parseInvocation.callerLease
+    )
     const ownerMethods = Object.values(dependencies).flatMap((owner) => Object.values(owner))
     expect(
       ownerMethods.filter(vi.isMockFunction).every((method) => method.mock.calls.length === 1)
@@ -478,6 +486,19 @@ describe('Host application commands', () => {
     const previewRequest = { path: '/data/result.txt', encoding: 'utf8' as const }
     const parent = { parent: '/target' }
     const argsByChannel: Readonly<Record<string, readonly unknown[]>> = {
+      'pdf-structure:read-cached': [{ attachmentVersionId: 'v1', page: 1 }],
+      'pdf-structure:parse': [
+        { attachmentVersionId: 'v1', page: 1, requestId: '00000000-0000-4000-8000-000000000001' }
+      ],
+      'pdf-structure:cancel': ['00000000-0000-4000-8000-000000000001'],
+      'pdf-structure:read-thumbnail': [
+        {
+          attachmentVersionId: 'v1',
+          page: 1,
+          extractionId: '00000000-0000-4000-8000-000000000001',
+          thumbnailId: 'image-1'
+        }
+      ],
       'storage:accept-missing-data-root': [],
       'storage:ack-data-root-handoff-flush': [{ requestId: 'flush-1', status: 'completed' }],
       'local-fs:grant-root': [{ path: '/data', access: 'ro' }],
@@ -507,7 +528,7 @@ describe('Host application commands', () => {
         .filter((channel): channel is string => channel !== null)
     )
 
-    expect(localOnlyChannels).toHaveLength(30)
+    expect(localOnlyChannels).toHaveLength(38)
     for (const channel of localOnlyChannels) {
       await expect(
         router.dispatcher.invoke(
@@ -543,128 +564,6 @@ describe('Host application commands', () => {
     expect(dependencies.logs.getStatus).not.toHaveBeenCalled()
     expect(dependencies.logs.openFile).not.toHaveBeenCalled()
     expect(dependencies.logs.revealInFolder).not.toHaveBeenCalled()
-  })
-
-  it('keeps the read-only Remote Access probe available only to local callers', async () => {
-    const dependencies = createDependencies()
-    const router = createApplicationCommandRouter()
-    registerHostApplicationCommands(router.registrar, dependencies)
-    const localCaller = createWebCallerContext('local-browser')
-    const remoteCaller = createWebCallerContext('remote-browser', { location: 'remote' })
-
-    await expect(
-      router.dispatcher.invoke(
-        hostApplicationCommands.remoteAccess.probe,
-        invocation([], localCaller)
-      )
-    ).resolves.toBe(remoteSnapshot)
-    expect(remoteSnapshot.trustedBrowsers[0]).toMatchObject({ expiresAt: 3 })
-    await expect(
-      router.dispatcher.invoke(
-        hostApplicationCommands.remoteAccess.probe,
-        invocation([], remoteCaller)
-      )
-    ).rejects.toThrow('Channel only available from the local app: remote-access:probe')
-    expect(dependencies.remoteAccess.probe).toHaveBeenCalledOnce()
-  })
-
-  it('preserves the five-state Remote Access authority and freshness matrix', async () => {
-    const dependencies = createDependencies()
-    const router = createApplicationCommandRouter()
-    registerHostApplicationCommands(router.registrar, dependencies)
-    const desktop = createElectronCallerContext(7)
-    const localWeb = createWebCallerContext('local-web')
-    const ordinaryRemote = createWebCallerContext('ordinary-remote', { location: 'remote' })
-    const currentManager = createWebCallerContext('pairing-manager', {
-      location: 'remote',
-      authorities: ['manage-remote-pairing']
-    })
-    const staleManager = createWebCallerContext('stale-manager', {
-      location: 'remote',
-      authorities: ['manage-remote-pairing'],
-      isAuthorizationCurrent: () => false
-    })
-
-    for (const caller of [desktop, localWeb, ordinaryRemote, currentManager]) {
-      await router.dispatcher.invoke(
-        hostApplicationCommands.remoteAccess.getSnapshot,
-        invocation([], caller)
-      )
-    }
-    await expect(
-      router.dispatcher.invoke(
-        hostApplicationCommands.remoteAccess.getSnapshot,
-        invocation([], staleManager)
-      )
-    ).rejects.toThrow('Caller authorization is no longer current.')
-
-    expect(dependencies.remoteAccess.snapshot).toHaveBeenNthCalledWith(1, true, true)
-    expect(dependencies.remoteAccess.snapshot).toHaveBeenNthCalledWith(2, false, false)
-    expect(dependencies.remoteAccess.snapshot).toHaveBeenNthCalledWith(3, false, false)
-    expect(dependencies.remoteAccess.snapshot).toHaveBeenNthCalledWith(4, false, true)
-
-    const approval = { requestId: 'pair-1', decision: 'once' as const }
-    await expect(
-      router.dispatcher.invoke(
-        hostApplicationCommands.remoteAccess.approve,
-        invocation([approval], ordinaryRemote)
-      )
-    ).rejects.toThrow(
-      'Pairing can only be managed from the EconoMind desktop app or an approved browser.'
-    )
-    await expect(
-      router.dispatcher.invoke(
-        hostApplicationCommands.remoteAccess.approve,
-        invocation([approval], currentManager)
-      )
-    ).resolves.toBe(remoteSnapshot)
-    expect(dependencies.remoteAccess.approve).toHaveBeenCalledWith(approval, false, true)
-
-    await expect(
-      router.dispatcher.invoke(
-        hostApplicationCommands.remoteAccess.detect,
-        invocation([], currentManager)
-      )
-    ).rejects.toThrow('This action must be approved from the EconoMind desktop app.')
-    await expect(
-      router.dispatcher.invoke(
-        hostApplicationCommands.remoteAccess.probe,
-        invocation([], currentManager)
-      )
-    ).rejects.toThrow('Channel only available from the local app: remote-access:probe')
-    expect(dependencies.remoteAccess.detect).not.toHaveBeenCalled()
-    expect(dependencies.remoteAccess.probe).not.toHaveBeenCalled()
-  })
-
-  it('rejects malformed Remote Access arguments before entering an owner', async () => {
-    const dependencies = createDependencies()
-    const router = createApplicationCommandRouter()
-    registerHostApplicationCommands(router.registrar, dependencies)
-    const cases: Array<readonly [string, readonly unknown[]]> = [
-      ['remote-access:approve', [undefined]],
-      ['remote-access:detect', [{}]],
-      ['remote-access:probe', [{}]],
-      ['remote-access:disable', [{}]],
-      ['remote-access:get-snapshot', [{}]],
-      ['remote-access:reject', [undefined]],
-      ['remote-access:revoke-browser', [undefined]],
-      ['remote-access:set-mode', [{ mode: 'invalid' }]]
-    ]
-
-    for (const [channel, args] of cases) {
-      await expect(
-        router.dispatcher.invoke(commandByName(channel), invocation(args))
-      ).rejects.toMatchObject({ code: 'invalid-command-arguments' })
-    }
-
-    expect(dependencies.remoteAccess.approve).not.toHaveBeenCalled()
-    expect(dependencies.remoteAccess.detect).not.toHaveBeenCalled()
-    expect(dependencies.remoteAccess.probe).not.toHaveBeenCalled()
-    expect(dependencies.remoteAccess.disable).not.toHaveBeenCalled()
-    expect(dependencies.remoteAccess.snapshot).not.toHaveBeenCalled()
-    expect(dependencies.remoteAccess.reject).not.toHaveBeenCalled()
-    expect(dependencies.remoteAccess.revoke).not.toHaveBeenCalled()
-    expect(dependencies.remoteAccess.setMode).not.toHaveBeenCalled()
   })
 
   it('keeps pending-notification token validation ahead of owner mutation', async () => {

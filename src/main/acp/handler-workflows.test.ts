@@ -89,6 +89,7 @@ const createHarness = (
   hasLiveSession: ReturnType<typeof vi.fn>
   captureSessionBackend: ReturnType<typeof vi.fn>
   resumeSession: ReturnType<typeof vi.fn>
+  prepareRuntimeResume: ReturnType<typeof vi.fn>
   session: PersistedChatSession
   request: {
     projectId: string
@@ -108,6 +109,7 @@ const createHarness = (
     cwd: request.cwd
   }))
   const hasLiveSession = vi.fn(() => true)
+  const prepareRuntimeResume = vi.fn(async () => {})
   const captureSessionBackend = vi.fn(
     () =>
       ({
@@ -124,9 +126,18 @@ const createHarness = (
   )
   const snapshot = { status: 'connected' } as never
   const startContinuationWhenDispatchAdmitted = vi.fn(
-    async (request: unknown, validate: () => Promise<void>) => {
-      await validate()
-      return startContinuation(request)
+    async (
+      request: unknown,
+      validate: () => Promise<void>,
+      _messageId?: string,
+      _queued?: () => void,
+      admitDispatch?: (operation: () => Promise<void>) => Promise<void>
+    ) => {
+      const dispatch = async (): Promise<void> => {
+        await validate()
+        await startContinuation(request)
+      }
+      return admitDispatch ? admitDispatch(dispatch) : dispatch()
     }
   )
   const workflows = createAcpHandlerWorkflows(
@@ -143,7 +154,7 @@ const createHarness = (
     { create: vi.fn() } as never,
     taskNotifications,
     archiveAvailability,
-    { loadSession: vi.fn(async () => session) },
+    { loadSession: vi.fn(async () => session), prepareRuntimeResume },
     saveAsSkillAdmission
   )
   const graph = session.conversationGraph!
@@ -154,6 +165,7 @@ const createHarness = (
     startContinuation,
     startContinuationWhenDispatchAdmitted,
     hasLiveSession,
+    prepareRuntimeResume,
     captureSessionBackend,
     resumeSession,
     session,
@@ -181,11 +193,53 @@ describe('ACP resume Session workflow', () => {
     ): Promise<Result> => operation(persistedProjectId)
   }
 
+  it('commits restart recovery before a dormant runtime attaches', async () => {
+    const harness = createHarness(undefined, archiveAvailability)
+    harness.hasLiveSession.mockReturnValue(false)
+    await harness.workflows.resumeSession({ sessionId: 'session-1', cwd: '/workspace' })
+    expect(harness.prepareRuntimeResume).toHaveBeenCalledWith(persistedProjectId, 'session-1')
+    expect(harness.prepareRuntimeResume.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.resumeSession.mock.invocationCallOrder[0]
+    )
+  })
+
+  it('clears the interrupted run before admitting the next prompt after restart', async () => {
+    const harness = createHarness(undefined, archiveAvailability)
+    harness.hasLiveSession.mockReturnValue(false)
+    harness.prepareRuntimeResume.mockImplementationOnce(async () => {
+      harness.session.status = 'idle'
+      harness.session.activeRun = undefined
+    })
+    harness.startPrompt.mockImplementationOnce(async () => {
+      if (harness.session.status === 'running' || harness.session.activeRun) {
+        throw new Error('Cannot append a user Message while the Session run is active.')
+      }
+    })
+
+    await harness.workflows.resumeSession({ sessionId: 'session-1', cwd: '/workspace' })
+    await expect(
+      harness.workflows.sendPrompt({ sessionId: 'session-1', text: 'Continue the work.' })
+    ).resolves.toEqual({ status: 'connected' })
+
+    expect(harness.prepareRuntimeResume).toHaveBeenCalledBefore(harness.startPrompt)
+  })
+
+  it('does not attach the provider when restart recovery cannot be persisted', async () => {
+    const harness = createHarness(undefined, archiveAvailability)
+    harness.hasLiveSession.mockReturnValue(false)
+    harness.prepareRuntimeResume.mockRejectedValueOnce(new Error('disk full'))
+    await expect(
+      harness.workflows.resumeSession({ sessionId: 'session-1', cwd: '/workspace' })
+    ).rejects.toThrow('disk full')
+    expect(harness.resumeSession).not.toHaveBeenCalled()
+  })
+
   it('injects the persisted Project owner when the request omits projectId', async () => {
     const harness = createHarness(undefined, archiveAvailability)
     const request = { sessionId: 'session-1', cwd: '/workspace' }
 
     await harness.workflows.resumeSession(request)
+    expect(harness.prepareRuntimeResume).not.toHaveBeenCalled()
 
     expect(harness.resumeSession).toHaveBeenCalledWith({
       ...request,
@@ -195,6 +249,7 @@ describe('ACP resume Session workflow', () => {
 
   it('rejects a request whose projectId disagrees with the persisted owner', async () => {
     const harness = createHarness(undefined, archiveAvailability)
+    harness.hasLiveSession.mockReturnValue(false)
 
     await expect(
       harness.workflows.resumeSession({
@@ -205,7 +260,57 @@ describe('ACP resume Session workflow', () => {
     ).rejects.toThrow('Session does not belong to the requested Project.')
 
     expect(harness.resumeSession).not.toHaveBeenCalled()
+    expect(harness.prepareRuntimeResume).not.toHaveBeenCalled()
   })
+})
+
+describe('continuation admission ordering', () => {
+  it.each(['continue', 'save-as-skill'] as const)(
+    'queues %s at the root before holding Project admission',
+    async (kind) => {
+      let held = false
+      const harness = createHarness(undefined, {
+        withSessionAvailable: async (_projectId, _sessionId, operation) => {
+          expect(held).toBe(false)
+          held = true
+          try {
+            return await operation()
+          } finally {
+            held = false
+          }
+        },
+        withSessionAvailableById: vi.fn()
+      })
+      if (kind === 'continue') {
+        harness.session.status = 'error'
+        harness.session.activeRun = undefined
+        harness.session.resumeRecovery = {
+          kind: 'resume-required',
+          cause: 'app-restart',
+          promptMessageId: 'prompt-1'
+        }
+      }
+      harness.startContinuationWhenDispatchAdmitted.mockImplementationOnce(
+        async (_request, validate, _messageId, _queued, admitDispatch) => {
+          expect(held).toBe(false)
+          expect(admitDispatch).toEqual(expect.any(Function))
+          await admitDispatch!(async () => {
+            expect(held).toBe(true)
+            await validate()
+          })
+        }
+      )
+      if (kind === 'continue')
+        await harness.workflows.continueInterruptedTurn({
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          promptMessageId: 'prompt-1'
+        })
+      else await harness.workflows.saveAsSkill(harness.request)
+      expect(harness.startContinuationWhenDispatchAdmitted).toHaveBeenCalledOnce()
+      expect(held).toBe(false)
+    }
+  )
 })
 
 describe('ACP interrupted turn workflow', () => {
@@ -236,9 +341,8 @@ describe('ACP interrupted turn workflow', () => {
     // itself; the dispatch-admitted path intentionally bypasses only that nested guard.
     harness.startContinuation.mockImplementationOnce(() => enqueueArchive(async () => undefined))
     harness.startContinuationWhenDispatchAdmitted.mockImplementationOnce(
-      async (_request: unknown, validate: () => Promise<void>) => {
-        await validate()
-        return 'provider_prompt_accepted'
+      async (_request, validate, _messageId, _queued, admitDispatch) => {
+        await admitDispatch!(validate)
       }
     )
 
@@ -452,7 +556,7 @@ describe('ACP Save as skill workflow', () => {
     }
   )
 
-  it('dispatches through the Session admission already held by the workflow', async () => {
+  it('passes Session admission into the root continuation scheduler', async () => {
     const harness = createHarness()
 
     await harness.workflows.saveAsSkill(harness.request)

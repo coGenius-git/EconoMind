@@ -29,11 +29,18 @@ const MAX_DOWNLOAD_SYMLINK_HOPS = 40
 const usage = `Usage: open-science <command> [options]
 
 Commands:
+  init        Create the local CLI configuration directory
   start       Start the headless backend and localhost web UI
   stop        Gracefully stop the backend
   status      Show backend status
   url         Print the authenticated web URL
   update      Check, download, and apply an application update
+  doctor --json  Inspect headless readiness
+  runtime list          List detected Agent runtimes
+  runtime install codex   Prepare the app-managed Codex runtime
+  provider add --type official --vendor openai --model <id> --api-key-env <ENV>
+  connector configure literature --openalex-key-env <ENV>
+  cli install            Install the PATH launcher
   codex login [--force]
   connector list | show <id> | enable <id> | disable <id>
   connector add | update <id>      Read configuration JSON from stdin
@@ -62,8 +69,9 @@ Commands:
 
 Options:
   --port <port>          Web service port (default: 44100)
-  --app-path <path>      Installed Open Science executable
+  --app-path <path>      Installed EconoMind executable
   --config-root <path>   Config directory override
+  --profile <path>       Alias for --config-root (portable CLI profile)
   --data-root <path>     Current Data Root override (rollback only)
   --project <id-or-name> Project id or exact name
   --session <id>         Resume an existing session
@@ -94,6 +102,7 @@ Options:
   --subagent-inherit | --subagent-provider <id> --subagent-model <id> [--subagent-effort <effort>]
   --clear-provider | --clear-approval-profile | --clear-auto-review | --clear-memory
   --clear-delegation | --clear-specialist  Clear one automation new-session default
+  --permission-prompts none  Deny unresolved human interactions instead of waiting (run only)
   --wait                 Wait for the run to finish
   --return-on-attention  With --wait, return when the Plan needs approval
   --timeout-ms <ms>      Stop waiting after this many milliseconds
@@ -115,6 +124,11 @@ const VALUE_OPTIONS = {
   '--port': 'port',
   '--app-path': 'appPath',
   '--config-root': 'configRoot',
+  '--profile': 'configRoot',
+  '--type': 'providerType',
+  '--vendor': 'vendor',
+  '--api-key-env': 'apiKeyEnv',
+  '--openalex-key-env': 'openAlexKeyEnv',
   '--data-root': 'dataRoot',
   '--project': 'project',
   '--session': 'session',
@@ -122,6 +136,7 @@ const VALUE_OPTIONS = {
   '--prompt': 'prompt',
   '--prompt-file': 'promptFile',
   '--approval-profile': 'approvalProfile',
+  '--permission-prompts': 'permissionPrompts',
   '--provider': 'provider',
   '--model': 'model',
   '--reasoning-effort': 'reasoningEffort',
@@ -146,6 +161,8 @@ const VALUE_OPTIONS = {
 }
 
 const TASK_COMMANDS = new Set([
+  'doctor',
+  'runtime',
   'project',
   'run',
   'session',
@@ -153,21 +170,34 @@ const TASK_COMMANDS = new Set([
   'plan',
   'artifacts',
   'connector',
-  'credential'
+  'credential',
+  'runtime',
+  'provider',
+  'cli'
 ])
 const GROUP_COMMANDS = new Set([
   'codex',
+  'runtime',
   'project',
   'session',
   'settings',
   'plan',
   'artifacts',
   'connector',
-  'credential'
+  'credential',
+  'runtime',
+  'provider',
+  'cli'
 ])
 // Project create, update, and session-defaults intentionally remain unbounded because their
 // positional Project names may contain multiple unquoted words.
 const POSITIONAL_LIMITS = new Map([
+  ['doctor', 0],
+  ['runtime list', 0],
+  ['runtime install', 1],
+  ['provider add', 0],
+  ['connector configure', 1],
+  ['cli install', 0],
   ['connector list', 0],
   ['connector show', 1],
   ['connector enable', 1],
@@ -181,6 +211,7 @@ const POSITIONAL_LIMITS = new Map([
   ['credential update', 1],
 
   ['start', 0],
+  ['init', 0],
   ['stop', 0],
   ['status', 0],
   ['url', 0],
@@ -320,6 +351,12 @@ export const parseCliArgs = (argv) => {
   if (options.port !== undefined) {
     options.port = parsePortOption(options.port)
   }
+  if (options.permissionPrompts !== undefined && options.permissionPrompts !== 'none') {
+    throw new CliUsageError('--permission-prompts must be none.')
+  }
+  if (options.permissionPrompts === 'none' && options.planFirst) {
+    throw new CliUsageError('--plan-first cannot be combined with --permission-prompts none.')
+  }
   if (options.approvalProfile && !['ask', 'auto', 'full'].includes(options.approvalProfile)) {
     throw new CliUsageError(`Invalid approval profile: ${options.approvalProfile}`)
   }
@@ -378,6 +415,12 @@ export const parseCliArgs = (argv) => {
   }
   if (options.json && options.jsonl) {
     throw new CliUsageError('Use only one of --json or --jsonl.')
+  }
+  if (command === 'doctor' && !options.json) {
+    throw new CliUsageError('doctor requires --json.')
+  }
+  if (command === 'runtime' && subcommand !== 'list' && subcommand !== 'install') {
+    throw new CliUsageError(`Unknown command: runtime ${subcommand ?? ''}`.trimEnd())
   }
   if (options.json && (command === 'start' || command === 'url')) {
     throw new CliUsageError(`--json is not supported for ${command}.`)
@@ -480,6 +523,7 @@ export const parseCliArgs = (argv) => {
   }
   const runOnlyOptions = [
     ['--plan-first', options.planFirst],
+    ['--permission-prompts', options.permissionPrompts !== undefined],
     ['--skill', options.skills !== undefined]
   ]
   for (const [label, present] of runOnlyOptions) {
@@ -489,7 +533,7 @@ export const parseCliArgs = (argv) => {
   }
   const sessionOptionPresent =
     options.provider !== undefined ||
-    options.model !== undefined ||
+    (options.model !== undefined && !(command === 'provider' && subcommand === 'add')) ||
     options.providerDefaultModel ||
     options.reasoningEffort !== undefined ||
     options.approvalProfile !== undefined ||
@@ -558,6 +602,22 @@ export const isProcessAlive = (pid) => {
   } catch (error) {
     return error.code === 'EPERM'
   }
+}
+
+export const initCommand = async (options, deps = DEFAULT_DEPS) => {
+  const app = await (deps.locateApp ?? locateApp)({ appPath: options.appPath })
+  if (app.packaged && options.configRoot) {
+    throw new Error('--config-root is only supported for development builds.')
+  }
+  const configRoot = resolveConfigRoot({
+    override: options.configRoot,
+    packaged: app.packaged,
+    env: app.packaged ? {} : process.env
+  })
+  await mkdir(configRoot, { recursive: true, mode: 0o700 })
+  const result = { configRoot, initialized: true }
+  deps.log(options.json ? JSON.stringify(result) : `EconoMind is initialized at ${configRoot}.`)
+  return result
 }
 
 const authenticatedUrl = async (state, deps = DEFAULT_DEPS) => {
@@ -702,8 +762,17 @@ const readLogTail = async (logPath) => {
 
 export const openLaunchLog = (logPath) => openSync(logPath, 'w')
 
-export const buildAppLaunchArgs = (appArgs, options, port) => [
+export const buildAppLaunchArgs = (
+  appArgs,
+  options,
+  port,
+  { platform = process.platform, env = process.env } = {}
+) => [
   ...(options.noSandbox ? ['--no-sandbox'] : []),
+  // No-window mode alone still initializes X11. Select Ozone's display-free backend on servers.
+  ...(platform === 'linux' && !env.DISPLAY && !env.WAYLAND_DISPLAY
+    ? ['--ozone-platform=headless']
+    : []),
   ...appArgs,
   ...(options.credentialStore ? [`--credential-store=${options.credentialStore}`] : []),
   // `--open-science-headless` instead of `--headless`: Chromium consumes `--headless` and renders
@@ -718,7 +787,7 @@ const sandboxFailurePattern =
 export const formatStartupFailure = (outcome, logTail, options) => {
   if (!options.noSandbox && sandboxFailurePattern.test(logTail)) {
     return [
-      'Open Science could not start because Chromium sandboxing is unavailable on this host.',
+      'EconoMind could not start because Chromium sandboxing is unavailable on this host.',
       logTail,
       'This can occur when an AppImage mount cannot provide the SUID permissions required by Chromium; some Linux hosts also restrict unprivileged user namespaces.',
       'For an explicit rootless fallback, run "open-science start --no-sandbox" or retry an update with "open-science update --no-sandbox".',
@@ -727,12 +796,12 @@ export const formatStartupFailure = (outcome, logTail, options) => {
       .filter(Boolean)
       .join('\n\n')
   }
-  if (outcome.kind === 'error') return `Could not start Open Science: ${outcome.error.message}`
+  if (outcome.kind === 'error') return `Could not start EconoMind: ${outcome.error.message}`
 
   const exitStatus = outcome.signal
     ? ` after receiving ${outcome.signal}`
     : ` with exit code ${outcome.code ?? 'unknown'}`
-  return `Open Science exited before becoming healthy${exitStatus}.${logTail ? `\n\n${logTail}` : ''}`
+  return `EconoMind exited before becoming healthy${exitStatus}.${logTail ? `\n\n${logTail}` : ''}`
 }
 
 export const startCommand = async (options, deps = DEFAULT_DEPS) => {
@@ -740,10 +809,10 @@ export const startCommand = async (options, deps = DEFAULT_DEPS) => {
   if (await healthCheck(existing, deps)) {
     if (options.credentialStore !== undefined)
       throw new Error(
-        'Open Science is already running. Stop it before selecting a credential store.'
+        'EconoMind is already running. Stop it before selecting a credential store.'
       )
     const url = await authenticatedUrl(existing, deps)
-    deps.log(`Open Science is already running (PID ${existing.pid}).`)
+    deps.log(`EconoMind is already running (PID ${existing.pid}).`)
     if (options.open) openBrowser(url)
     else deps.log('Run "open-science url" to print a browser login URL.')
     return { state: existing, started: false }
@@ -796,12 +865,12 @@ export const startCommand = async (options, deps = DEFAULT_DEPS) => {
       throw new Error(formatStartupFailure(startup, logTail, options))
     }
     throw new Error(
-      `Open Science did not become healthy within ${START_TIMEOUT_MS / 1000}s.${logTail ? `\n\n${logTail}` : ''}`
+      `EconoMind did not become healthy within ${START_TIMEOUT_MS / 1000}s.${logTail ? `\n\n${logTail}` : ''}`
     )
   }
   const state = startup.state
   const url = await authenticatedUrl(state, deps)
-  deps.log(`Open Science started (PID ${state.pid}).`)
+  deps.log(`EconoMind started (PID ${state.pid}).`)
   if (options.open) openBrowser(url)
   else deps.log('Run "open-science url" to print a browser login URL.')
   return { state, started: true }
@@ -829,7 +898,7 @@ export const stopCommand = async (options, deps = DEFAULT_DEPS) => {
   const state = await findCurrentState(options, deps)
   if (!state) {
     deps.log(
-      options.json ? JSON.stringify({ result: 'already-stopped' }) : 'Open Science is not running.'
+      options.json ? JSON.stringify({ result: 'already-stopped' }) : 'EconoMind is not running.'
     )
     return
   }
@@ -850,7 +919,7 @@ export const stopCommand = async (options, deps = DEFAULT_DEPS) => {
 
   if (!shutdownAccepted) {
     throw new Error(
-      `Could not safely stop Open Science (PID ${state.pid}); the authenticated shutdown request was not accepted, so no process signal was sent.`
+      `Could not safely stop EconoMind (PID ${state.pid}); the authenticated shutdown request was not accepted, so no process signal was sent.`
     )
   }
 
@@ -860,14 +929,14 @@ export const stopCommand = async (options, deps = DEFAULT_DEPS) => {
     const stopped = await waitForWebServiceStopped(state, deps, STOP_TIMEOUT_MS)
     if (!stopped) {
       throw new Error(
-        `Could not stop the Open Science web service (PID ${state.pid}); the app is still serving.`
+        `Could not stop the EconoMind web service (PID ${state.pid}); the app is still serving.`
       )
     }
     await deps.removeState(state.configRoot)
     deps.log(
       options.json
         ? JSON.stringify({ result: 'web-service-stopped' })
-        : 'Open Science web service stopped; the app is still running.'
+        : 'EconoMind web service stopped; the app is still running.'
     )
     return
   }
@@ -882,11 +951,11 @@ export const stopCommand = async (options, deps = DEFAULT_DEPS) => {
   // the state in place and fail loudly so the user isn't told it stopped when it didn't.
   if (!stopped) {
     throw new Error(
-      `Could not stop Open Science (PID ${state.pid}); it is still running, so no process signal was sent.`
+      `Could not stop EconoMind (PID ${state.pid}); it is still running, so no process signal was sent.`
     )
   }
   await deps.removeState(state.configRoot)
-  deps.log(options.json ? JSON.stringify({ result: 'daemon-stopped' }) : 'Open Science stopped.')
+  deps.log(options.json ? JSON.stringify({ result: 'daemon-stopped' }) : 'EconoMind stopped.')
 }
 
 export const statusCommand = async (options, deps = DEFAULT_DEPS) => {
@@ -895,16 +964,16 @@ export const statusCommand = async (options, deps = DEFAULT_DEPS) => {
   if (options.json) {
     deps.log(JSON.stringify(running ? { running: true, ...state } : { running: false }, null, 2))
   } else if (running) {
-    deps.log(`Open Science is running (PID ${state.pid}, port ${state.port}).`)
+    deps.log(`EconoMind is running (PID ${state.pid}, port ${state.port}).`)
   } else {
-    deps.log('Open Science is not running.')
+    deps.log('EconoMind is not running.')
   }
   if (!running) process.exitCode = 1
 }
 
 export const urlCommand = async (options, deps = DEFAULT_DEPS) => {
   const state = await findCurrentState(options, deps)
-  if (!(await healthCheck(state, deps))) throw new Error('Open Science is not running.')
+  if (!(await healthCheck(state, deps))) throw new Error('EconoMind is not running.')
   deps.log(await authenticatedUrl(state, deps))
 }
 
@@ -1005,12 +1074,12 @@ export const rollbackCommand = async (options, dependencies = {}) => {
     deps.log(JSON.stringify(manifest))
     return
   }
-  deps.log(`Prepared an isolated Open Science ${manifest.targetVersion} rollback.`)
+  deps.log(`Prepared an isolated EconoMind ${manifest.targetVersion} rollback.`)
   deps.log(`Rollback Data Root: ${manifest.rollbackDataRoot}`)
   deps.log(`Preserved newer Config Root: ${manifest.preservedConfigRoot}`)
   deps.log(`Preserved newer Data Root: ${manifest.preservedDataRoot}`)
   deps.log(`Converted Sessions: ${manifest.sessionsConverted}`)
-  deps.log(`You can now install and start Open Science ${manifest.targetVersion}.`)
+  deps.log(`You can now install and start EconoMind ${manifest.targetVersion}.`)
 }
 
 const UPDATE_DOWNLOAD_PAGE = 'https://www.aipoch.com/open-science'
@@ -1040,12 +1109,12 @@ const supportsApplicationCommand = async (client, channel) => {
 const invokeApplicationCommand = async (client, channel, args = []) => {
   const bootstrap = await updateBootstrap(client)
   if (!Array.isArray(bootstrap.rpcChannels) || !bootstrap.rpcChannels.includes(channel)) {
-    throw new OpenScienceApiError(`Open Science does not support ${channel}.`, {
+    throw new OpenScienceApiError(`EconoMind does not support ${channel}.`, {
       code: 'command_unavailable'
     })
   }
   if (!Number.isInteger(bootstrap.rpcProtocolVersion)) {
-    throw new OpenScienceApiError('Open Science does not expose a compatible RPC protocol.', {
+    throw new OpenScienceApiError('EconoMind does not expose a compatible RPC protocol.', {
       code: 'command_unavailable'
     })
   }
@@ -1065,7 +1134,7 @@ const invokeApplicationCommand = async (client, channel, args = []) => {
   try {
     payload = await response.json()
   } catch {
-    throw new OpenScienceApiError('Open Science RPC returned an invalid response.', {
+    throw new OpenScienceApiError('EconoMind RPC returned an invalid response.', {
       code: 'invalid_response',
       status: response.status
     })
@@ -1076,12 +1145,12 @@ const invokeApplicationCommand = async (client, channel, args = []) => {
     typeof payload?.ok !== 'boolean'
   ) {
     throw new OpenScienceApiError(
-      payload?.error?.message ?? 'Open Science RPC returned an invalid response.',
+      payload?.error?.message ?? 'EconoMind RPC returned an invalid response.',
       { code: payload?.error?.code ?? 'invalid_response', status: response.status }
     )
   }
   if (!payload.ok) {
-    throw new OpenScienceApiError(payload.error?.message ?? 'Open Science command failed.', {
+    throw new OpenScienceApiError(payload.error?.message ?? 'EconoMind command failed.', {
       code: payload.error?.code ?? 'command_failed',
       status: response.status
     })
@@ -1139,14 +1208,14 @@ export const updateCommand = async (options, dependencies = {}) => {
   if (!bootstrap.rpcCapabilities?.includes(UPDATE_CLI_RPC_CAPABILITY)) {
     const status = { current: bootstrap.appVersion ?? 'unknown' }
     result = updateResult(status, 'manual-action-required', {
-      nextAction: `Install the latest Open Science release from ${UPDATE_DOWNLOAD_PAGE}, then run this command again.`
+      nextAction: `Install the latest EconoMind release from ${UPDATE_DOWNLOAD_PAGE}, then run this command again.`
     })
   } else if (!(await supports('update:check'))) {
     throw new Error(
-      'The running Open Science version advertises update CLI support without update:check.'
+      'The running EconoMind version advertises update CLI support without update:check.'
     )
   } else {
-    if (!options.json) deps.log('Checking for Open Science updates...')
+    if (!options.json) deps.log('Checking for EconoMind updates...')
     let status = await deps.invokeCommand(client, 'update:check')
     if (status.state === 'error') throw new Error(status.error ?? 'Update check failed.')
 
@@ -1158,11 +1227,11 @@ export const updateCommand = async (options, dependencies = {}) => {
       if (status.state === 'available') {
         if (!(await supports('update:download'))) {
           result = updateResult(status, 'manual-action-required', {
-            nextAction: `Install Open Science ${status.latest ?? 'from the latest release'} manually from ${UPDATE_DOWNLOAD_PAGE}.`
+            nextAction: `Install EconoMind ${status.latest ?? 'from the latest release'} manually from ${UPDATE_DOWNLOAD_PAGE}.`
           })
         } else {
           if (!options.json) {
-            deps.log(`Open Science ${status.latest ?? 'update'} is available. Downloading...`)
+            deps.log(`EconoMind ${status.latest ?? 'update'} is available. Downloading...`)
           }
           status = await downloadWithProgress(client, options, deps)
           if (status.state === 'error') throw new Error(status.error ?? 'Update download failed.')
@@ -1180,12 +1249,12 @@ export const updateCommand = async (options, dependencies = {}) => {
           result = updateResult(status, 'manual-action-required', {
             ...(installerPath ? { installerPath } : {}),
             nextAction: installerPath
-              ? `Run the installer at ${installerPath}, then start Open Science again.`
-              : `Install Open Science ${status.latest ?? 'from the latest release'} manually from ${UPDATE_DOWNLOAD_PAGE}.`
+              ? `Run the installer at ${installerPath}, then start EconoMind again.`
+              : `Install EconoMind ${status.latest ?? 'from the latest release'} manually from ${UPDATE_DOWNLOAD_PAGE}.`
           })
         } else if (!(await supports('update:apply'))) {
           result = updateResult(status, 'manual-action-required', {
-            nextAction: `Install Open Science ${status.latest ?? 'from the latest release'} manually from ${UPDATE_DOWNLOAD_PAGE}.`
+            nextAction: `Install EconoMind ${status.latest ?? 'from the latest release'} manually from ${UPDATE_DOWNLOAD_PAGE}.`
           })
         } else {
           if (!options.json) deps.log('Applying the update without opening the desktop app...')
@@ -1222,12 +1291,12 @@ export const updateCommand = async (options, dependencies = {}) => {
     if (attachedToDesktopApp) {
       result = {
         ...result,
-        nextAction: `Quit the running Open Science app, then run the installer at ${result.installerPath} and start Open Science again.`
+        nextAction: `Quit the running EconoMind app, then run the installer at ${result.installerPath} and start EconoMind again.`
       }
     } else if (requiresManualStop) {
       result = {
         ...result,
-        nextAction: `Run "open-science stop", then run the installer at ${result.installerPath} and start Open Science again.`
+        nextAction: `Run "open-science stop", then run the installer at ${result.installerPath} and start EconoMind again.`
       }
     }
   }
@@ -1242,16 +1311,16 @@ export const updateCommand = async (options, dependencies = {}) => {
 
 const formatUpdateResult = (result) => {
   if (result.outcome === 'up-to-date') {
-    return `Open Science ${result.current} is up to date.`
+    return `EconoMind ${result.current} is up to date.`
   }
   if (result.outcome === 'install-started') {
-    return `Installation of Open Science ${result.latest ?? 'update'} was handed off to the platform updater. The desktop app will not be opened; verify the installed version after the updater exits.`
+    return `Installation of EconoMind ${result.latest ?? 'update'} was handed off to the platform updater. The desktop app will not be opened; verify the installed version after the updater exits.`
   }
   if (result.outcome === 'blocked') {
     return `Update blocked by active research: ${result.blockedBy.join(', ')}.`
   }
   return [
-    `Open Science ${result.latest ?? result.current} requires a manual install.`,
+    `EconoMind ${result.latest ?? result.current} requires a manual install.`,
     result.installerPath ? `Installer: ${result.installerPath}` : undefined,
     result.nextAction
   ]
@@ -1319,7 +1388,7 @@ const emitRunEvent = (event, options, deps) => {
     deps.log(JSON.stringify(event))
   } else if (event.type === 'stream.resync-required') {
     deps.warn(
-      'Run event history could not be fully replayed. Final Run state will still be read from Open Science.'
+      'Run event history could not be fully replayed. Final Run state will still be read from EconoMind.'
     )
   } else if (event.type === 'run.progress') {
     if (event.data?.heartbeat) {
@@ -1339,7 +1408,7 @@ const emitRunEvent = (event, options, deps) => {
     if (message) deps.log(message)
   } else if (event.type === 'permission.requested') {
     deps.warn(
-      'Run is waiting for approval. Approve the request in Open Science Desktop or the Web UI.'
+      'Run is waiting for approval. Approve the request in EconoMind Desktop or the Web UI.'
     )
   } else if (
     event.type === 'run.event' &&
@@ -1437,7 +1506,82 @@ const assertNoClearConflict = (clear, present, label) => {
 export const runTaskCommand = async (parsed, dependencies = {}) => {
   const deps = { ...TASK_DEPS, ...dependencies }
   const { command, subcommand, positionals = [], options } = parsed
-  const client = await deps.connect({ configRoot: options.configRoot })
+  let client
+  try {
+    client = await deps.connect({ configRoot: options.configRoot })
+  } catch (error) {
+    if (command !== 'doctor' || error?.code !== 'daemon_unavailable' || error?.status !== undefined)
+      throw error
+    deps.log(
+      JSON.stringify({
+        ready: false,
+        checks: { daemon: { status: 'missing' } },
+        next: [{ code: 'daemon_unavailable', argv: ['start', '--no-open'] }]
+      })
+    )
+    deps.setExitCode(3)
+    return
+  }
+
+  if (command === 'doctor') {
+    deps.log(JSON.stringify(await client.doctor()))
+    return
+  }
+
+  if (command === 'runtime' && subcommand === 'list') {
+    const runtimes = await client.listRuntimes()
+    if (options.json) {
+      deps.log(JSON.stringify(runtimes))
+    } else {
+      deps.log('FRAMEWORK\tSTATUS\tVERSION\tSOURCE')
+      for (const runtime of runtimes) {
+        deps.log(
+          `${runtime.framework}\t${runtime.status}\t${runtime.version ?? '-'}\t${runtime.source ?? '-'}`
+        )
+      }
+    }
+    return
+  }
+
+  if (command === 'cli' && subcommand === 'install') {
+    outputValue(await client.installCli(), options, deps)
+    return
+  }
+  if (
+    command === 'runtime' ||
+    command === 'provider' ||
+    (command === 'connector' && subcommand === 'configure')
+  ) {
+    const readSecret = (name) => {
+      if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
+        throw new CliUsageError('Name a credential environment variable.')
+      const key = (dependencies.env ?? process.env)[name]?.trim()
+      if (!key) throw new CliUsageError('The credential environment variable is empty.')
+      return key
+    }
+    let request
+    if (command === 'runtime' && subcommand === 'install' && positionals[0] === 'codex')
+      request = { action: 'runtime' }
+    else if (
+      command === 'provider' &&
+      subcommand === 'add' &&
+      options.providerType === 'official' &&
+      options.vendor === 'openai' &&
+      options.model
+    ) {
+      request = { action: 'provider', key: readSecret(options.apiKeyEnv), model: options.model }
+    } else if (command === 'connector' && positionals[0] === 'literature')
+      request = { action: 'openalex', key: readSecret(options.openAlexKeyEnv) }
+    else
+      throw new CliUsageError(
+        'Supported setup commands: runtime install codex; provider add --type official --vendor openai --model <id> --api-key-env <ENV>; connector configure literature --openalex-key-env <ENV>.'
+      )
+    const result = await client.bootstrap(request, { timeoutMs: 600_000 })
+    if (!result.ok)
+      throw Object.assign(new Error(`Setup failed: ${result.code}.`), { code: result.code })
+    outputValue(result, options, deps)
+    return
+  }
 
   if (command === 'connector' || command === 'credential') {
     const id = positionals[0]
@@ -1772,7 +1916,7 @@ export const runTaskCommand = async (parsed, dependencies = {}) => {
             if (abortController.signal.aborted) return
             const message = error instanceof Error ? error.message : String(error)
             deps.warn(
-              `Run event stream stopped: ${message} Final Run state will still be read from Open Science.`
+              `Run event stream stopped: ${message} Final Run state will still be read from EconoMind.`
             )
           }
         )
@@ -1786,6 +1930,7 @@ export const runTaskCommand = async (parsed, dependencies = {}) => {
         ...(options.session ? { sessionId: options.session } : {}),
         ...(options.approvalProfile ? { permissionProfile: options.approvalProfile } : {}),
         ...(options.skills?.length ? { skillIds: options.skills } : {}),
+        ...(options.permissionPrompts ? { permissionPrompts: options.permissionPrompts } : {}),
         ...(options.planFirst ? { turnIntent: 'plan-first' } : {}),
         ...(options.autoReviewEnabled !== undefined
           ? { autoReviewEnabled: options.autoReviewEnabled }
@@ -1892,7 +2037,8 @@ export const runCli = async (argv = process.argv.slice(2), dependencies = {}) =>
     console.log(usage)
     return
   }
-  if (command === 'start') await startCommand(options)
+  if (command === 'init') await initCommand(options)
+  else if (command === 'start') await startCommand(options)
   else if (command === 'stop') await stopCommand(options)
   else if (command === 'status') await statusCommand(options)
   else if (command === 'url') await urlCommand(options)

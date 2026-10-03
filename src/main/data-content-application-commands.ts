@@ -1,3 +1,5 @@
+import { RuntimeWriterOwner } from './session-persistence/runtime-writer'
+import { runtimeWriterClaimContract, type RuntimeWriterLease } from '../shared/runtime-writer'
 import {
   defineApplicationCommand,
   defineApplicationCommandGroup,
@@ -6,7 +8,7 @@ import {
   type ApplicationInvocation
 } from './application-command-router'
 import type { ApplicationEventMap, ApplicationEventPublisher } from './application-events'
-import type { ArtifactHandlers } from './artifacts/ipc'
+import { artifactFinalizationFailureResult, type ArtifactHandlers } from './artifacts/ipc'
 import {
   ArtifactFinalizationProofError,
   ArtifactOwnershipPersistenceRaceError
@@ -24,6 +26,9 @@ import {
 } from '../shared/application-command-contract'
 import * as Artifacts from '../shared/artifacts'
 import type * as ConversationExport from '../shared/conversation-export'
+import * as SessionPackage from '../shared/session-package'
+import type * as SessionDiagnostics from '../shared/session-diagnostics'
+import { sessionDiagnosticCommandContracts } from '../shared/session-diagnostics-contracts'
 import {
   LIFECYCLE_CHANNELS,
   MAIN_DELEGATION_POLICY_LIFECYCLE_CLIENT_ID
@@ -90,6 +95,12 @@ type PreviewApplicationCommandOwner = Readonly<{
 }>
 
 type SessionApplicationCommandOwner = Omit<SessionPersistenceHandlers, 'deleteSession'> & {
+  bindTaskSession(
+    request: SessionPersistence.BindTaskSessionRequest
+  ): Promise<SessionPersistence.PersistedChatSession>
+  admitTaskTurn(
+    request: SessionPersistence.AdmitTaskSessionTurnRequest
+  ): Promise<SessionPersistence.PersistedChatSession>
   stageTaskCompletion(
     request: SessionPersistence.StageTaskSessionCompletionRequest
   ): Promise<SessionPersistence.PersistedChatSession>
@@ -129,6 +140,26 @@ type InvocationOwner<Owner> = Readonly<{
 // T2h0 injects this adapter; it resolves native window/progress targets without putting Electron
 // objects in transport-neutral application invocations.
 type ElectronDataContentApplicationCommandAdapter = InvocationOwner<{
+  inspectSessionDiagnostics: (
+    request: SessionDiagnostics.SessionDiagnosticRequest
+  ) => Promise<SessionDiagnostics.SessionDiagnosticInspection>
+  exportSessionDiagnostics: (
+    request: SessionDiagnostics.SessionDiagnosticExportRequest
+  ) => Promise<SessionDiagnostics.SessionDiagnosticExportResult>
+  cancelSessionDiagnostics: (request: { operationId: string }) => Promise<void>
+  forkSession: (
+    request: SessionPackage.SessionPackageRequest
+  ) => Promise<SessionPackage.SessionPackageRequest | null>
+  exportSessionPackage: (
+    request: SessionPackage.SessionPackageRequest
+  ) => Promise<SessionPackage.SessionPackageExportResult>
+  importSessionPackage: (
+    request?: SessionPackage.SessionPackageImportRequest,
+    sourcePath?: string
+  ) => Promise<SessionPackage.SessionPackageImportResult>
+  sessionPackageOperation: (
+    request: SessionPackage.PackageOperationRequest
+  ) => Promise<SessionPackage.PackageOperationSnapshot | null>
   exportConversationFromInvokingWindow: (
     request: ConversationExport.ExportConversationRequest
   ) => Promise<ConversationExport.ExportConversationResult>
@@ -140,6 +171,7 @@ type ElectronDataContentApplicationCommandAdapter = InvocationOwner<{
 type ManagedPreviewApplicationCommandOwner = ManagedPreviewOwnerRegistry
 
 type UploadApplicationCommandOwner = InvocationOwner<{
+  recoverDraft: (request: { receipt: string }) => Promise<Uploads.UploadedAttachment | null>
   claimLocalFile: (request: Uploads.UploadTransferRequest) => void
   stageLocalPath: (
     request: Uploads.StageLocalPathUploadRequest
@@ -167,6 +199,7 @@ type UploadApplicationCommandOwner = InvocationOwner<{
 type DataRootWrite = <Result>(operation: () => Promise<Result>) => Promise<Result>
 
 type DataContentApplicationCommandDependencies = Readonly<{
+  runtimeWriter?: RuntimeWriterOwner
   artifacts: ArtifactHandlers
   electron: ElectronDataContentApplicationCommandAdapter
   events: ApplicationEventPublisher
@@ -229,6 +262,11 @@ const dataContentApplicationCommands = Object.freeze({
     'artifacts:resolve-version-descriptors',
     'resolveVersionDescriptors'
   ),
+  runtimeWriterClaim: defineApplicationCommand<
+    'lifecycle:claim-runtime-writer',
+    readonly [],
+    RuntimeWriterLease
+  >('lifecycle:claim-runtime-writer', runtimeWriterClaimContract),
   lifecycleClientId: defineApplicationCommand<'lifecycle:client-id', readonly [], string>(
     'lifecycle:client-id'
   ),
@@ -325,6 +363,41 @@ const dataContentApplicationCommands = Object.freeze({
     'sessions:export-conversation',
     'exportConversationFromInvokingWindow'
   ),
+  sessionInspectDiagnostics: electronCommand(
+    'sessions:inspect-diagnostics',
+    'inspectSessionDiagnostics',
+    sessionDiagnosticCommandContracts.inspect
+  ),
+  sessionExportDiagnostics: electronCommand(
+    'sessions:export-diagnostics',
+    'exportSessionDiagnostics',
+    sessionDiagnosticCommandContracts.export
+  ),
+  sessionCancelDiagnostics: electronCommand(
+    'sessions:cancel-diagnostics',
+    'cancelSessionDiagnostics',
+    sessionDiagnosticCommandContracts.cancel
+  ),
+  sessionFork: electronCommand(
+    'sessions:fork',
+    'forkSession',
+    SessionPackage.sessionPackageCommandContracts.fork
+  ),
+  sessionExportPackage: electronCommand(
+    'sessions:export-package',
+    'exportSessionPackage',
+    SessionPackage.sessionPackageCommandContracts.export
+  ),
+  sessionImportPackage: electronCommand(
+    'sessions:import-package',
+    'importSessionPackage',
+    SessionPackage.sessionPackageCommandContracts.import
+  ),
+  sessionPackageOperation: electronCommand(
+    'sessions:package-operation',
+    'sessionPackageOperation',
+    SessionPackage.sessionPackageCommandContracts.operation
+  ),
   sessionList: sessionCommand('sessions:list', 'list'),
   sessionFilterPdfContextCandidates: sessionCommand(
     'sessions:filter-pdf-context-candidates',
@@ -338,6 +411,7 @@ const dataContentApplicationCommands = Object.freeze({
   ),
   sessionLoadAll: sessionCommand('sessions:load-all', 'loadAll'),
   sessionLoadOne: sessionCommand('sessions:load-one', 'loadOne'),
+  sessionSearchMessages: sessionCommand('sessions:search-messages', 'searchMessages'),
   sessionLoadUsage: sessionCommand('sessions:load-usage', 'loadUsage'),
   sessionSaveManifest: sessionCommand(
     'sessions:save-manifest',
@@ -362,6 +436,16 @@ const dataContentApplicationCommands = Object.freeze({
     ],
     SessionPersistence.PersistedChatSession
   >('sessions:save-session', SessionPersistence.sessionApplicationCommandContracts.save),
+  sessionBindTask: defineApplicationCommand<
+    'sessions:bind-task-session',
+    readonly [request: SessionPersistence.BindTaskSessionRequest],
+    SessionPersistence.PersistedChatSession
+  >('sessions:bind-task-session'),
+  sessionAdmitTaskTurn: defineApplicationCommand<
+    'sessions:admit-task-turn',
+    readonly [request: SessionPersistence.AdmitTaskSessionTurnRequest],
+    SessionPersistence.PersistedChatSession
+  >('sessions:admit-task-turn'),
   sessionStageTaskCompletion: defineApplicationCommand<
     'sessions:stage-task-completion',
     readonly [request: SessionPersistence.StageTaskSessionCompletionRequest],
@@ -404,6 +488,11 @@ const dataContentApplicationCommands = Object.freeze({
     Uploads.uploadApplicationCommandContracts.finalizeSession
   ),
   uploadFinishTransfer: uploadCommand('uploads:finish-transfer', 'finishTransfer'),
+  uploadRecoverDraft: uploadCommand(
+    'uploads:recover-draft',
+    'recoverDraft',
+    Uploads.uploadApplicationCommandContracts.recoverDraft
+  ),
   uploadReadPreview: uploadCommand('uploads:read-preview', 'readPreview'),
   uploadStageLocalFile: electronCommand('uploads:stage-local-file', 'stageLocalFileWithProgress'),
   uploadStageLocalPath: uploadCommand('uploads:stage-local-path', 'stageLocalPath'),
@@ -427,7 +516,8 @@ const dataContentApplicationCommandGroups = Object.freeze([
     dataContentApplicationCommands.artifactResolveVersionDescriptors
   ] as const),
   defineApplicationCommandGroup('lifecycle', [
-    dataContentApplicationCommands.lifecycleClientId
+    dataContentApplicationCommands.lifecycleClientId,
+    dataContentApplicationCommands.runtimeWriterClaim
   ] as const),
   defineApplicationCommandGroup('preview', [
     dataContentApplicationCommands.previewDelete,
@@ -463,16 +553,26 @@ const dataContentApplicationCommandGroups = Object.freeze([
     dataContentApplicationCommands.sessionDelete,
     dataContentApplicationCommands.sessionEditDetails,
     dataContentApplicationCommands.sessionExportConversation,
+    dataContentApplicationCommands.sessionInspectDiagnostics,
+    dataContentApplicationCommands.sessionExportDiagnostics,
+    dataContentApplicationCommands.sessionCancelDiagnostics,
+    dataContentApplicationCommands.sessionFork,
+    dataContentApplicationCommands.sessionExportPackage,
+    dataContentApplicationCommands.sessionImportPackage,
+    dataContentApplicationCommands.sessionPackageOperation,
     dataContentApplicationCommands.sessionFilterPdfContextCandidates,
     dataContentApplicationCommands.sessionLinkPdfContext,
     dataContentApplicationCommands.sessionList,
     dataContentApplicationCommands.sessionLoadAll,
     dataContentApplicationCommands.sessionLoadOne,
+    dataContentApplicationCommands.sessionSearchMessages,
     dataContentApplicationCommands.sessionLoadUsage,
     dataContentApplicationCommands.sessionSaveManifest,
     dataContentApplicationCommands.sessionUpdateArchive,
     dataContentApplicationCommands.sessionUnlinkPdfContext,
     dataContentApplicationCommands.sessionSave,
+    dataContentApplicationCommands.sessionBindTask,
+    dataContentApplicationCommands.sessionAdmitTaskTurn,
     dataContentApplicationCommands.sessionStageTaskCompletion,
     dataContentApplicationCommands.sessionSettleTaskCompletion,
     dataContentApplicationCommands.sessionFailTaskRun,
@@ -488,6 +588,7 @@ const dataContentApplicationCommandGroups = Object.freeze([
     dataContentApplicationCommands.uploadFinalizeSession,
     dataContentApplicationCommands.uploadFinishTransfer,
     dataContentApplicationCommands.uploadReadPreview,
+    dataContentApplicationCommands.uploadRecoverDraft,
     dataContentApplicationCommands.uploadStageLocalFile,
     dataContentApplicationCommands.uploadStageLocalPath,
     dataContentApplicationCommands.uploadTransferStatus
@@ -552,6 +653,7 @@ const registerDataContentApplicationCommands = (
   dependencies: DataContentApplicationCommandDependencies
 ): ApplicationCommandInstallation => {
   const scope = registrar.createScope()
+  const runtimeWriter = dependencies.runtimeWriter ?? new RuntimeWriterOwner()
 
   try {
     scope.registerGroup(dataContentApplicationCommandGroups[0], {
@@ -562,6 +664,8 @@ const registerDataContentApplicationCommands = (
             artifacts: await dependencies.artifacts.finalizeRunArtifacts(args[0])
           }
         } catch (error) {
+          const executionFailure = artifactFinalizationFailureResult(error)
+          if (executionFailure) return executionFailure
           if (error instanceof ArtifactOwnershipPersistenceRaceError) {
             return {
               ok: false as const,
@@ -604,6 +708,8 @@ const registerDataContentApplicationCommands = (
         dependencies.artifacts.resolveVersionDescriptors(args[0])
     })
     scope.registerGroup(dataContentApplicationCommandGroups[1], {
+      'lifecycle:claim-runtime-writer': ({ callerContext }) =>
+        runtimeWriter.claim(callerContext.lifecycleClientId),
       'lifecycle:client-id': ({ callerContext }) => callerContext.lifecycleClientId
     })
     scope.registerGroup(dataContentApplicationCommandGroups[2], {
@@ -719,6 +825,46 @@ const registerDataContentApplicationCommands = (
         )
         return dependencies.electron.exportConversationFromInvokingWindow(invocation)
       },
+      'sessions:inspect-diagnostics': (invocation) => {
+        assertElectronCaller(
+          invocation,
+          dataContentApplicationCommands.sessionInspectDiagnostics.name
+        )
+        return dependencies.electron.inspectSessionDiagnostics(invocation)
+      },
+      'sessions:export-diagnostics': (invocation) => {
+        assertElectronCaller(
+          invocation,
+          dataContentApplicationCommands.sessionExportDiagnostics.name
+        )
+        return dependencies.electron.exportSessionDiagnostics(invocation)
+      },
+      'sessions:cancel-diagnostics': (invocation) => {
+        assertElectronCaller(
+          invocation,
+          dataContentApplicationCommands.sessionCancelDiagnostics.name
+        )
+        return dependencies.electron.cancelSessionDiagnostics(invocation)
+      },
+      'sessions:fork': (invocation) => {
+        assertElectronCaller(invocation, dataContentApplicationCommands.sessionFork.name)
+        return dependencies.electron.forkSession(invocation)
+      },
+      'sessions:export-package': (invocation) => {
+        assertElectronCaller(invocation, dataContentApplicationCommands.sessionExportPackage.name)
+        return dependencies.electron.exportSessionPackage(invocation)
+      },
+      'sessions:import-package': (invocation) => {
+        assertElectronCaller(invocation, dataContentApplicationCommands.sessionImportPackage.name)
+        return dependencies.electron.importSessionPackage(invocation)
+      },
+      'sessions:package-operation': (invocation) => {
+        assertElectronCaller(
+          invocation,
+          dataContentApplicationCommands.sessionPackageOperation.name
+        )
+        return dependencies.electron.sessionPackageOperation(invocation)
+      },
       'sessions:filter-pdf-context-candidates': ({ args }) =>
         dependencies.withDataRootWrite(() =>
           dependencies.sessions.filterPdfContextCandidates(args[0])
@@ -744,6 +890,8 @@ const registerDataContentApplicationCommands = (
         ),
       'sessions:load-one': ({ args }) =>
         dependencies.withDataRootWrite(() => dependencies.sessions.loadOne(args[0])),
+      'sessions:search-messages': ({ args }) =>
+        dependencies.withDataRootWrite(() => dependencies.sessions.searchMessages(args[0])),
       'sessions:load-usage': () =>
         dependencies.withDataRootWrite(() => dependencies.sessions.loadUsage()),
       'sessions:save-manifest': ({ args }) =>
@@ -779,7 +927,14 @@ const registerDataContentApplicationCommands = (
         ),
       'sessions:save-session': (invocation) => {
         const originClientId = invocation.callerContext.lifecycleClientId
-        return dependencies.withDataRootWrite(() =>
+        const writerToken = invocation.args[1]?.runtimeWriterToken
+        const withRuntimeWriterWrite = <T>(run: () => Promise<T>): Promise<T> =>
+          dependencies.withDataRootWrite(() =>
+            writerToken === undefined
+              ? run()
+              : runtimeWriter.commit(originClientId, writerToken, run)
+          )
+        return withRuntimeWriterWrite(() =>
           preserveSessionSizeLimitCode(async () => {
             let result: Awaited<ReturnType<SessionPersistenceHandlers['saveSession']>>
             try {
@@ -810,6 +965,32 @@ const registerDataContentApplicationCommands = (
               { session: result.session, originClientId }
             )
             return result.session
+          })
+        )
+      },
+      'sessions:bind-task-session': (invocation) => {
+        const originClientId = invocation.callerContext.lifecycleClientId
+        return dependencies.withDataRootWrite(() =>
+          preserveSessionSizeLimitCode(async () => {
+            const session = await dependencies.sessions.bindTaskSession(invocation.args[0])
+            publishLifecycle(dependencies.events, LIFECYCLE_CHANNELS.sessionUpdated, {
+              session,
+              originClientId
+            })
+            return session
+          })
+        )
+      },
+      'sessions:admit-task-turn': (invocation) => {
+        const originClientId = invocation.callerContext.lifecycleClientId
+        return dependencies.withDataRootWrite(() =>
+          preserveSessionSizeLimitCode(async () => {
+            const session = await dependencies.sessions.admitTaskTurn(invocation.args[0])
+            publishLifecycle(dependencies.events, LIFECYCLE_CHANNELS.sessionUpdated, {
+              session,
+              originClientId
+            })
+            return session
           })
         )
       },
@@ -909,6 +1090,7 @@ const registerDataContentApplicationCommands = (
       'uploads:delete': (invocation) => dependencies.uploads.deleteUpload(invocation),
       'uploads:finalize-session': (invocation) => dependencies.uploads.finalizeSession(invocation),
       'uploads:finish-transfer': (invocation) => dependencies.uploads.finishTransfer(invocation),
+      'uploads:recover-draft': (invocation) => dependencies.uploads.recoverDraft(invocation),
       'uploads:read-preview': (invocation) => dependencies.uploads.readPreview(invocation),
       'uploads:stage-local-file': (invocation) => {
         assertElectronCaller(invocation, dataContentApplicationCommands.uploadStageLocalFile.name)

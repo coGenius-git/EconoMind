@@ -1,4 +1,7 @@
+import { createSessionBranchSource } from '../../../shared/session-branch-source'
 import type { StoreApi } from 'zustand'
+import { captureSessionConversationIntents } from './session-conversation-intents'
+import { sessionExportLocked, usePackageOperationStore } from './package-operation-store'
 import {
   activateConversationBranch,
   forkEditedConversationMessage,
@@ -46,23 +49,6 @@ const createPendingSessionId = (): string => {
   pendingSessionSequence += 1
   return `pending-session-${Date.now()}-${pendingSessionSequence}`
 }
-const createSessionBranchSource = (
-  source: ChatSession,
-  headMessageId?: string
-): NonNullable<ChatSession['branchSource']> => {
-  const graph = source.conversationGraph
-  const frame = graph?.frames.find((candidate) => candidate.id === graph.activeFrameId)
-  const branch = graph?.branches.find((candidate) => candidate.id === frame?.activeBranchId)
-
-  return {
-    sessionId: source.id,
-    ...(frame ? { agentFrameId: frame.id } : {}),
-    ...(branch ? { messageBranchId: branch.id } : {}),
-    ...((headMessageId ?? branch?.headMessageId)
-      ? { headMessageId: headMessageId ?? branch?.headMessageId }
-      : {})
-  }
-}
 
 export const createSortIndex = (): number => {
   timelineSequence += 1
@@ -78,11 +64,91 @@ export const createSessionMessageGraphOwner = <
   set: StoreApi<State>['setState'],
   get: StoreApi<State>['getState']
 ): SessionMessageGraphActions => ({
+  prepareInterruptedTurnContinuation: (sessionId, promptMessageId, update, contextReset) => {
+    let prepared: { runtimeSegmentId?: string } | undefined
+    set((state) => {
+      const before = state.sessions.find((session) => session.id === sessionId)
+      const sessions: ChatSession[] = state.sessions.map((session) => {
+        const prompt = session.messages.find((message) => message.id === promptMessageId)
+        if (
+          session.id !== sessionId ||
+          prompt?.role !== 'user' ||
+          session.resumeRecovery?.promptMessageId !== promptMessageId ||
+          (session.activeRun && session.activeRun.promptMessageId !== promptMessageId)
+        ) {
+          return session
+        }
+
+        const previousSegment = session.conversationGraph?.runtimeSegments
+          .filter((segment) => segment.agentFrameId === session.conversationGraph?.activeFrameId)
+          .at(-1)
+        const now = Math.max(
+          Date.now(),
+          (session.runtimeTranscriptLastRun?.startedAt ?? 0) + 1,
+          (previousSegment?.startedAt ?? 0) + 1
+        )
+        const withProvider = {
+          ...session,
+          agentFrameworkId: update?.agentFrameworkId ?? session.agentFrameworkId,
+          agentBackendId: update?.agentBackendId ?? session.agentBackendId,
+          providerSessionId: update?.providerSessionId ?? session.providerSessionId,
+          providerContinuityToken:
+            update === undefined ? session.providerContinuityToken : update.providerContinuityToken
+        }
+        const isRetryingPreparedContext = contextReset && session.pendingHistoryReplay !== undefined
+        const conversationGraph = contextReset
+          ? synchronizeSessionGraph(
+              withProvider,
+              withProvider.messages,
+              now,
+              withProvider.agentFrameworkId ?? 'claude-code',
+              withProvider.agentBackendId,
+              withProvider.agentModel,
+              !isRetryingPreparedContext
+            )
+          : withProvider.conversationGraph
+        const runtimeSegmentId = conversationGraph?.runtimeSegments
+          .filter((segment) => segment.agentFrameId === conversationGraph.activeFrameId)
+          .at(-1)?.id
+        prepared = runtimeSegmentId ? { runtimeSegmentId } : {}
+        return {
+          ...withProvider,
+          status: 'running',
+          activeRun: { promptMessageId, startedAt: now },
+          activeRunRuntimeSegmentId: runtimeSegmentId,
+          awaitingFirstAgentOutput: true,
+          agentStatus: undefined,
+          error: undefined,
+          errorReportable: undefined,
+          pendingHistoryReplay: contextReset
+            ? (session.pendingHistoryReplay ?? {
+                kind: 'before-message',
+                messageId: promptMessageId
+              })
+            : session.pendingHistoryReplay,
+          compacting: undefined,
+          conversationGraph,
+          updatedAt: now
+        }
+      })
+      // A recovery is a user command, not a runtime projection. Queue its durable
+      // intent in the same store transition so a flush cannot omit the new run or Segment.
+      captureSessionConversationIntents(
+        before,
+        sessions.find((session) => session.id === sessionId),
+        'resume-run'
+      )
+      return { sessions } as Partial<State>
+    })
+    return prepared
+  },
+
   openContextResetRuntimeSegment: (sessionId) => {
+    const before = get().sessions.find((session) => session.id === sessionId)
     let runtimeSegmentId: string | undefined
     const now = Date.now()
-    set({
-      sessions: get().sessions.map((session) => {
+    set((state) => {
+      const sessions: ChatSession[] = state.sessions.map((session) => {
         if (session.id !== sessionId) return session
         const conversationGraph = synchronizeSessionGraph(
           session,
@@ -103,7 +169,12 @@ export const createSessionMessageGraphOwner = <
           updatedAt: now
         }
       })
-    } as Partial<State>)
+      captureSessionConversationIntents(
+        before,
+        sessions.find((session) => session.id === sessionId)
+      )
+      return { sessions } as Partial<State>
+    })
     return runtimeSegmentId
   },
   appendRoutedUserMessage: ({
@@ -216,6 +287,7 @@ export const createSessionMessageGraphOwner = <
     agentModel,
     agentConfiguration,
     memoryEnabled,
+    autoReviewEnabled,
     delegationPolicy,
     isPending,
     specialistId,
@@ -244,14 +316,17 @@ export const createSessionMessageGraphOwner = <
         return undefined
       }
       if (rearmExisting && existingSession) {
-        const now = Date.now()
+        const now = Math.max(
+          Date.now(),
+          (existingSession?.runtimeTranscriptLastRun?.startedAt ?? 0) + 1,
+          (existingSession?.activeRun?.startedAt ?? 0) + 1
+        )
         const activeRun: ActiveRun = {
           promptMessageId: existingMessage.id,
           startedAt: now
         }
-        set({
-          selectedSessionId: preserveSelection ? state.selectedSessionId : sessionId,
-          sessions: state.sessions.map((session) =>
+        set((current) => {
+          const sessions: ChatSession[] = current.sessions.map((session) =>
             session.id === sessionId
               ? {
                   ...session,
@@ -273,11 +348,23 @@ export const createSessionMessageGraphOwner = <
                 }
               : session
           )
-        } as Partial<State>)
+          captureSessionConversationIntents(
+            existingSession,
+            sessions.find((session) => session.id === sessionId)
+          )
+          return {
+            selectedSessionId: preserveSelection ? current.selectedSessionId : sessionId,
+            sessions
+          } as Partial<State>
+        })
       }
       return { sessionId, messageId: existingMessage.id }
     }
-    const now = Date.now()
+    const now = Math.max(
+      Date.now(),
+      (existingSession?.runtimeTranscriptLastRun?.startedAt ?? 0) + 1,
+      (existingSession?.activeRun?.startedAt ?? 0) + 1
+    )
     const userMessage: ChatMessage = {
       ...buildUserMessage({
         id: stableMessageId ?? createMessageId(),
@@ -308,9 +395,8 @@ export const createSessionMessageGraphOwner = <
               index === replayPromptIndex ? userMessage : message
             )
           : [...existingSession.messages, userMessage]
-      set({
-        selectedSessionId: preserveSelection ? state.selectedSessionId : sessionId,
-        sessions: state.sessions.map((session) =>
+      set((current) => {
+        const sessions: ChatSession[] = current.sessions.map((session) =>
           session.id === sessionId
             ? {
                 ...session,
@@ -348,7 +434,17 @@ export const createSessionMessageGraphOwner = <
               }
             : session
         )
-      } as Partial<State>)
+        // Zustand notifies persistence subscribers as soon as set commits, so publish Main-owned
+        // commands while the updater still owns the before/after pair.
+        captureSessionConversationIntents(
+          existingSession,
+          sessions.find((session) => session.id === sessionId)
+        )
+        return {
+          selectedSessionId: preserveSelection ? current.selectedSessionId : sessionId,
+          sessions
+        } as Partial<State>
+      })
     } else {
       const newSession: ChatSession = {
         id: sessionId,
@@ -368,6 +464,7 @@ export const createSessionMessageGraphOwner = <
         agentModel: normalizedAgentModel,
         ...(agentConfiguration ? { agentConfiguration } : {}),
         memoryEnabled: memoryEnabled !== false,
+        autoReviewEnabled: autoReviewEnabled === true,
         ...(delegationPolicy ? { delegationPolicy } : {}),
         ...(specialistId ? { specialistId } : {}),
         ...(enabledComputeHosts?.length
@@ -543,7 +640,8 @@ export const createSessionMessageGraphOwner = <
     agentFrameworkId,
     agentBackendId,
     providerSessionId,
-    providerContinuityToken
+    providerContinuityToken,
+    wslSetup
   }) => {
     if (!pendingSessionId || !sessionId) return undefined
 
@@ -577,6 +675,7 @@ export const createSessionMessageGraphOwner = <
               agentBackendId: agentBackendId ?? session.agentBackendId,
               providerSessionId: providerSessionId ?? session.providerSessionId,
               providerContinuityToken: providerContinuityToken ?? session.providerContinuityToken,
+              wslSetup,
               updatedAt: now
             }
           : session
@@ -603,10 +702,11 @@ export const createSessionMessageGraphOwner = <
 
   removeMessage: (sessionId, messageId) => {
     if (!sessionId || !messageId) return
+    const before = get().sessions.find((session) => session.id === sessionId)
 
     set((state) => {
       let retainedMessageIds: Set<string> | undefined
-      const sessions = state.sessions.map((session) => {
+      const sessions: ChatSession[] = state.sessions.map((session) => {
         if (session.id !== sessionId) return session
         const cutIndex = session.messages.findIndex((message) => message.id === messageId)
         if (cutIndex < 0) return session
@@ -638,6 +738,10 @@ export const createSessionMessageGraphOwner = <
           updatedAt: now
         }
       })
+      captureSessionConversationIntents(
+        before,
+        sessions.find((session) => session.id === sessionId)
+      )
       return {
         sessions,
         ...(retainedMessageIds
@@ -655,10 +759,11 @@ export const createSessionMessageGraphOwner = <
 
   truncateSessionFromMessage: (sessionId, messageId) => {
     if (!sessionId || !messageId) return
+    const before = get().sessions.find((session) => session.id === sessionId)
 
     set((state) => {
       let retainedMessageIds: Set<string> | undefined
-      const sessions = state.sessions.map((session) => {
+      const sessions: ChatSession[] = state.sessions.map((session) => {
         if (session.id !== sessionId) return session
         const cutIndex = session.messages.findIndex((message) => message.id === messageId)
         if (cutIndex < 0) return session
@@ -711,6 +816,10 @@ export const createSessionMessageGraphOwner = <
           updatedAt: now
         }
       })
+      captureSessionConversationIntents(
+        before,
+        sessions.find((session) => session.id === sessionId)
+      )
       return {
         sessions,
         ...(retainedMessageIds
@@ -739,10 +848,11 @@ export const createSessionMessageGraphOwner = <
 
   reviseSessionFromElicitation: (sessionId, activityId) => {
     if (!sessionId || !activityId) return false
+    const before = get().sessions.find((session) => session.id === sessionId)
     let revised = false
     set((state) => {
       let retainedMessageIds: Set<string> | undefined
-      const sessions = state.sessions.map((session) => {
+      const sessions: ChatSession[] = state.sessions.map((session) => {
         if (session.id !== sessionId) return session
         const projection = projectElicitationRevision(
           session,
@@ -756,6 +866,10 @@ export const createSessionMessageGraphOwner = <
         }
         return projection ?? session
       })
+      captureSessionConversationIntents(
+        before,
+        sessions.find((session) => session.id === sessionId)
+      )
       return {
         sessions,
         ...(retainedMessageIds
@@ -774,12 +888,14 @@ export const createSessionMessageGraphOwner = <
 
   activateMessageBranch: (sessionId, branchId) => {
     if (!sessionId || !branchId) return
+    const before = get().sessions.find((session) => session.id === sessionId)
     set((state) => {
       let retainedMessageIds: Set<string> | undefined
-      const sessions = state.sessions.map((session) => {
+      const sessions: ChatSession[] = state.sessions.map((session) => {
         if (
           session.id !== sessionId ||
           !session.conversationGraph ||
+          sessionExportLocked(usePackageOperationStore.getState().operation, session) ||
           session.activeRun ||
           session.status === 'running' ||
           session.status === 'waiting-for-user' ||
@@ -819,6 +935,10 @@ export const createSessionMessageGraphOwner = <
           updatedAt: Date.now()
         }
       })
+      captureSessionConversationIntents(
+        before,
+        sessions.find((session) => session.id === sessionId)
+      )
       return {
         sessions,
         ...(retainedMessageIds

@@ -1,10 +1,20 @@
+import { annotationTransfers, ANNOTATION_DRAG_TYPE } from './annotations/annotation-transfer'
+import { parseSideChatAnnotationText, type Annotation } from '../../../../shared/annotations'
+import { SideChatPanel } from './SideChatPanel'
 // @vitest-environment jsdom
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import type { PropsWithChildren } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+const { forkSessionMock } = vi.hoisted(() => ({ forkSessionMock: vi.fn(async () => undefined) }))
+vi.mock('@/lib/session-fork', () => ({
+  forkSession: forkSessionMock,
+  sessionForkAvailable: () => true
+}))
+
 import { ConversationPanel } from './ConversationPanel'
+import { useConversationSubmissions } from './use-conversation-submissions'
 import { FOCUS_COMPOSER_EVENT } from './composer-focus-events'
 import { subscribeAnnotationReveal } from './annotations/annotation-reveal'
 import { emptyDoc, type ComposerDoc } from './composer/composer-doc'
@@ -20,12 +30,15 @@ import {
 import {
   useSessionStore,
   createInitialSessionState,
+  createSessionStore,
+  toPersistedSession,
   type ChatSession
 } from '@/stores/session-store'
 import type { ActivePlanProjection } from '../../../../shared/session-plan/contract'
 import type { DelegatedQuestionRequest } from '../../../../shared/session-persistence'
 import { VISION_MODEL_NOT_CONFIGURED_MESSAGE } from '../../../../shared/run-error-classification'
 import { createInitialSettingsState, useSettingsStore } from '@/stores/settings-store'
+import { usePackageOperationStore } from '@/stores/package-operation-store'
 import { useSpecialistStore } from '@/stores/specialist-store'
 
 // React's act() refuses to run unless the environment opts in to act-aware scheduling.
@@ -55,6 +68,7 @@ vi.mock('@/components/ui/dropdown-menu', () => ({
     <div>{children}</div>
   ),
   DropdownMenuSeparator: (): React.JSX.Element => <hr />,
+  DropdownMenuLabel: ({ children }: PropsWithChildren): React.JSX.Element => <div>{children}</div>,
   DropdownMenuItem: ({
     children,
     disabled,
@@ -131,6 +145,11 @@ vi.mock('./ComposerAgentControlsMenu', () => ({
 // Default: no jobs. Override mockHasRunningJobs / mockAllJobs per test.
 let mockHasRunningJobs = false
 let mockAllJobs: unknown[] = []
+let resizeCallbacks: ResizeObserverCallback[] = []
+
+const notifyResize = (): void => {
+  for (const callback of resizeCallbacks) callback([], {} as ResizeObserver)
+}
 
 vi.mock('@/stores/session-job-store', () => ({
   useSessionJobStore: (
@@ -186,17 +205,21 @@ vi.mock('./use-session-background-tasks', async (importOriginal) => ({
 
 vi.mock('./WorkspaceMessageScroller', () => ({
   WorkspaceMessageScroller: ({
+    forkSourceContent,
     credentialPending,
     isResumingSession,
     visiblePermissionPending,
     pendingElicitations = []
   }: {
+    forkSourceContent?: React.ReactNode
     credentialPending?: boolean
     isResumingSession?: boolean
     visiblePermissionPending?: boolean
     pendingElicitations?: unknown[]
   }): React.JSX.Element => (
     <>
+      {forkSourceContent}
+
       {isResumingSession ? (
         <span data-testid="resume-progress-indicator">Resuming session</span>
       ) : null}
@@ -434,6 +457,62 @@ describe('ConversationPanel annotation composer integration', () => {
     expect(cancelQueuedEdit).toHaveBeenCalledOnce()
   })
 
+  it.each([true, false])(
+    'accepts a Side chat annotation into the main composer only after validation (accepted=%s)',
+    (accepted) => {
+      const annotation: Annotation = {
+        id: 'return-annotation',
+        kind: 'text',
+        target: 'agent',
+        quote: 'Return this evidence',
+        source: { kind: 'agent-message', sessionId: 'session-return', messageId: 'message-1' }
+      }
+      const addAnnotation = vi.fn(() => (accepted ? undefined : ('too-many' as const)))
+      const removeSource = vi.fn()
+      const changeDoc = vi.fn()
+      renderPanel({
+        view: {
+          activeSession: {
+            id: 'session-return',
+            projectId: 'project-a',
+            title: 'Main',
+            cwd: '/workspace',
+            status: 'idle',
+            messages: planOriginMessages(),
+            createdAt: 1,
+            updatedAt: 1
+          }
+        },
+        composer: {
+          view: { doc: { nodes: [{ type: 'text', text: 'Keep main draft' }] } },
+          actions: { addAnnotation, changeDoc }
+        }
+      })
+      const unregister = annotationTransfers.register('side-return', {
+        read: () => ({
+          originId: 'side-chat:return',
+          parentSessionId: 'session-return',
+          projectId: 'project-a',
+          annotation
+        }),
+        remove: removeSource
+      })
+      const token = annotationTransfers.begin('side-return')!
+      const event = new Event('drop', { bubbles: true, cancelable: true })
+      Object.defineProperty(event, 'dataTransfer', {
+        value: { types: [ANNOTATION_DRAG_TYPE], getData: () => token }
+      })
+      act(() => {
+        container.querySelector('[data-testid="ordinary-composer-form"]')!.dispatchEvent(event)
+      })
+      expect(addAnnotation).toHaveBeenCalledExactlyOnceWith(annotation)
+      expect(removeSource).toHaveBeenCalledTimes(accepted ? 1 : 0)
+      expect(changeDoc).not.toHaveBeenCalled()
+      unregister()
+      annotationTransfers.cancel()
+    }
+  )
+
   it('renders a compact annotation chip, reveals its source, returns focus on Esc, and removes it', async () => {
     const removeAnnotation = vi.fn()
     renderPanel({
@@ -548,6 +627,7 @@ const createPanelDefaults = (): PanelProps => ({
       historyStatus: '',
       isHistoryBrowsing: false,
       isUploading: false,
+      isWslSetupDraft: false,
       caretRequest: undefined,
       readingContext: {
         bindings: [],
@@ -557,7 +637,9 @@ const createPanelDefaults = (): PanelProps => ({
       }
     },
     actions: {
+      discardWslSetupDraft: vi.fn(() => false),
       changeDoc: vi.fn(),
+      appendLiterature: vi.fn(() => true),
       addAnnotation: vi.fn(),
       updateAnnotationNote: vi.fn(),
       removeAnnotation: vi.fn(),
@@ -565,6 +647,7 @@ const createPanelDefaults = (): PanelProps => ({
       stageFiles: onStageAttachmentFiles,
       stagePastedText: vi.fn(),
       cancelTransfer: vi.fn(),
+      retryTransfer: vi.fn(),
       removeAttachment: vi.fn(),
       restorePastedText: vi.fn(),
       undo: vi.fn(() => false),
@@ -615,9 +698,11 @@ const createPanelDefaults = (): PanelProps => ({
     admitApplicationMessage: vi.fn().mockResolvedValue(undefined)
   },
   sideChat: {
+    createDraft: vi.fn(() => 'side-draft'),
     view: undefined,
     start: vi.fn().mockResolvedValue(false),
     send: vi.fn().mockResolvedValue(false),
+    setModelSelection: vi.fn(),
     setDraft: vi.fn(),
     cancel: vi.fn(),
     close: vi.fn()
@@ -694,6 +779,9 @@ const createPanelDefaults = (): PanelProps => ({
       disabled: false,
       running: false,
       request: vi.fn()
+    },
+    wslSetup: {
+      start: vi.fn().mockResolvedValue(true)
     }
   },
   sessionTools: {
@@ -703,6 +791,12 @@ const createPanelDefaults = (): PanelProps => ({
   },
   subagents: {
     stop: vi.fn()
+  },
+  submissions: {
+    stopBySessionId: new Map(),
+    resumePendingSessionIds: new Set(),
+    submitStop: vi.fn(),
+    submitResume: vi.fn()
   }
 })
 
@@ -726,11 +820,35 @@ const mergePanelProps = (defaults: PanelProps, overrides: DeepPartial<PanelProps
   return merge(defaults, overrides) as PanelProps
 }
 
+const PanelHarness = (props: PanelProps): React.JSX.Element => {
+  const submissions = useConversationSubmissions()
+  return <ConversationPanel {...props} submissions={submissions} />
+}
+
 const renderPanel = (props: DeepPartial<PanelProps> = {}): void => {
   const panelProps = mergePanelProps(createPanelDefaults(), props)
   act(() => {
-    root.render(<ConversationPanel {...panelProps} />)
+    root.render(<PanelHarness {...panelProps} />)
   })
+}
+
+// Transcript presentation tests mount the independent panel directly.
+const renderSidePanel = (props: DeepPartial<PanelProps> = {}): void => {
+  const { sideChat } = mergePanelProps(createPanelDefaults(), props)
+  act(() =>
+    root.render(
+      sideChat.view ? (
+        <SideChatPanel
+          view={sideChat.view}
+          onSend={sideChat.send}
+          onDraftChange={sideChat.setDraft}
+          onAnnotationsChange={sideChat.setAnnotations}
+          onCancel={sideChat.cancel}
+          onClose={sideChat.close}
+        />
+      ) : null
+    )
+  )
 }
 
 const getComposerForm = (): HTMLElement => {
@@ -785,17 +903,172 @@ const dispatchPaste = (files: File[]): boolean => {
   return event.defaultPrevented
 }
 
-const dispatchDrag = (type: string, dataTransferTypes: string[], files: File[] = []): void => {
+const dispatchDrag = (
+  type: string,
+  dataTransferTypes: string[],
+  files: File[] = [],
+  target = getComposerForm()
+): void => {
   const event = new Event(type, { bubbles: true, cancelable: true })
   Object.defineProperty(event, 'dataTransfer', {
     value: { types: dataTransferTypes, files, dropEffect: 'none' }
   })
   act(() => {
-    getComposerForm().dispatchEvent(event)
+    target.dispatchEvent(event)
   })
 }
 
 describe('ConversationPanel header spacing', () => {
+  it('keeps a storage-limit explanation local to the blocked conversation', () => {
+    renderPanel({ view: { persistenceBlocked: true } })
+    expect(container.textContent).toContain('Conversation storage limit reached')
+    expect(container.textContent).toContain('Start a new conversation to keep working.')
+    renderPanel({ view: { persistenceBlocked: false } })
+    expect(container.textContent).not.toContain('Conversation storage limit reached')
+  })
+
+  it('shows background export progress in New conversation and Session workspace', () => {
+    act(() =>
+      usePackageOperationStore.setState({
+        operation: {
+          id: 'background-export',
+          kind: 'export',
+          state: 'running',
+          progress: { phase: 'copying' },
+          session: { projectId: 'project-1', sessionId: 'export-session' }
+        },
+        open: false,
+        dismissedId: undefined
+      })
+    )
+    renderPanel()
+    expect(getConversationHeader().textContent).toContain('New conversation')
+    expect(
+      getConversationHeader().querySelector('[aria-label="Copying files… · View progress"]')
+    ).not.toBeNull()
+
+    renderPanel({
+      view: {
+        activeSession: {
+          id: 'workspace-session',
+          projectId: 'project-1',
+          title: 'Research Session',
+          cwd: '/workspace',
+          status: 'idle',
+          messages: [],
+          createdAt: 1,
+          updatedAt: 1
+        }
+      }
+    })
+    expect(getConversationHeader().textContent).toContain('Research Session')
+    const progress = getConversationHeader().querySelector<HTMLButtonElement>(
+      '[aria-label="Copying files… · View progress"]'
+    )!
+    act(() => progress.click())
+    expect(usePackageOperationStore.getState().open).toBe(true)
+  })
+
+  it('opens diagnostics from the header even while a running Session is not hydrated', () => {
+    const session: ChatSession = {
+      id: 'diagnostic-session',
+      projectId: 'project-1',
+      title: 'Session diagnostics',
+      cwd: '/workspace',
+      status: 'running',
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1,
+      contentLoaded: false
+    }
+    const exportDiagnostics = vi.fn()
+    renderPanel({ view: { activeSession: session }, sessionTools: { exportDiagnostics } })
+    const button = getConversationHeader().querySelector<HTMLButtonElement>(
+      '[aria-label="Export diagnostics…"]'
+    )!
+    expect(button).not.toBeNull()
+    expect(button.disabled).toBe(false)
+    act(() => button.click())
+    expect(exportDiagnostics).toHaveBeenCalledWith(expect.objectContaining({ id: session.id }))
+  })
+
+  it('opens Session information and routes editing through the owner', () => {
+    const session: ChatSession = {
+      id: 'info-session',
+      projectId: 'project-1',
+      title: 'Session details',
+      cwd: '/workspace',
+      status: 'idle',
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1
+    }
+    const editSession = vi.fn()
+    renderPanel({ view: { activeSession: session }, sessionTools: { editSession } })
+    act(() =>
+      getConversationHeader()
+        .querySelector<HTMLButtonElement>('[aria-label^="Session information:"]')!
+        .click()
+    )
+    const edit = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Edit session'
+    )!
+    act(() => edit.click())
+    expect(editSession).toHaveBeenCalledWith(expect.objectContaining({ id: session.id }))
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('forwards the current Session pin action through the information card', async () => {
+    const session: ChatSession = {
+      id: 'pin-info-session',
+      projectId: 'project-1',
+      title: 'Session details',
+      cwd: '/workspace',
+      status: 'idle',
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1
+    }
+    const toggle = vi.fn().mockResolvedValue(undefined)
+    renderPanel({
+      view: { activeSession: session },
+      sessionTools: { togglePin: toggle }
+    })
+    act(() =>
+      getConversationHeader()
+        .querySelector<HTMLButtonElement>('[aria-label^="Session information:"]')!
+        .click()
+    )
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Pin"]')!.click())
+    expect(toggle).toHaveBeenCalledWith(expect.objectContaining({ id: session.id }))
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull()
+  })
+
+  it('closes the information card when switching Sessions', () => {
+    const session: ChatSession = {
+      id: 'first-info-session',
+      projectId: 'project-1',
+      title: 'First Session',
+      cwd: '/workspace',
+      status: 'idle',
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1
+    }
+    renderPanel({ view: { activeSession: session } })
+    act(() =>
+      getConversationHeader()
+        .querySelector<HTMLButtonElement>('[aria-label^="Session information:"]')!
+        .click()
+    )
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull()
+    renderPanel({
+      view: { activeSession: { ...session, id: 'second-info-session', title: 'Second Session' } }
+    })
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+    expect(getConversationHeader().textContent).toContain('Second Session')
+  })
+
   it('keeps stable title spacing independent of sidebar state', () => {
     renderPanel()
 
@@ -956,6 +1229,25 @@ const hasDropOverlay = (): boolean =>
   container.textContent?.includes('Drop files to attach') ?? false
 
 beforeEach(() => {
+  resizeCallbacks = []
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallbacks.push(callback)
+      }
+
+      observe(): void {
+        // Layout is driven explicitly by the test after geometry changes.
+      }
+      unobserve(): void {
+        // Radix releases individual observed elements during cleanup.
+      }
+      disconnect(): void {
+        // No resources are allocated by this test double.
+      }
+    }
+  )
   window.api = {
     notebook: {
       state: vi.fn().mockResolvedValue({ runs: [] }),
@@ -970,6 +1262,7 @@ beforeEach(() => {
   respondToSessionPlanMock.mockReset().mockResolvedValue(undefined)
   usePreviewWorkbenchStore.setState(createInitialPreviewWorkbenchState())
   useSettingsStore.setState(createInitialSettingsState())
+  usePackageOperationStore.setState({ operation: null, open: false, dismissedId: undefined })
   useSpecialistStore.setState({ items: [], isLoaded: true })
   mockHasRunningJobs = false
   mockAllJobs = []
@@ -1312,6 +1605,83 @@ describe('ConversationPanel composer intake', () => {
     expect(document.activeElement).toBe(getComposerEditor())
   })
 
+  it('returns keyboard focus from a control to the composer on Escape', () => {
+    renderPanel()
+    const button = container.querySelector<HTMLButtonElement>('[aria-label="Open navigation"]')!
+    button.focus()
+    act(() => {
+      button.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+      )
+    })
+    expect(document.activeElement).toBe(getComposerEditor())
+  })
+
+  it('dismisses a focused tooltip and returns to the composer with one Escape', () => {
+    renderPanel()
+    const button = container.querySelector<HTMLButtonElement>('[aria-label="Open navigation"]')!
+    const tooltip = document.createElement('span')
+    tooltip.id = 'escape-tooltip'
+    tooltip.setAttribute('role', 'tooltip')
+    document.body.append(tooltip)
+    button.setAttribute('aria-describedby', tooltip.id)
+    button.focus()
+    const dismissTooltip = (event: KeyboardEvent): void => {
+      event.preventDefault()
+      tooltip.remove()
+    }
+    document.addEventListener('keydown', dismissTooltip, { capture: true, once: true })
+    act(() =>
+      button.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+      )
+    )
+    expect(document.activeElement).toBe(getComposerEditor())
+    expect(tooltip.isConnected).toBe(false)
+  })
+
+  it.each([
+    'handled',
+    'composing',
+    'modified',
+    'pointer',
+    'blocked',
+    'disabled',
+    'dialog',
+    'menu',
+    'editable'
+  ])('keeps Escape with its current owner (%s)', (owner) => {
+    renderPanel({
+      ...(owner === 'blocked'
+        ? { permissions: { requests: [{ requestId: 'escape-blocked' } as never] } }
+        : {}),
+      ...(owner === 'disabled' ? { view: { canEditDraft: false } } : {})
+    })
+    const region = document.createElement('div')
+    const target = document.createElement(owner === 'editable' ? 'input' : 'button')
+    if (owner === 'dialog' || owner === 'menu') region.setAttribute('role', owner)
+    region.append(target)
+    document.body.append(region)
+    target.focus()
+    const matches =
+      owner === 'pointer' ? vi.spyOn(target, 'matches').mockReturnValue(false) : undefined
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      cancelable: true,
+      isComposing: owner === 'composing',
+      ctrlKey: owner === 'modified'
+    })
+    if (owner === 'handled') event.preventDefault()
+    try {
+      act(() => target.dispatchEvent(event))
+      expect(document.activeElement).toBe(target)
+    } finally {
+      matches?.mockRestore()
+      region.remove()
+    }
+  })
+
   it('does not focus the hidden composer while a blocking interaction owns its lane', () => {
     renderPanel({
       view: {
@@ -1334,6 +1704,39 @@ describe('ConversationPanel composer intake', () => {
 
     expectComposerCoveredByBlockingOverlay()
     expect(document.activeElement).toBe(navigationButton)
+  })
+
+  it.each([false, true])(
+    'does not replay composer focus after permission approval (preview focus: %s)',
+    (previewFocus) => {
+      renderPanel({ view: { composerFocusKey: 'session-a' } })
+      if (previewFocus) {
+        act(() => window.dispatchEvent(new CustomEvent(FOCUS_COMPOSER_EVENT)))
+      }
+      const navigationButton = container.querySelector<HTMLButtonElement>(
+        '[aria-label="Open navigation"]'
+      )!
+      navigationButton.focus()
+      renderPanel({
+        view: { composerFocusKey: 'session-a' },
+        permissions: { requests: [{ requestId: 'permission-focus' } as never] }
+      })
+      expectComposerCoveredByBlockingOverlay()
+      renderPanel({ view: { composerFocusKey: 'session-a' } })
+      expect(document.activeElement).toBe(navigationButton)
+    }
+  )
+
+  it('does not focus the composer when opening a pending permission then approving it', () => {
+    renderPanel({
+      view: { composerFocusKey: 'session-blocked' },
+      permissions: { requests: [{ requestId: 'permission-focus' } as never] }
+    })
+    expect(document.activeElement).not.toBe(getComposerEditor())
+    renderPanel({ view: { composerFocusKey: 'session-blocked' } })
+    expect(document.activeElement).not.toBe(getComposerEditor())
+    act(() => window.dispatchEvent(new CustomEvent(FOCUS_COMPOSER_EVENT)))
+    expect(document.activeElement).toBe(getComposerEditor())
   })
 
   it('does not refocus the composer when draft editing becomes available', () => {
@@ -2420,6 +2823,39 @@ describe('ConversationPanel composer intake', () => {
     expect(container.querySelector('[data-testid="menu-view-plan"]')).not.toBeNull()
   })
 
+  it('offers retry only for a failed attachment whose source is still available', () => {
+    const retryTransfer = vi.fn()
+    const failed = {
+      transferId: 'failed',
+      name: 'failed.csv',
+      receivedBytes: 0,
+      totalBytes: 12,
+      status: 'error' as const,
+      canRetry: true,
+      error: 'Upload failed',
+      errorDetail: 'disk full'
+    }
+    renderPanel({
+      composer: {
+        view: {
+          transfers: [
+            failed,
+            { ...failed, transferId: 'restored', name: 'restored.csv', canRetry: false }
+          ]
+        },
+        actions: { retryTransfer }
+      }
+    })
+    const retry = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Retry attachment failed.csv"]'
+    )
+    expect(retry).not.toBeNull()
+    expect(container.querySelector('[aria-label="Retry attachment restored.csv"]')).toBeNull()
+    expect(container.querySelector('[title="disk full"]')).not.toBeNull()
+    act(() => retry?.click())
+    expect(retryTransfer).toHaveBeenCalledExactlyOnceWith(failed)
+  })
+
   it('shows per-file progress and cancels only the selected transfer', () => {
     const onCancelAttachmentTransfer = vi.fn()
     const transfer = {
@@ -2565,6 +3001,20 @@ describe('ConversationPanel composer intake', () => {
     expect(hasDropOverlay()).toBe(false)
   })
 
+  it.each(['workspace-file-drop-zone', 'conversation-header'])(
+    'stages files dropped on %s outside the composer',
+    (testId) => {
+      renderPanel()
+      const target = container.querySelector(`[data-testid="${testId}"]`) as HTMLElement
+      const file = new File(['data'], 'paper.pdf', { type: 'application/pdf' })
+      dispatchDrag('dragenter', ['Files'], [], target)
+      expect(hasDropOverlay()).toBe(true)
+      dispatchDrag('drop', ['Files'], [file], target)
+      expect(onStageAttachmentFiles).toHaveBeenCalledExactlyOnceWith([file])
+      expect(hasDropOverlay()).toBe(false)
+    }
+  )
+
   it('ignores plain-text drags with no overlay and no upload', () => {
     renderPanel()
 
@@ -2584,6 +3034,29 @@ describe('ConversationPanel composer intake', () => {
 
     dispatchDrag('dragenter', ['Files'])
     expect(hasDropOverlay()).toBe(false)
+    dispatchDrag('drop', ['Files'], [new File(['data'], 'data.csv')])
+    expect(onStageAttachmentFiles).not.toHaveBeenCalled()
+    expect(container.textContent).toContain('Files cannot be attached right now.')
+  })
+
+  it('does not stage workspace files while an attachment upload is in progress', () => {
+    renderPanel({ composer: { view: { isUploading: true } } })
+    const target = container.querySelector(
+      '[data-testid="workspace-file-drop-zone"]'
+    ) as HTMLElement
+    dispatchDrag('dragenter', ['Files'], [], target)
+    expect(hasDropOverlay()).toBe(false)
+    dispatchDrag('drop', ['Files'], [new File(['data'], 'data.csv')], target)
+    expect(onStageAttachmentFiles).not.toHaveBeenCalled()
+  })
+
+  it('does not stage workspace files into a composer covered by permission approval', () => {
+    renderPanel({ permissions: { requests: [{} as never] } })
+    const target = container.querySelector(
+      '[data-testid="workspace-file-drop-zone"]'
+    ) as HTMLElement
+    dispatchDrag('drop', ['Files'], [new File(['data'], 'data.csv')], target)
+    expect(onStageAttachmentFiles).not.toHaveBeenCalled()
   })
 
   it('submits on Enter through the editor with the picked skill ids', () => {
@@ -2609,6 +3082,90 @@ describe('ConversationPanel composer intake', () => {
 
     // A plain-text draft carries no chips, so the send handler receives an empty id list.
     expect(onSendMessage).toHaveBeenCalledWith([])
+  })
+
+  it('handles exact /setup-wsl as a product command instead of sending ordinary text', async () => {
+    const start = vi.fn().mockResolvedValue(true)
+    const submit = vi.fn()
+    window.api.settings = {
+      getWsl2BashPreviewStatus: vi.fn().mockResolvedValue({
+        available: true,
+        reason: 'available'
+      })
+    } as unknown as typeof window.api.settings
+    renderPanel({
+      composer: { view: { doc: { nodes: [{ type: 'text', text: '/setup-wsl' }] } } },
+      conversation: {
+        availability: { submit: true },
+        actions: { submit: { draft: submit } }
+      },
+      workflows: { wslSetup: { start } }
+    })
+
+    await act(async () => {
+      getComposerEditor().dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+      )
+    })
+
+    expect(start).toHaveBeenCalledOnce()
+    expect(submit).not.toHaveBeenCalled()
+  })
+
+  it('shows the setup draft boundary and an explicit Settings activation action', () => {
+    renderPanel({
+      composer: { view: { isWslSetupDraft: true } }
+    })
+
+    expect(
+      container.querySelector('[data-testid="wsl-setup-conversation-actions"]')?.textContent
+    ).toContain('Review the diagnostics')
+    expect(container.textContent).toContain('Check and activate in Settings')
+  })
+
+  it('lets the user discard an unsent WSL2 setup draft from its inline card', () => {
+    const discardWslSetupDraft = vi.fn(() => true)
+    renderPanel({
+      composer: {
+        view: { isWslSetupDraft: true },
+        actions: { discardWslSetupDraft }
+      }
+    })
+
+    const discard = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(
+        '[data-testid="wsl-setup-conversation-actions"] button'
+      )
+    ).find((button) => button.textContent === 'Discard setup draft')
+    expect(discard).toBeDefined()
+
+    act(() => discard?.click())
+    expect(discardWslSetupDraft).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the Settings activation action visible for a Main-confirmed setup session', () => {
+    renderPanel({
+      view: {
+        activeSession: {
+          id: 'wsl-setup-session',
+          projectId: 'project-a',
+          title: 'WSL setup',
+          cwd: '/workspace',
+          status: 'idle',
+          messages: [],
+          createdAt: 1,
+          updatedAt: 1,
+          wslSetup: true
+        }
+      },
+      composer: { view: { isWslSetupDraft: false } }
+    })
+
+    expect(container.querySelector('[data-testid="wsl-setup-conversation-actions"]')).not.toBeNull()
+    expect(container.textContent).toContain('This is a guided WSL2 setup conversation.')
+    expect(container.textContent).not.toContain('This draft will open')
+    expect(container.textContent).toContain('Check and activate in Settings')
+    expect(container.textContent).not.toContain('Discard setup draft')
   })
 
   it('offers Plan first for a text draft in a new conversation while Branch stays disabled', () => {
@@ -2758,6 +3315,107 @@ describe('ConversationPanel composer intake', () => {
     expect(controls?.getAttribute('data-specialist-read-only')).toBe('false')
   })
 
+  it('keeps Compute Host controls read-only before a failed Session binds', () => {
+    renderPanel({
+      view: {
+        activeSession: {
+          id: 'pending-session-1',
+          projectId: 'project-a',
+          title: 'Failed connection',
+          cwd: '/workspace',
+          status: 'error',
+          isPending: true,
+          messages: [],
+          createdAt: 1,
+          updatedAt: 1
+        }
+      },
+      agentControls: { canChange: true }
+    })
+
+    expect(
+      container.querySelector('[data-testid="mock-agent-controls"]')?.getAttribute('data-read-only')
+    ).toBe('true')
+    expect(container.querySelector('[data-testid="mock-model-picker"]')).not.toBeNull()
+  })
+
+  it.each([undefined, { kind: 'all' }, { kind: 'before-message', messageId: 'user-1' }] as const)(
+    'opens an empty side chat directly with pending replay %j',
+    (pendingHistoryReplay) => {
+      const createDraft = vi.fn(() => 'empty-side-chat')
+      const start = vi.fn()
+      renderPanel({
+        view: {
+          activeSession: {
+            id: 'existing',
+            projectId: 'project-a',
+            title: 'Existing',
+            cwd: '/workspace',
+            status: 'idle',
+            pendingHistoryReplay,
+            messages: planOriginMessages(),
+            createdAt: 1,
+            updatedAt: 2
+          }
+        },
+        sideChat: { createDraft },
+        conversation: { availability: { submit: false }, actions: { sideChat: { start } } },
+        composer: { view: { doc: { nodes: [] } } }
+      })
+      const button = container.querySelector('[data-testid="menu-side-chat"]') as HTMLButtonElement
+      expect(button.disabled).toBe(false)
+      const menu = container.querySelector(
+        '[data-testid="branch-send-menu-trigger"]'
+      ) as HTMLButtonElement
+      const send = container.querySelector('[aria-label="Send message"]') as HTMLButtonElement
+      expect(menu.disabled).toBe(false)
+      expect(
+        menu.closest('[aria-label="Send message options"]')?.classList.contains('opacity-50')
+      ).toBe(false)
+      expect(send.disabled).toBe(true)
+      expect(send.classList.contains('disabled:opacity-50')).toBe(true)
+      act(() => button.click())
+      expect(createDraft).toHaveBeenCalledOnce()
+      expect(start).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each([
+    undefined,
+    {
+      id: 'empty',
+      projectId: 'project-a',
+      title: 'New session',
+      cwd: '/workspace',
+      status: 'idle' as const,
+      messages: [],
+      createdAt: 1,
+      updatedAt: 2
+    }
+  ])(
+    'disables side chat and its empty menu before the main conversation begins: %j',
+    (activeSession) => {
+      const createDraft = vi.fn()
+      renderPanel({
+        view: { activeSession },
+        sideChat: { createDraft },
+        conversation: { availability: { submit: false } },
+        composer: { view: { doc: { nodes: [] } } }
+      })
+      const menu = container.querySelector(
+        '[data-testid="branch-send-menu-trigger"]'
+      ) as HTMLButtonElement
+      const side = container.querySelector('[data-testid="menu-side-chat"]') as HTMLButtonElement
+      expect(menu.disabled).toBe(true)
+      expect(side.getAttribute('aria-disabled')).toBe('true')
+      expect(
+        menu.closest('[aria-label="Send message options"]')?.classList.contains('opacity-50')
+      ).toBe(true)
+      act(() => side.click())
+      expect(createDraft).not.toHaveBeenCalled()
+    }
+  )
+
   it('offers Side chat between Plan first and Branch for a text-only existing Session draft', () => {
     const onStartSideChat = vi.fn()
     const session: ChatSession = {
@@ -2804,10 +3462,59 @@ describe('ConversationPanel composer intake', () => {
     const side = container.querySelector('[data-testid="menu-side-chat"]') as HTMLButtonElement
 
     expect(items).toEqual(['menu-plan-first', 'menu-side-chat', 'menu-branch-in-new-session'])
-    expect(side.disabled).toBe(false)
+    expect(container.querySelectorAll('[data-testid="menu-side-chat"]')).toHaveLength(1)
+    expect(container.querySelector('[data-testid="menu-send-side-chat"]')).toBeNull()
+    expect(side.textContent).toBe('New side chat')
+    expect(container.textContent).toContain('Send draft to Side chat')
+    expect(side.getAttribute('aria-disabled')).toBe('false')
     act(() => side.click())
     expect(onStartSideChat).toHaveBeenCalledOnce()
   })
+
+  it.each([true, false])(
+    'sends annotation-only Side chat drafts and preserves rejected annotations (admitted=%s)',
+    async (admitted) => {
+      const annotation: Annotation = {
+        id: 'side-quote',
+        kind: 'text',
+        target: 'agent',
+        quote: 'Quoted evidence',
+        note: 'Discuss this',
+        source: { kind: 'agent-message', sessionId: 'session-existing', messageId: 'message-1' }
+      }
+      const send = vi.fn<(text: string) => Promise<boolean>>().mockResolvedValue(admitted)
+      const setAnnotations = vi.fn()
+      renderSidePanel({
+        sideChat: {
+          view: {
+            generation: 1,
+            parentSessionId: 'session-existing',
+            projectId: 'project-a',
+            sideSessionId: 'side-existing',
+            draft: '',
+            annotations: [annotation],
+            running: false,
+            entries: []
+          },
+          send,
+          setAnnotations
+        }
+      })
+      expect(container.textContent).toContain('Discuss this')
+      const button = container.querySelector<HTMLButtonElement>(
+        '[aria-label="Send Side chat follow up"]'
+      )!
+      expect(button.disabled).toBe(false)
+      await act(async () => button.click())
+      expect(parseSideChatAnnotationText(send.mock.calls[0][0])).toMatchObject({
+        text: '',
+        items: [{ content: 'Quoted evidence', instruction: 'Discuss this' }]
+      })
+      expect(setAnnotations).toHaveBeenNthCalledWith(1, [])
+      if (!admitted) expect(setAnnotations.mock.calls[1][0]([])).toEqual([annotation])
+      else expect(setAnnotations).toHaveBeenCalledOnce()
+    }
+  )
 
   it('offers Side chat for an annotation-only existing Session draft', () => {
     const onStartSideChat = vi.fn()
@@ -2849,7 +3556,7 @@ describe('ConversationPanel composer intake', () => {
     })
 
     const side = container.querySelector('[data-testid="menu-side-chat"]') as HTMLButtonElement
-    expect(side.disabled).toBe(false)
+    expect(side.getAttribute('aria-disabled')).toBe('false')
     act(() => side.click())
     expect(onStartSideChat).toHaveBeenCalledOnce()
   })
@@ -2892,7 +3599,7 @@ describe('ConversationPanel composer intake', () => {
     ) as HTMLButtonElement
     const item = container.querySelector('[data-testid="menu-side-chat"]') as HTMLButtonElement
     expect(trigger.disabled).toBe(false)
-    expect(item.disabled).toBe(false)
+    expect(item.getAttribute('aria-disabled')).toBe('false')
     const focusReturn = new FocusEvent('focusin', { bubbles: true, cancelable: true })
     act(() => trigger.dispatchEvent(focusReturn))
     expect(focusReturn.defaultPrevented).toBe(true)
@@ -2901,7 +3608,7 @@ describe('ConversationPanel composer intake', () => {
   })
 
   it.each(['waiting-for-user', 'waiting-permission'] as const)(
-    'keeps Side chat disabled while the main Session is %s',
+    'does not expose a new Side chat entry while the main Session is %s',
     (status) => {
       const onStartSideChat = vi.fn()
       renderPanel({
@@ -2935,18 +3642,16 @@ describe('ConversationPanel composer intake', () => {
         }
       })
 
-      const trigger = container.querySelector(
-        '[data-testid="running-side-chat-menu-trigger"]'
-      ) as HTMLButtonElement
-      const item = container.querySelector('[data-testid="menu-side-chat"]') as HTMLButtonElement
-      expect(trigger.disabled).toBe(true)
-      expect(item.disabled).toBe(true)
-      act(() => item.click())
+      expect(container.querySelector('[data-testid="blocked-composer-side-chat"]')).toBeNull()
+      expect(
+        container.querySelector('[data-testid="blocking-composer-overlay"]')?.textContent
+      ).not.toContain('New side chat')
+      expectComposerCoveredByBlockingOverlay()
       expect(onStartSideChat).not.toHaveBeenCalled()
     }
   )
 
-  it('keeps Side chat disabled while the main Session is waiting-plan-approval', () => {
+  it('does not expose a new Side chat entry while the main Session is waiting-plan-approval', () => {
     const onStartSideChat = vi.fn()
     renderPanel({
       view: {
@@ -2979,49 +3684,87 @@ describe('ConversationPanel composer intake', () => {
       }
     })
 
-    const item = container.querySelector('[data-testid="menu-side-chat"]') as HTMLButtonElement
-    expect(item.disabled).toBe(true)
-    act(() => item.click())
+    expect(container.querySelector('[data-testid="blocked-composer-side-chat"]')).toBeNull()
+    expect(
+      container.querySelector('[data-testid="blocking-composer-overlay"]')?.textContent
+    ).not.toContain('New side chat')
+    expectComposerCoveredByBlockingOverlay()
     expect(onStartSideChat).not.toHaveBeenCalled()
   })
 
-  it('explains why strict Side chat is unavailable for an unsupported backend', () => {
-    const reason = 'Strict tool isolation is unavailable.'
-    renderPanel({
-      view: {
-        activeSession: {
-          id: 'session-existing',
-          projectId: 'project-a',
-          title: 'Existing session',
-          cwd: '/workspace',
-          status: 'idle',
-          messages: planOriginMessages(),
-          createdAt: 1,
-          updatedAt: 2
-        },
-        sideChatDisabledReason: reason
-      },
-      conversation: {
-        availability: {
-          submit: true
-        },
-        actions: {
-          sideChat: {
-            start: vi.fn()
-          }
-        }
-      },
-      composer: {
-        view: {
-          doc: { nodes: [{ type: 'text', text: 'Ask on the side' }] }
-        }
-      }
-    })
+  it('does not render an attachment entry in the Side chat composer', () => {
+    renderSidePanel()
 
-    const item = container.querySelector('[data-testid="menu-side-chat"]') as HTMLButtonElement
-    expect(item.disabled).toBe(true)
-    expect(item.textContent).toContain(reason)
+    expect(container.querySelector('[data-testid="side-chat-plus-button"]')).toBeNull()
+    expect(container.textContent).not.toContain('Attachments are unavailable in Side chat')
   })
+
+  it.each(['unavailable', 'attachment'])(
+    'opens an empty Side chat and preserves the main draft for %s',
+    (block) => {
+      const reason = block === 'unavailable' ? 'Strict tool isolation is unavailable.' : undefined
+      const createDraft = vi.fn(() => 'empty-side')
+      const start = vi.fn()
+      const changeDoc = vi.fn()
+      const removeAttachment = vi.fn()
+      renderPanel({
+        sideChat: { createDraft },
+        view: {
+          activeSession: {
+            id: 'session-existing',
+            projectId: 'project-a',
+            title: 'Existing session',
+            cwd: '/workspace',
+            status: 'idle',
+            messages: planOriginMessages(),
+            createdAt: 1,
+            updatedAt: 2
+          },
+          sideChatDisabledReason: reason
+        },
+        conversation: {
+          availability: {
+            submit: true
+          },
+          actions: {
+            sideChat: {
+              start
+            }
+          }
+        },
+        composer: {
+          view: {
+            doc: { nodes: [{ type: 'text', text: 'Ask on the side' }] },
+            attachments:
+              block === 'attachment'
+                ? [
+                    {
+                      id: 'upload-side',
+                      sessionId: 'session-existing',
+                      name: 'evidence.txt',
+                      originalName: 'evidence.txt',
+                      path: '/uploads/evidence.txt',
+                      mimeType: 'text/plain',
+                      size: 10
+                    }
+                  ]
+                : []
+          },
+          actions: { changeDoc, removeAttachment }
+        }
+      })
+
+      const item = container.querySelector('[data-testid="menu-side-chat"]') as HTMLButtonElement
+      expect(item.getAttribute('aria-disabled')).toBe('false')
+      expect(item.textContent).toBe('New side chat')
+      expect(container.textContent).toContain('Opens an empty Side chat; keeps your draft.')
+      act(() => item.click())
+      expect(createDraft).toHaveBeenCalledOnce()
+      expect(start).not.toHaveBeenCalled()
+      expect(changeDoc).not.toHaveBeenCalled()
+      expect(removeAttachment).not.toHaveBeenCalled()
+    }
+  )
 
   it('offers an explicit retry when Side chat hydration fails', () => {
     const retryHydration = vi.fn()
@@ -3053,10 +3796,12 @@ describe('ConversationPanel composer intake', () => {
       }
     })
 
-    const item = container.querySelector('[data-testid="menu-side-chat"]') as HTMLButtonElement
+    const item = container.querySelector(
+      '[data-testid="menu-retry-side-chat"]'
+    ) as HTMLButtonElement
     expect(item.disabled).toBe(false)
     expect(item.textContent).toContain('Retry Side chat restore')
-    expect(item.textContent).toContain(reason)
+    expect(container.textContent).toContain('Opens an empty Side chat; keeps your draft.')
 
     act(() => item.click())
 
@@ -3096,11 +3841,11 @@ describe('ConversationPanel composer intake', () => {
     })
 
     expect(
-      (container.querySelector('[data-testid="menu-side-chat"]') as HTMLButtonElement).disabled
-    ).toBe(true)
+      container.querySelector('[data-testid="menu-side-chat"]')?.getAttribute('aria-disabled')
+    ).toBe('true')
   })
 
-  it('covers the ordinary composer with an overlay Side chat panel', () => {
+  it('keeps the ordinary composer available while Side chat runs in its own panel', () => {
     const onCloseSideChat = vi.fn()
     renderPanel({
       sessionTools: {
@@ -3131,62 +3876,10 @@ describe('ConversationPanel composer intake', () => {
       }
     })
 
-    const panel = container.querySelector('[data-testid="side-chat-panel"]')
-    const surface = container.querySelector('[data-testid="side-chat-panel-scroll"]')
-    const resizeHandle = container.querySelector('[aria-label="Resize Side chat panel"]')
-
-    expect(panel).not.toBeNull()
-    expect(panel?.classList.contains('relative')).toBe(true)
-    expect(panel?.classList.contains('absolute')).toBe(false)
-    expect(panel?.classList.contains('pt-0')).toBe(true)
-    expect(resizeHandle?.classList.contains('-translate-y-1/2')).toBe(true)
-    expect(resizeHandle?.classList.contains('bg-gradient-to-b')).toBe(true)
-    expect(surface?.classList.contains('overflow-hidden')).toBe(true)
-    expect(surface?.classList.contains('shadow-none')).toBe(true)
-    expect(surface?.classList.contains('shadow-sm')).toBe(false)
-    expectComposerChromeCovered('[aria-label="Open notebook"]')
-    expectComposerCoveredByBlockingOverlay()
-    const sideChatPanel = panel as HTMLElement
-    const plus = sideChatPanel.querySelector('[data-testid="side-chat-plus-button"]')
-    const agentControls = sideChatPanel.querySelector('[data-testid="mock-agent-controls"]')
-    const modelPicker = sideChatPanel.querySelector('[data-testid="mock-model-picker"]')
-    expect(plus?.getAttribute('aria-disabled')).toBe('true')
-    expect((plus as HTMLButtonElement).disabled).toBe(false)
-    expect(agentControls?.getAttribute('data-read-only')).toBe('true')
-    expect(agentControls?.getAttribute('data-permission-read-only')).toBe('true')
-    expect(agentControls?.getAttribute('data-grants-read-only')).toBe('true')
-    expect(agentControls?.getAttribute('data-auto-review-disabled')).toBe('true')
-    expect(agentControls?.getAttribute('data-specialist-read-only')).toBe('true')
-    expect(modelPicker).toBeNull()
-    const followUp = container.querySelector('textarea[placeholder="Follow up…"]')
-    expect(followUp).not.toBeNull()
-    expect(document.activeElement).toBe(followUp)
-    act(() =>
-      (container.querySelector('[aria-label="Close Side chat"]') as HTMLButtonElement).click()
-    )
-    expect(onCloseSideChat).toHaveBeenCalledOnce()
-    renderPanel({
-      sideChat: {
-        close: onCloseSideChat
-      }
-    })
-    expect(document.activeElement).toBe(getComposerEditor())
-
-    const navigationButton = container.querySelector<HTMLButtonElement>(
-      '[aria-label="Open navigation"]'
-    )!
-    navigationButton.focus()
-    renderPanel({
-      view: {
-        composerFocusKey: 'session-blocked-after-side-chat'
-      },
-      permissions: {
-        requests: [{ requestId: 'permission-after-side-chat' } as never]
-      }
-    })
-
-    expectComposerCoveredByBlockingOverlay()
-    expect(document.activeElement).toBe(navigationButton)
+    expect(container.querySelector('[data-testid="side-chat-panel"]')).toBeNull()
+    expect(container.querySelector('[data-testid="blocking-composer-overlay"]')).toBeNull()
+    expect(getComposerForm().getAttribute('aria-hidden')).not.toBe('true')
+    expect(getComposerEditor()).not.toBeNull()
   })
 
   it('keeps the Side chat input fixed and pins streamed output to the bottom', () => {
@@ -3198,7 +3891,7 @@ describe('ConversationPanel composer intake', () => {
         close: vi.fn()
       }
     }
-    renderPanel({
+    renderSidePanel({
       ...sideChatProps,
       sideChat: {
         ...sideChatProps.sideChat,
@@ -3228,11 +3921,6 @@ describe('ConversationPanel composer intake', () => {
     const topFade = container.querySelector('[data-testid="side-chat-message-fade-top"]')
     const bottomFade = container.querySelector('[data-testid="side-chat-message-fade-bottom"]')
 
-    expect(
-      container
-        .querySelector('[data-testid="side-chat-panel"]')
-        ?.classList.contains('h-[min(70dvh,44rem)]')
-    ).toBe(true)
     expect(viewport.previousElementSibling).toBe(header)
     expect(viewport.nextElementSibling).toBe(composer)
     expect(messageScroll.parentElement).toBe(viewport)
@@ -3249,7 +3937,7 @@ describe('ConversationPanel composer intake', () => {
     })
     messageScrollViewport.scrollTop = 0
 
-    renderPanel({
+    renderSidePanel({
       ...sideChatProps,
       sideChat: {
         ...sideChatProps.sideChat,
@@ -3267,6 +3955,7 @@ describe('ConversationPanel composer intake', () => {
         }
       }
     })
+    notifyResize()
 
     const followUp = container.querySelector(
       'textarea[placeholder="Follow up…"]'
@@ -3301,7 +3990,7 @@ describe('ConversationPanel composer intake', () => {
         ]
       }
     }
-    renderPanel({ sideChat })
+    renderSidePanel({ sideChat })
     const viewport = container.querySelector(
       '[data-testid="side-chat-message-scroll"] [data-slot="scroll-area-viewport"]'
     ) as HTMLDivElement
@@ -3313,7 +4002,7 @@ describe('ConversationPanel composer intake', () => {
     act(() => viewport.dispatchEvent(new Event('scroll', { bubbles: true })))
     viewport.scrollTop = 200
     act(() => viewport.dispatchEvent(new Event('scroll', { bubbles: true })))
-    renderPanel({
+    renderSidePanel({
       sideChat: {
         ...sideChat,
         view: {
@@ -3339,7 +4028,7 @@ describe('ConversationPanel composer intake', () => {
       await i18next.changeLanguage('zh-Hans')
     })
     try {
-      renderPanel({
+      renderSidePanel({
         sideChat: {
           send: vi.fn(async () => true),
           setDraft: vi.fn(),
@@ -3391,7 +4080,7 @@ describe('ConversationPanel composer intake', () => {
       entries
     })
 
-    renderPanel({
+    renderSidePanel({
       ...sideChatProps,
       sideChat: {
         ...sideChatProps.sideChat,
@@ -3411,7 +4100,7 @@ describe('ConversationPanel composer intake', () => {
     expect(container.textContent).not.toContain('"items"')
     expect(container.querySelectorAll('[data-side-chat-annotation-card]')).toHaveLength(2)
 
-    renderPanel({
+    renderSidePanel({
       ...sideChatProps,
       sideChat: {
         ...sideChatProps.sideChat,
@@ -3466,7 +4155,7 @@ describe('ConversationPanel composer intake', () => {
       }
     ]
 
-    renderPanel({
+    renderSidePanel({
       ...sideChatProps,
       sideChat: {
         ...sideChatProps.sideChat,
@@ -3481,7 +4170,7 @@ describe('ConversationPanel composer intake', () => {
         }
       }
     })
-    renderPanel({
+    renderSidePanel({
       ...sideChatProps,
       sideChat: {
         ...sideChatProps.sideChat,
@@ -3517,7 +4206,7 @@ describe('ConversationPanel composer intake', () => {
       text: 'Next'
     }
 
-    renderPanel({
+    renderSidePanel({
       ...sideChatProps,
       sideChat: {
         ...sideChatProps.sideChat,
@@ -3591,14 +4280,14 @@ describe('ConversationPanel composer intake', () => {
       entries: [userEntry, assistantEntry]
     }
 
-    renderPanel({
+    renderSidePanel({
       ...sideChatProps,
       sideChat: {
         ...sideChatProps.sideChat,
         view: { ...sideChat, entries: [userEntry] }
       }
     })
-    renderPanel({
+    renderSidePanel({
       ...sideChatProps,
       sideChat: {
         ...sideChatProps.sideChat,
@@ -3609,8 +4298,8 @@ describe('ConversationPanel composer intake', () => {
     expect(container.textContent).toContain('R')
     expect(container.textContent).not.toContain(assistantEntry.text)
 
-    renderPanel()
-    renderPanel({
+    renderSidePanel()
+    renderSidePanel({
       ...sideChatProps,
       sideChat: {
         ...sideChatProps.sideChat,
@@ -3621,7 +4310,7 @@ describe('ConversationPanel composer intake', () => {
     expect(container.textContent).toContain(assistantEntry.text)
 
     const continuedAnswer = `${assistantEntry.text}, then continue`
-    renderPanel({
+    renderSidePanel({
       ...sideChatProps,
       sideChat: {
         ...sideChatProps.sideChat,
@@ -3636,7 +4325,7 @@ describe('ConversationPanel composer intake', () => {
     expect(container.textContent).toContain(`${assistantEntry.text},`)
   })
 
-  it('keeps main approval and ask-user surfaces waiting while Side chat is open', () => {
+  it('keeps main approval and ask-user surfaces available while Side chat is open', () => {
     const activeSession: ChatSession = {
       id: 'session-existing',
       projectId: 'project-a',
@@ -3678,11 +4367,11 @@ describe('ConversationPanel composer intake', () => {
       }
     })
 
-    expect(container.querySelector('[data-testid="permission-approval-controls"]')).toBeNull()
-    expect(container.querySelector('[aria-label="Resume session"]')).toBeNull()
+    expect(container.querySelector('[data-testid="permission-approval-controls"]')).not.toBeNull()
+
     expect(
       container.querySelector('[data-testid="scroller-pending-elicitations"]')?.textContent
-    ).toBe('0')
+    ).toBe('1')
     expectComposerCoveredByBlockingOverlay()
 
     renderPanel({
@@ -3704,7 +4393,7 @@ describe('ConversationPanel composer intake', () => {
     ).toBe('1')
   })
 
-  it('reveals a waiting Plan immediately after Side chat closes', () => {
+  it('keeps a waiting Plan available while Side chat is open', () => {
     const activeSession: ChatSession = {
       id: 'session-plan-under-side-chat',
       projectId: 'project-a',
@@ -3742,7 +4431,7 @@ describe('ConversationPanel composer intake', () => {
       }
     })
 
-    expect(container.querySelector('[data-testid="plan-composer"]')).toBeNull()
+    expect(container.querySelector('[data-testid="plan-composer"]')).not.toBeNull()
 
     renderPanel({
       view: {
@@ -3945,6 +4634,7 @@ describe('ConversationPanel interrupted Session recovery', () => {
         activeSession: interruptedSession
       },
       conversation: {
+        availability: { submit: true },
         actions: {
           resume: onResumeSession
         }
@@ -3958,10 +4648,19 @@ describe('ConversationPanel interrupted Session recovery', () => {
 
     expect(onResumeSession).toHaveBeenCalledTimes(1)
     expect(container.querySelector('[data-testid="resume-progress-indicator"]')).not.toBeNull()
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled
+    ).toBe(true)
+    expect(resumeButton?.disabled).toBe(true)
+    await act(async () => resumeButton?.click())
+    expect(onResumeSession).toHaveBeenCalledTimes(1)
 
     await act(async () => resolveResume?.())
 
     expect(container.querySelector('[data-testid="resume-progress-indicator"]')).toBeNull()
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled
+    ).toBe(false)
   })
 
   it('does not show one Session resume progress on another active Session', async () => {
@@ -4014,6 +4713,60 @@ describe('ConversationPanel interrupted Session recovery', () => {
     await act(async () => resolveResume?.())
   })
 
+  it('retains each Session recovery guard when two resumes overlap across navigation', async () => {
+    const interrupted = (id: string): ChatSession => ({
+      id,
+      projectId: 'project-a',
+      title: id,
+      cwd: '/workspace',
+      status: 'error',
+      interrupted: true,
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1
+    })
+    let finishA!: () => void
+    let finishB!: () => void
+    const resumeA = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishA = resolve
+        })
+    )
+    const resumeB = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishB = resolve
+        })
+    )
+    const show = (id: string, resume: () => Promise<void>): void =>
+      renderPanel({
+        view: { activeSession: interrupted(id) },
+        conversation: { availability: { submit: true }, actions: { resume } }
+      })
+    const resumeButton = (): HTMLButtonElement | null =>
+      container.querySelector('[aria-label="Resume session"]')
+    const sendButton = (): HTMLButtonElement | null =>
+      container.querySelector('[aria-label="Send message"]')
+
+    show('session-a', resumeA)
+    await act(async () => resumeButton()?.click())
+    show('session-b', resumeB)
+    expect(sendButton()?.disabled).toBe(false)
+    await act(async () => resumeButton()?.click())
+    show('session-a', resumeA)
+    expect(resumeButton()?.disabled).toBe(true)
+    expect(sendButton()?.disabled).toBe(true)
+    await act(async () => finishB())
+    expect(resumeButton()?.disabled).toBe(true)
+    expect(sendButton()?.disabled).toBe(true)
+    await act(async () => resumeButton()?.click())
+    expect(resumeA).toHaveBeenCalledOnce()
+    await act(async () => finishA())
+    expect(resumeButton()?.disabled).toBe(false)
+    expect(sendButton()?.disabled).toBe(false)
+  })
+
   it('does not show Session resume progress for a new conversation with no active Session', () => {
     // Regression: `activeSession?.id === resumingSessionId` is true when both are undefined, which
     // marked every brand-new conversation as "resuming" and suppressed the empty-state banner.
@@ -4055,7 +4808,7 @@ describe('ConversationPanel interrupted Session recovery', () => {
     )
     expect(resumeButton?.disabled).toBe(true)
     expect(resumeButton?.dataset.slot).toBe('button')
-    expect(resumeButton?.className).toContain('focus-visible:ring-3')
+    expect(resumeButton?.className).toContain('focus-visible:keyboard-focus')
     expect(resumeButton?.className).toContain('disabled:pointer-events-none')
 
     act(() => resumeButton?.click())
@@ -4148,7 +4901,7 @@ describe('ConversationPanel + menu', () => {
       '[data-testid="plan-composer-scroll"]'
     ) as HTMLDivElement
     const planResizeHandle = container.querySelector(
-      '[aria-label="Resize Plan panel"]'
+      '[aria-label="Collapse Plan"]'
     ) as HTMLButtonElement
     expect(planComposer).not.toBeNull()
     expect(planScrollSurface.classList.contains('overflow-y-auto')).toBe(true)
@@ -4184,6 +4937,33 @@ describe('ConversationPanel + menu', () => {
       planResizeHandle.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientY: 0 }))
       planResizeHandle.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientY: 0 }))
     })
+    expect(planComposer.style.height).toBe('260px')
+    act(() => {
+      planResizeHandle.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }))
+    })
+    expect(container.querySelector('[aria-label="Collapse Plan"]')).not.toBeNull()
+
+    const feedbackInput = pendingPlanCard!.querySelector('textarea')!
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
+      setter.call(feedbackInput, 'Keep this revision draft.')
+      feedbackInput.dispatchEvent(new Event('input', { bubbles: true }))
+      container.querySelector<HTMLButtonElement>('[aria-label="Collapse Plan"]')!.click()
+    })
+    expect(planComposer.style.height).toBe('')
+    expect(container.querySelector('[aria-label="Resize Plan panel"]')).toBeNull()
+    expect(feedbackInput.closest('[hidden]')).not.toBeNull()
+    expect(
+      container
+        .querySelector('[data-testid="composer-card-backdrop"]')
+        ?.classList.contains('hidden')
+    ).toBe(true)
+    expectComposerCoveredByBlockingOverlay()
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Expand Plan"]')!.click()
+    })
+    expect(feedbackInput.closest('[hidden]')).toBeNull()
+    expect(feedbackInput.value).toBe('Keep this revision draft.')
     expect(planComposer.style.height).toBe('260px')
 
     act(() => {
@@ -4268,6 +5048,264 @@ describe('ConversationPanel + menu', () => {
       { feedback: 'Split the analysis by cohort.' },
       { onSessionSizeLimit: expect.any(Function) }
     )
+  })
+
+  it('preserves the Plan draft and collapsed state when its active run finishes', () => {
+    const session: ChatSession = {
+      id: 'session-plan-draft',
+      projectId: 'project-a',
+      title: 'Plan draft',
+      cwd: '/workspace',
+      status: 'waiting-plan-approval',
+      activeRun: { promptMessageId: 'interaction-1', startedAt: 1 },
+      messages: planOriginMessages(),
+      createdAt: 1,
+      updatedAt: 2,
+      activePlanProjection: {
+        ...completedPlanProjection,
+        reviewRequestId: 'review-1',
+        approval: 'pending',
+        lifecycle: 'awaiting_approval'
+      }
+    }
+    renderPanel({ view: { activeSession: session } })
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        textarea,
+        'Keep this unsent revision draft.'
+      )
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      container.querySelector<HTMLButtonElement>('[aria-label="Collapse Plan"]')!.click()
+    })
+    renderPanel({
+      view: {
+        activeSession: {
+          ...session,
+          activeRun: undefined,
+          runtimeTranscriptLastRun: session.activeRun
+        }
+      }
+    })
+    expect(container.querySelector('textarea')?.value).toBe('Keep this unsent revision draft.')
+    expect(container.querySelector('[aria-label="Expand Plan"]')).not.toBeNull()
+    expect(container.querySelector('textarea')?.closest('[hidden]')).not.toBeNull()
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Expand Plan"]')!.click())
+    expect(container.querySelector('textarea')?.value).toBe('Keep this unsent revision draft.')
+  })
+
+  it('keeps Plan feedback locked across run completion and closes the current review on success', async () => {
+    let finishResponse!: () => void
+    respondToSessionPlanMock.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishResponse = resolve
+      })
+    )
+    const session: ChatSession = {
+      id: 'session-plan-submitting',
+      projectId: 'project-a',
+      title: 'Plan submitting',
+      cwd: '/workspace',
+      status: 'waiting-plan-approval',
+      activeRun: { promptMessageId: 'interaction-1', startedAt: 1 },
+      messages: planOriginMessages(),
+      createdAt: 1,
+      updatedAt: 2,
+      activePlanProjection: {
+        ...completedPlanProjection,
+        reviewRequestId: 'review-1',
+        approval: 'pending',
+        lifecycle: 'awaiting_approval'
+      }
+    }
+    renderPanel({ view: { activeSession: session } })
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        textarea,
+        'Split the analysis by cohort.'
+      )
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      textarea
+        .closest('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    })
+    const finished = {
+      ...session,
+      activeRun: undefined,
+      runtimeTranscriptLastRun: session.activeRun
+    }
+    renderPanel({ view: { activeSession: finished } })
+    expect(container.querySelector('textarea')?.value).toBe('Split the analysis by cohort.')
+    expect(container.querySelector('textarea')?.closest('article')?.getAttribute('aria-busy')).toBe(
+      'true'
+    )
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send Plan feedback"]')?.disabled
+    ).toBe(true)
+    act(() => {
+      container
+        .querySelector('textarea')!
+        .closest('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    })
+    expect(respondToSessionPlanMock).toHaveBeenCalledTimes(1)
+    await act(async () => finishResponse())
+    expect(container.querySelector('[data-testid="blocking-composer-overlay"]')).toBeNull()
+    expect(getComposerForm().hasAttribute('inert')).toBe(false)
+    renderPanel({ view: { activeSession: finished } })
+    expect(container.querySelector('[data-testid="blocking-composer-overlay"]')).toBeNull()
+    // A subsequent completed attempt still allows another review of the unchanged Plan.
+    renderPanel({
+      view: {
+        activeSession: {
+          ...finished,
+          runtimeTranscriptLastRun: { promptMessageId: 'interaction-2', startedAt: 2 }
+        }
+      }
+    })
+    expectComposerCoveredByBlockingOverlay()
+  })
+
+  it.each([{ artifactVersionId: 'version-2' }, { reviewRequestId: 'review-2' }])(
+    'does not close a replacement Plan review %j when the previous submission finishes',
+    async (replacement) => {
+      let finishResponse!: () => void
+      respondToSessionPlanMock.mockReturnValue(
+        new Promise<void>((resolve) => {
+          finishResponse = resolve
+        })
+      )
+      const session: ChatSession = {
+        id: 'session-plan-replacement',
+        projectId: 'project-a',
+        title: 'Plan replacement',
+        cwd: '/workspace',
+        status: 'waiting-plan-approval',
+        activeRun: { promptMessageId: 'interaction-1', startedAt: 1 },
+        messages: planOriginMessages(),
+        createdAt: 1,
+        updatedAt: 2,
+        activePlanProjection: {
+          ...completedPlanProjection,
+          reviewRequestId: 'review-1',
+          approval: 'pending',
+          lifecycle: 'awaiting_approval'
+        }
+      }
+      renderPanel({ view: { activeSession: session } })
+      await act(async () => {
+        ;[...container.querySelectorAll<HTMLButtonElement>('button')]
+          .find((button) => button.textContent === 'Approve')!
+          .click()
+      })
+      expect(respondToSessionPlanMock).toHaveBeenCalledTimes(1)
+      renderPanel({
+        view: {
+          activeSession: {
+            ...session,
+            activePlanProjection: { ...session.activePlanProjection!, ...replacement }
+          }
+        }
+      })
+      await act(async () => finishResponse())
+      expectComposerCoveredByBlockingOverlay()
+      expect(container.textContent).toContain('Plan ready for review')
+    }
+  )
+
+  it('keeps the submitted Plan card closed across feedback receipt revisions', async () => {
+    let finishResponse!: () => void
+    respondToSessionPlanMock.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishResponse = resolve
+      })
+    )
+    const session: ChatSession = {
+      id: 'session-feedback-revisions',
+      projectId: 'project-a',
+      title: 'Plan feedback',
+      cwd: '/workspace',
+      status: 'waiting-plan-approval',
+      activeRun: { promptMessageId: 'interaction-1', startedAt: 1 },
+      messages: planOriginMessages(),
+      createdAt: 1,
+      updatedAt: 2,
+      activePlanProjection: {
+        ...completedPlanProjection,
+        reviewRequestId: 'review-1',
+        approval: 'pending',
+        lifecycle: 'awaiting_approval'
+      }
+    }
+    renderPanel({ view: { activeSession: session } })
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(
+        textarea,
+        'Split the analysis by cohort.'
+      )
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      textarea
+        .closest('form')
+        ?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    })
+    const refreshed = {
+      ...session,
+      activePlanProjection: { ...session.activePlanProjection!, revision: 20 }
+    }
+    renderPanel({ view: { activeSession: refreshed } })
+    expect(
+      container.querySelector<HTMLButtonElement>('button[aria-label="Send Plan feedback"]')
+        ?.disabled
+    ).toBe(true)
+    await act(async () => finishResponse())
+    expect(container.querySelector('[data-testid="blocking-composer-overlay"]')).toBeNull()
+    expect(getComposerForm().hasAttribute('inert')).toBe(false)
+    renderPanel({
+      view: {
+        activeSession: {
+          ...refreshed,
+          activePlanProjection: { ...refreshed.activePlanProjection, revision: 21 }
+        }
+      }
+    })
+    expect(container.querySelector('[data-testid="blocking-composer-overlay"]')).toBeNull()
+    // The Agent may request another review without changing the document/version.
+    renderPanel({
+      view: {
+        activeSession: {
+          ...refreshed,
+          activePlanProjection: { ...refreshed.activePlanProjection, reviewRequestId: 'review-2' }
+        }
+      }
+    })
+    expectComposerCoveredByBlockingOverlay()
+    // Finishing without a replacement or decision reopens review of the same Plan.
+    renderPanel({
+      view: {
+        activeSession: {
+          ...refreshed,
+          activeRun: undefined,
+          runtimeTranscriptLastRun: session.activeRun
+        }
+      }
+    })
+    expectComposerCoveredByBlockingOverlay()
+    expect(container.textContent).toContain('Plan ready for review')
+    // A replacement Plan always owns a fresh review, including during the same turn.
+    renderPanel({
+      view: {
+        activeSession: {
+          ...refreshed,
+          activePlanProjection: {
+            ...refreshed.activePlanProjection,
+            artifactVersionId: 'version-2'
+          }
+        }
+      }
+    })
+    expectComposerCoveredByBlockingOverlay()
   })
 
   it('routes approval-like card text as a user Message instead of a UI decision', async () => {
@@ -4965,8 +6003,7 @@ describe('ConversationPanel fix loop lock', () => {
 
     const controls = container.querySelector('[data-testid="mock-agent-controls"]')
     const chooseButton = notice?.querySelector<HTMLButtonElement>('button')
-    expect(chooseButton?.parentElement).toBe(notice)
-    expect(chooseButton?.classList.contains('ml-auto')).toBe(true)
+    expect(chooseButton?.closest('[data-testid="specialist-unavailable-notice"]')).toBe(notice)
     expect(controls?.getAttribute('data-open-request')).toBe('0')
     act(() => {
       chooseButton?.click()
@@ -5155,6 +6192,53 @@ describe('ConversationPanel fix loop lock', () => {
 
     expect(onCancelRun).toHaveBeenCalledTimes(1)
   })
+
+  it.each(['completed', 'cancelled'] as const)(
+    'keeps Stop stable across durable idle echoes and tool updates until the prompt is %s',
+    (outcome) => {
+      const store = createSessionStore()
+      store.getState().hydrateSessions([idleSession])
+      store.getState().appendUserMessage({ sessionId: idleSession.id, content: 'Continue' })
+      store.getState().setAgentPromptInFlight(idleSession.id, true)
+      const running = store.getState().sessions[0]
+      const durable = toPersistedSession(running)
+      const renderCurrent = (): void => {
+        renderPanel({ view: { activeSession: store.getState().sessions[0] } })
+      }
+      renderCurrent()
+      const originalStop = container.querySelector('[aria-label="Cancel run"]')
+      expect(originalStop).not.toBeNull()
+
+      // Main's live prompt ownership stays unchanged while the two projection lanes interleave.
+      for (const revision of [2, 3, 4]) {
+        store.getState().applyDurableSessionProjection({
+          source: store.getState().sessions[0],
+          session: { ...durable, revision, status: 'idle' },
+          mode: 'runtime-transcript-authority'
+        })
+        renderCurrent()
+        expect(container.querySelector('[aria-label="Cancel run"]')).toBe(originalStop)
+        expect(container.querySelector('[aria-label="Send message"]')).toBeNull()
+
+        store.getState().upsertToolActivity({
+          sessionId: idleSession.id,
+          toolCallId: 'notebook-tool',
+          eventId: `tool-event-${revision}`,
+          promptMessageId: running.activeRun!.promptMessageId,
+          title: 'Notebook',
+          status: 'in_progress'
+        })
+        renderCurrent()
+        expect(container.querySelector('[aria-label="Cancel run"]')).toBe(originalStop)
+      }
+
+      if (outcome === 'completed') store.getState().finishRun(idleSession.id)
+      else store.getState().interruptRun(idleSession.id, 'cancelled', 'Cancelled')
+      renderCurrent()
+      expect(container.querySelector('[aria-label="Cancel run"]')).toBeNull()
+      expect(container.querySelector('[aria-label="Send message"]')).not.toBeNull()
+    }
+  )
 
   it('uses the running composer submit action to add the draft to the queue', () => {
     const onQueueMessage = vi.fn()
@@ -5648,6 +6732,26 @@ describe('ConversationPanel notebook bar', () => {
     expect(container.querySelector('[data-testid="background-tasks-chip"]')).toBeNull()
   })
 
+  it('keeps unavailable Specialist guidance above the joined Notebook and composer dock', () => {
+    renderPanel({
+      view: { activeSession: { ...session, specialistId: 'deleted-specialist' } },
+      sessionTools: { notebookReference },
+      conversation: { availability: { submit: false } },
+      specialist: { view: { specialist: { unavailable: true } } }
+    })
+
+    const notice = container.querySelector('[data-testid="specialist-unavailable-notice"]')!
+    const notebookBar = container.querySelector('[aria-label="Open notebook"]')!.parentElement!
+    expect(
+      notice.compareDocumentPosition(notebookBar) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    expect(notebookBar.nextElementSibling?.contains(getComposerForm())).toBe(true)
+    expect(getComposerEditor().getAttribute('contenteditable')).toBe('true')
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled
+    ).toBe(true)
+  })
+
   it('places the queue disclosure at the right edge of the Notebook bar', () => {
     renderPanel({
       view: { activeSession: session },
@@ -5888,6 +6992,88 @@ describe('ConversationPanel error box + report affordance', () => {
     expect(reportButton()).not.toBeNull()
   })
 
+  it('dismisses the current error without changing the run and shows a later failure', () => {
+    renderPanel({ view: { activeSession: errorSession } })
+
+    const dismiss = container.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')
+    expect(dismiss).not.toBeNull()
+    act(() => dismiss?.click())
+    expect(errorBoxText()).toBe('')
+    expect(reportButton()).toBeNull()
+
+    renderPanel({ view: { activeSession: errorSession } })
+    expect(errorBoxText()).toBe('')
+
+    renderPanel({
+      view: {
+        activeSession: {
+          ...errorSession,
+          autoReviewEnabled: true,
+          updatedAt: errorSession.updatedAt + 1
+        }
+      }
+    })
+    expect(errorBoxText()).toBe('')
+
+    renderPanel({
+      view: {
+        activeSession: { ...errorSession, status: 'running', error: undefined }
+      }
+    })
+    renderPanel({
+      view: {
+        activeSession: {
+          ...errorSession,
+          updatedAt: errorSession.updatedAt + 2
+        }
+      }
+    })
+    expect(errorBoxText()).toContain('Run failed: connection reset')
+    expect(reportButton()).not.toBeNull()
+  })
+
+  it('shows a repeated transient action error after the dismissed one clears', () => {
+    const idleSession = { ...errorSession, status: 'idle' as const, error: undefined }
+    renderPanel({
+      view: {
+        activeSession: idleSession,
+        actionError: 'Could not send message'
+      }
+    })
+
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')?.click())
+    expect(errorBoxText()).toBe('')
+
+    renderPanel({ view: { activeSession: idleSession, actionError: null } })
+    renderPanel({
+      view: { activeSession: idleSession, actionError: 'Could not send message' }
+    })
+    expect(errorBoxText()).toContain('Could not send message')
+  })
+
+  it('keeps the same translated action error dismissed when the language changes', async () => {
+    const { i18next } = await import('../../i18n')
+    renderPanel({
+      view: {
+        activeSession: { ...errorSession, status: 'idle', error: undefined },
+        actionError: VISION_MODEL_NOT_CONFIGURED_MESSAGE
+      }
+    })
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')?.click())
+    expect(errorBoxText()).toBe('')
+
+    try {
+      await act(async () => {
+        await i18next.changeLanguage('zh-Hans')
+      })
+      expect(errorBoxText()).toBe('')
+    } finally {
+      await act(async () => {
+        await i18next.changeLanguage('en')
+      })
+    }
+  })
+
   it('renders the error box for a failed run even when it has no error text', () => {
     renderPanel({
       view: {
@@ -5910,6 +7096,20 @@ describe('ConversationPanel error box + report affordance', () => {
     })
     expect(errorBoxText()).toContain('Could not send message')
     expect(reportButton()).toBeNull()
+  })
+
+  it('shows a composer action error only once when both error surfaces receive it', () => {
+    const annotationError = 'This annotation could not be added.'
+    renderPanel({
+      view: {
+        activeSession: { ...errorSession, status: 'idle', error: undefined },
+        actionError: annotationError
+      },
+      composer: { view: { error: annotationError } }
+    })
+
+    expect(container.textContent?.match(/This annotation could not be added\./g)).toHaveLength(1)
+    expect(errorBoxText()).toContain(annotationError)
   })
 
   it('opens Model settings from the image-support action error', () => {
@@ -5952,6 +7152,36 @@ describe('ConversationPanel error box + report affordance', () => {
     expect(openSettingsToPanel).toHaveBeenCalledWith('model')
   })
 
+  it.each(['', 'Agent session resume failed: ', 'Error invoking remote method: Error: '])(
+    'opens Agent settings for an unsupported native Codex CLI (%s)',
+    (wrapper) => {
+      const openSettingsToPanel = vi.fn()
+      useSettingsStore.setState({ openSettingsToPanel })
+      renderPanel({
+        view: {
+          activeSession: {
+            ...errorSession,
+            interrupted: Boolean(wrapper),
+            error:
+              wrapper +
+              'The installed Codex CLI is incompatible or its version could not be verified. Update Codex CLI to 0.157.1 or later, then re-detect it in Settings.',
+            errorReportable: true
+          }
+        }
+      })
+      expect(reportButton()).toBeNull()
+      expect(Boolean(container.querySelector('[aria-label="Resume session"]'))).toBe(
+        Boolean(wrapper)
+      )
+      const button = Array.from(container.querySelectorAll('button')).find(
+        (candidate) => candidate.textContent === 'Agent settings'
+      )
+      expect(button).toBeDefined()
+      act(() => button?.click())
+      expect(openSettingsToPanel).toHaveBeenCalledWith('agent')
+    }
+  )
+
   it('opens Agent settings instead of reporting an unsupported Codex ACP version', () => {
     const openSettingsToPanel = vi.fn()
     useSettingsStore.setState({ openSettingsToPanel })
@@ -5991,13 +7221,37 @@ describe('ConversationPanel error box + report affordance', () => {
     })
 
     expect(errorBoxText()).toContain('Agent session resume failed: Codex ACP adapter 1.1.4')
-    expect(container.querySelector('[aria-label="Resume session"]')).toBeNull()
+    expect(container.querySelector('[aria-label="Resume session"]')).not.toBeNull()
     const button = Array.from(container.querySelectorAll('button')).find(
       (candidate) => candidate.textContent === 'Agent settings'
     )
     expect(button).toBeDefined()
     act(() => button?.click())
     expect(openSettingsToPanel).toHaveBeenCalledWith('agent')
+  })
+
+  it('keeps recovery reachable after dismissing a repaired compatibility error', async () => {
+    const resume = vi.fn().mockResolvedValue(undefined)
+    renderPanel({
+      view: {
+        activeSession: {
+          ...errorSession,
+          interrupted: true,
+          error:
+            'Codex ACP adapter 1.1.4 is no longer supported. Update to 1.6.2 or later in settings.'
+        }
+      },
+      conversation: { actions: { resume } }
+    })
+
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')?.click())
+    expect(errorBoxText()).toBe('')
+    const resumeButton = container.querySelector<HTMLButtonElement>('[aria-label="Resume session"]')
+    expect(resumeButton?.disabled).toBe(false)
+    await act(async () => resumeButton?.click())
+    expect(resume).toHaveBeenCalledOnce()
+    // A retry that leaves the same Session failure must reopen its diagnostic.
+    expect(errorBoxText()).toContain('Codex ACP adapter 1.1.4')
   })
 
   it('keeps an unrelated session resume failure in the Resume banner', () => {
@@ -6177,4 +7431,92 @@ describe('ConversationPanel error box + report affordance', () => {
     expect(errorBoxText()).toContain('Unable to connect to API (ConnectionRefused)')
     expect(reportButton()).toBeNull()
   })
+})
+
+it('offers Fork to continue while leaving the imported conversation read-only', async () => {
+  forkSessionMock.mockClear()
+  const activeSession: ChatSession = {
+    id: 'imported-session',
+    projectId: 'project-a',
+    title: 'Imported research',
+    cwd: '',
+    status: 'idle',
+    messages: [],
+    createdAt: 1,
+    updatedAt: 1,
+    packageOrigin: {
+      importId: 'import-operation',
+      sourceProjectId: 'source-project',
+      sourceSessionId: 'source-session',
+      importedAt: 1,
+      manifestChecksum: 'a'.repeat(64)
+    }
+  }
+  renderPanel({ view: { activeSession } })
+  const button = [...container.querySelectorAll('button')].find((button) =>
+    button.textContent?.includes('Fork to continue')
+  )
+  expect(button).toBeDefined()
+  expect(container.querySelector('[data-testid="ordinary-composer-form"]')).toBeNull()
+  await act(async () => {
+    button!.click()
+  })
+  expect(forkSessionMock).toHaveBeenCalledWith(activeSession)
+  expect(usePreviewWorkbenchStore.getState().items).toEqual([])
+  const replay = [...container.querySelectorAll('button')].find((button) =>
+    button.textContent?.includes('View replay')
+  )!
+  expect(replay).toBeDefined()
+  await act(async () => {
+    replay.click()
+  })
+  expect(usePreviewWorkbenchStore.getState().panelState).toBe('open')
+  expect(usePreviewWorkbenchStore.getState().items).toContainEqual(
+    expect.objectContaining({
+      toolKind: 'replay',
+      replaySourceProjectId: 'project-a',
+      replaySourceSessionId: activeSession.id
+    })
+  )
+  await act(async () => {
+    replay.click()
+  })
+  expect(
+    usePreviewWorkbenchStore
+      .getState()
+      .items.filter((item) => item.type === 'tool' && item.toolKind === 'replay')
+  ).toHaveLength(1)
+})
+
+it('shows the branch source chat number and opens that source session', () => {
+  const source: ChatSession = {
+    id: 'branch-source',
+    projectId: 'default',
+    number: 42,
+    title: 'Source',
+    cwd: '',
+    status: 'idle',
+    messages: [],
+    createdAt: 1,
+    updatedAt: 1
+  }
+  useSessionStore.setState({ sessions: [source] })
+  const openSession = vi.fn()
+  renderPanel({
+    view: {
+      activeSession: {
+        ...source,
+        id: 'branch-child',
+        number: 43,
+        branchSource: { sessionId: source.id, headMessageId: 'answer' }
+      }
+    },
+    sessionTools: { openSession }
+  })
+  const sourceLink = [...container.querySelectorAll('button')].find(
+    (button) => button.textContent === 'Continued from chat #42'
+  )
+  expect(sourceLink).toBeDefined()
+  act(() => sourceLink!.click())
+  expect(openSession).toHaveBeenCalledWith('branch-source')
 })

@@ -12,6 +12,7 @@ import {
 } from './repository'
 import { createFrameNotebookLane, createRootNotebookLane } from './lane-identity'
 import { getNotebookInputRoot } from './input-staging'
+import { digestNotebookHelperSource } from './helper-evidence'
 
 let storageRoot: string | undefined
 
@@ -45,6 +46,54 @@ afterEach(async () => {
 })
 
 describe('notebook run repository', () => {
+  it('preserves valid history with more than 32 loaded helper modules', async () => {
+    const root = await createStorageRoot()
+    const repository = new NotebookRunRepository(root)
+    const projectId = 'default-project'
+    const sessionId = 'session-1'
+    const lane = createRootNotebookLane(projectId, sessionId, 'root-frame-session-1')
+    const document = await repository.loadOrCreate({
+      projectId,
+      sessionId,
+      lane,
+      workspaceCwd: '/workspace'
+    })
+    const helperModules = Array.from({ length: 33 }, (_, index) => {
+      const source = `def reader_${index}():\n    return 1`
+      return {
+        helperId: `helper-${index}`,
+        skillIdentity: 'skill://readers',
+        packageOrigin: 'test',
+        interfaceRevision: '1',
+        registeredGeneration: 'generation-1',
+        exports: [`reader_${index}`],
+        source,
+        sourceDigest: digestNotebookHelperSource(source)
+      }
+    })
+    await repository.appendRun({
+      projectId,
+      sessionId,
+      lane,
+      run: admittedRun({
+        status: 'completed',
+        helperModules,
+        helperEvidenceStatus: { state: 'complete' }
+      })
+    })
+    const filePath = join(document.notebookSessionRoot, 'run.json')
+    const before = await readFile(filePath, 'utf8')
+    const reopened = new NotebookRunRepository(root)
+    expect(await reopened.readSessionRuns(projectId, sessionId)).toEqual([
+      expect.objectContaining({
+        runId: 'run-1',
+        helperModules,
+        helperEvidenceStatus: { state: 'complete' }
+      })
+    ])
+    expect(await readFile(filePath, 'utf8')).toBe(before)
+  })
+
   it('resolves a provisional root Frame without reading it as a child Frame lane', async () => {
     const root = await createStorageRoot()
     const repository = new NotebookRunRepository(root)
@@ -905,6 +954,34 @@ describe('notebook run repository', () => {
     ).resolves.toEqual([expect.objectContaining({ projectId, sessionId })])
   })
 
+  it.each([
+    ['helper modules', { helperModules: {} }],
+    ['REPL marker value', { kernelKind: 'repl', replPersistentBindings: false }],
+    ['REPL marker kernel', { kernelKind: 'python', replPersistentBindings: true }],
+    ['helper evidence status', { helperEvidenceStatus: { state: 'unknown' } }]
+  ])('rejects a run with malformed persisted %s', async (_label, malformedRun) => {
+    const root = await createStorageRoot()
+    const projectId = 'default-project'
+    const sessionId = 'session-1'
+    const lane = createRootNotebookLane(projectId, sessionId, 'root-frame-session-1')
+    const repository = new NotebookRunRepository(root)
+    const document = await repository.loadOrCreate({
+      projectId,
+      sessionId,
+      workspaceCwd: '/workspace',
+      lane
+    })
+    await repository.appendRun({ projectId, sessionId, lane, run: admittedRun() })
+    const filePath = join(document.notebookSessionRoot, 'run.json')
+    const persisted = JSON.parse(await readFile(filePath, 'utf8')) as {
+      runs: Array<Record<string, unknown>>
+    }
+    persisted.runs[0] = { ...persisted.runs[0], ...malformedRun }
+    await writeFile(filePath, JSON.stringify(persisted), 'utf8')
+
+    await expect(repository.readSessionRuns(projectId, sessionId)).resolves.toEqual([])
+  })
+
   it('does not treat an unversioned Notebook document as registered legacy data', async () => {
     const root = await createStorageRoot()
     const projectId = 'default-project'
@@ -1696,11 +1773,37 @@ describe('notebook run repository', () => {
     const window = await reader.readSessionRunWindow('default-project', 'session-1', 2)
     expect(window.runs.map((run) => run.runId)).toEqual(['run-6', 'run-7'])
     expect(window.total).toBe(runCount)
+    const index = await reader.readSessionRunIndex('default-project', 'session-1')
+    expect(index).toHaveLength(runCount)
+    expect(index[0]).toMatchObject({ runId: 'run-0', scriptCharacters: 8, hasOutput: true })
+    expect(index[0]).not.toHaveProperty('script')
+    expect(index[0]).not.toHaveProperty('text')
+    expect(await reader.readSessionRun('default-project', 'session-1', 'run-6')).toMatchObject({
+      script: 'print(6)'
+    })
+    expect(await reader.readSessionRun('default-project', 'session-1', 'missing')).toBeUndefined()
 
     const cache = reader as unknown as {
       documentCache: Map<string, { document: { runs: Array<{ runId: string }> } }>
     }
     expect([...cache.documentCache.values()][0]?.document.runs).toHaveLength(runCount)
+
+    // Simulate a large imported archive and verify replacement invalidates the compact index.
+    const largeDocument = JSON.parse(await readFile(runJsonPath, 'utf8'))
+    largeDocument.runs = Array.from({ length: 2000 }, (_, i) => ({
+      ...largeDocument.runs[0],
+      runId: `large-${i}`,
+      startedAt: i + 1,
+      text: { stdout: 'x'.repeat(4096), stderr: '', traceback: '', plain: [] }
+    }))
+    await writeFile(runJsonPath, JSON.stringify(largeDocument))
+    const largeIndex = await reader.readSessionRunIndex('default-project', 'session-1')
+    expect(largeIndex).toHaveLength(2000)
+    expect(Buffer.byteLength(JSON.stringify(largeIndex))).toBeLessThan(1024 * 1024)
+    expect(await reader.readSessionRun('default-project', 'session-1', 'large-1999')).toMatchObject(
+      { text: { stdout: 'x'.repeat(4096) } }
+    )
+    expect(await reader.readSessionRun('default-project', 'session-1', 'run-6')).toBeUndefined()
   })
 
   it('leaves Session workspace output files in place when another run is appended', async () => {

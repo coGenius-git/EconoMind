@@ -4,8 +4,11 @@ import { useTranslation } from 'react-i18next'
 
 import { Card } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
-import { APP } from '../../../../shared/app-config'
-import { isSupportedCodexAcpVersion } from '../../../../shared/codex-runtime'
+
+import {
+  isSupportedCodexAcpVersion,
+  isSupportedCodexCliVersion
+} from '../../../../shared/codex-runtime'
 import type { AgentFrameworkId } from '../../../../shared/settings'
 import type { StorageInfo } from '../../../../shared/storage'
 import { useNotebookEnvStore } from '@/stores/notebook-env-store'
@@ -89,9 +92,9 @@ const findWindowsStorageDefault = async (
       if (signal.aborted) return null
       if (inspection.kind === 'move' && inspection.targetWasAbsent === true) {
         return {
-          chosenParent: drive.path,
           chosenDataRoot: inspection.dataRoot,
-          chosenKind: 'move'
+          chosenKind: 'move',
+          selection: inspection.selection
         }
       }
     } catch {
@@ -182,6 +185,7 @@ const OnboardingWizard = ({
   const agentFrameworks = useSettingsStore((state) => state.agentFrameworks)
   const preflight = useSettingsStore((state) => state.preflight)
   const codexVersion = useSettingsStore((state) => state.codex.version)
+  const codexNativeVersion = useSettingsStore((state) => state.codex.nativeVersion)
   const setAgentFramework = useSettingsStore((state) => state.setAgentFramework)
 
   // First-time setup always starts on the visible environment summary, even when every check has
@@ -234,7 +238,6 @@ const OnboardingWizard = ({
   // Like the provider draft, the data-location choice belongs to the stable shell so Back/Continue
   // does not discard it when LocationStep unmounts.
   const [locationDraft, setLocationDraft] = useState<LocationDraft>({
-    chosenParent: '',
     chosenDataRoot: '',
     chosenKind: null
   })
@@ -290,11 +293,14 @@ const OnboardingWizard = ({
     ) {
       return
     }
-    // Match AgentPanel's installed-runtime ordering and Codex adapter compatibility guard.
+    // Match AgentPanel's installed-runtime ordering and Codex native/adapter compatibility guards.
     const ready: Record<AgentFrameworkId, boolean> = {
       'claude-code': preflight.claudeReady,
       opencode: preflight.opencodeReady,
-      codex: preflight.codexReady && (!codexVersion || isSupportedCodexAcpVersion(codexVersion)),
+      codex:
+        preflight.codexReady &&
+        isSupportedCodexCliVersion(codexNativeVersion) &&
+        (!codexVersion || isSupportedCodexAcpVersion(codexVersion)),
       codebuddy: preflight.codebuddyReady
     }
     if (ready[agentFrameworkId]) return
@@ -329,6 +335,7 @@ const OnboardingWizard = ({
     agentFrameworks,
     preflight,
     codexVersion,
+    codexNativeVersion,
     setAgentFramework,
     checkEnvironment,
     t
@@ -378,7 +385,7 @@ const OnboardingWizard = ({
       if (cancelled || locationDraftTouched.current) return
 
       if (recommendedDraft) {
-        setLocationDraft((current) => (current.chosenParent ? current : recommendedDraft))
+        setLocationDraft((current) => (current.chosenDataRoot ? current : recommendedDraft))
       }
       setDidResolveStorageDefault(true)
     })
@@ -430,14 +437,7 @@ const OnboardingWizard = ({
   return (
     <main className="h-svh overflow-y-auto bg-bg-10 text-text-000">
       <div className="mx-auto min-h-full w-full max-w-[1040px] px-4 py-5 sm:px-8 sm:py-7">
-        <a
-          href={APP.links.website}
-          target="_blank"
-          rel="noreferrer"
-          className="font-serif text-[26px] font-medium leading-none tracking-[-0.02em] text-text-000 transition-colors duration-150 ease-out hover:text-text-100"
-        >
-          EconoMind
-        </a>
+        <span className="font-serif text-[26px] font-medium tracking-[-0.02em]">EconoMind</span>
 
         <div
           data-onboarding-layout="split"

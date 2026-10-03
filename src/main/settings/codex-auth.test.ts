@@ -1,16 +1,19 @@
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { installManagedCodex, managedCodexAdapterEntry, managedCodexBinary } from './managed-codex'
 
 import { describe, expect, it, vi } from 'vitest'
 
 import { codexSubscriptionStorageDir } from '../agent-framework/codex'
 import {
   CodexAuthController,
+  openCodexAuthSession,
   createCodexAuthEnvironment,
   ensureCodexAuthHome,
   importCodexAuthentication,
+  inspectAppOwnedCodexAuthentication,
   projectSafeCodexProviderRoute,
   resolveEffectiveCodexSubscriptionTransport,
   type CodexAuthSession
@@ -32,6 +35,157 @@ const session = (overrides: Partial<CodexAuthSession> = {}): CodexAuthSession =>
 
 const autoTransportConfig = (prefix: string[] = []): string =>
   [...prefix, 'cli_auth_credentials_store = "file"', ''].join('\n')
+
+const storedChatGptAuth = JSON.stringify({
+  auth_mode: 'chatgpt',
+  tokens: {
+    id_token: 'eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0In0.signature',
+    access_token: 'access',
+    refresh_token: 'refresh'
+  },
+  last_refresh: '2026-09-11T00:00:00Z'
+})
+
+describe('inspectAppOwnedCodexAuthentication', () => {
+  it('reports a missing credential without creating the app-owned home', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-auth-inspect-missing-'))
+    const home = codexSubscriptionStorageDir(root)
+    try {
+      await expect(inspectAppOwnedCodexAuthentication(root)).resolves.toEqual({ state: 'missing' })
+      expect(existsSync(home)).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('reports a stored credential without changing auth or config files', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-auth-inspect-present-'))
+    const home = codexSubscriptionStorageDir(root)
+    const authPath = join(home, 'auth.json')
+    const configPath = join(home, 'config.toml')
+    try {
+      await mkdir(home, { recursive: true })
+      await writeFile(authPath, storedChatGptAuth)
+      await writeFile(configPath, 'model = "account-default"\n')
+      const before = {
+        auth: await stat(authPath),
+        config: await stat(configPath)
+      }
+
+      await expect(inspectAppOwnedCodexAuthentication(root)).resolves.toEqual({ state: 'present' })
+
+      expect(await readFile(authPath, 'utf8')).toBe(storedChatGptAuth)
+      expect(await readFile(configPath, 'utf8')).toBe('model = "account-default"\n')
+      expect(await stat(authPath)).toMatchObject({
+        mode: before.auth.mode,
+        size: before.auth.size,
+        mtimeMs: before.auth.mtimeMs
+      })
+      expect(await stat(configPath)).toMatchObject({
+        mode: before.config.mode,
+        size: before.config.size,
+        mtimeMs: before.config.mtimeMs
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    '{}',
+    'null',
+    '[]',
+    '"credential"',
+    '{"tokens":{}}',
+    '{"tokens":null}',
+    '{"tokens":[]}',
+    '{"tokens":123}',
+    '{"tokens":{"access_token":""}}',
+    '{"tokens":{"access_token":"secret"}}',
+    '{"tokens":{"id_token":"id","access_token":"secret","refresh_token":"refresh"}}',
+    '{"tokens":{"id_token":"id","access_token":"secret","refresh_token":"refresh"},"last_refresh":"2026-09-11T00:00:00Z"}',
+    '{"tokens":{"id_token":"eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0In0.signature","access_token":"secret","refresh_token":"refresh"},"last_refresh":"2026-09-11"}',
+    '{"tokens":{"access_token":"   "}}',
+    '{"OPENAI_API_KEY":""}',
+    '{"OPENAI_API_KEY":123}',
+    '{"auth_mode":"personalAccessToken","personal_access_token":""}',
+    '{"auth_mode":"agentIdentity","agent_identity":"secret"}',
+    '{"auth_mode":"agentIdentity","agent_identity":{}}',
+    '{"auth_mode":"agentIdentity","agent_identity":{"agent_runtime_id":"runtime","agent_private_key":"secret"}}',
+    '{"auth_mode":"bedrockApiKey","bedrock_api_key":{"api_key":"","region":"us-east-1"}}'
+  ])('reports empty credential material as invalid: %s', async (content) => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-auth-inspect-empty-'))
+    const home = codexSubscriptionStorageDir(root)
+    const authPath = join(home, 'auth.json')
+    try {
+      await mkdir(home, { recursive: true })
+      await writeFile(authPath, content)
+
+      await expect(inspectAppOwnedCodexAuthentication(root)).resolves.toEqual({ state: 'invalid' })
+      expect(await readFile(authPath, 'utf8')).toBe(content)
+      expect(existsSync(join(home, 'config.toml'))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    '{"OPENAI_API_KEY":"secret"}',
+    '{"auth_mode":"apikey","OPENAI_API_KEY":"secret"}',
+    '{"auth_mode":"personalAccessToken","personal_access_token":"secret"}',
+    '{"auth_mode":"agentIdentity","agent_identity":"eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0In0.signature"}',
+    '{"auth_mode":"agentIdentity","agent_identity":{"agent_runtime_id":"runtime","agent_private_key":"secret","account_id":"account","chatgpt_user_id":"user","plan_type":"pro","chatgpt_account_is_fedramp":false}}',
+    '{"auth_mode":"bedrockApiKey","bedrock_api_key":{"api_key":"secret","region":"us-east-1"}}'
+  ])('recognizes supported stored credential material: %s', async (content) => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-auth-inspect-api-key-'))
+    const home = codexSubscriptionStorageDir(root)
+    try {
+      await mkdir(home, { recursive: true })
+      await writeFile(join(home, 'auth.json'), content)
+
+      await expect(inspectAppOwnedCodexAuthentication(root)).resolves.toEqual({ state: 'present' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('reports malformed credentials without rewriting them or creating config.toml', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-auth-inspect-invalid-'))
+    const home = codexSubscriptionStorageDir(root)
+    const authPath = join(home, 'auth.json')
+    const configPath = join(home, 'config.toml')
+    try {
+      await mkdir(home, { recursive: true })
+      await writeFile(authPath, '{not-json')
+      const before = await stat(authPath)
+
+      await expect(inspectAppOwnedCodexAuthentication(root)).resolves.toEqual({ state: 'invalid' })
+
+      expect(await readFile(authPath, 'utf8')).toBe('{not-json')
+      expect(await stat(authPath)).toMatchObject({
+        mode: before.mode,
+        size: before.size,
+        mtimeMs: before.mtimeMs
+      })
+      expect(existsSync(configPath)).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('reports credential read failures without throwing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-auth-inspect-unreadable-'))
+    const authPath = join(codexSubscriptionStorageDir(root), 'auth.json')
+    try {
+      await mkdir(authPath, { recursive: true })
+      await expect(inspectAppOwnedCodexAuthentication(root)).resolves.toEqual({
+        state: 'unreadable'
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
 
 describe('resolveEffectiveCodexSubscriptionTransport', () => {
   it('retains learned HTTPS only while the preference is Auto', () => {
@@ -230,6 +384,37 @@ describe('importCodexAuthentication', () => {
       expect(configToml).toContain('base_url = "http://127.0.0.1:1087/v1"')
       expect(configToml).not.toContain('open-science-chatgpt-websocket')
       expect(configToml).not.toContain('open-science-chatgpt-https')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('names the credential-store boundary when the required import finds no auth.json', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-auth-import-missing-'))
+    const source = join(root, 'source')
+    const destination = join(root, 'destination')
+    try {
+      await mkdir(source, { recursive: true })
+
+      await expect(importCodexAuthentication(source, destination)).rejects.toThrow(
+        'EconoMind could not find a file-backed Codex credential to import. Your existing Codex sign-in may be stored in the system credential store, which EconoMind cannot import from. Continue with the EconoMind Codex sign-in instead.'
+      )
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the generic import failure for a present-but-unreadable auth.json', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-auth-import-invalid-'))
+    const source = join(root, 'source')
+    const destination = join(root, 'destination')
+    try {
+      await mkdir(source, { recursive: true })
+      await writeFile(join(source, 'auth.json'), '"not-an-object"')
+
+      await expect(importCodexAuthentication(source, destination)).rejects.toThrow(
+        'The selected Codex profile does not contain importable authentication.'
+      )
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -1077,4 +1262,101 @@ describe('CodexAuthController', () => {
       vi.useRealTimers()
     }
   })
+})
+
+describe('Codex authentication install admission', () => {
+  it('blocks replacement while authentication owns the runtime and releases after tree teardown', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-auth-admission-'))
+    const adapterPath = managedCodexAdapterEntry(root)
+    let auth: CodexAuthSession | undefined
+    try {
+      await mkdir(dirname(adapterPath), { recursive: true })
+      await writeFile(adapterPath, 'process.stdin.resume(); setInterval(() => {}, 1000)')
+      auth = await openCodexAuthSession({
+        adapterPath,
+        nativePath: managedCodexBinary(root),
+        mode: 'isolated',
+        storageRoot: root
+      })
+      const options = { dataRoot: root, installId: 'update', onEvent: vi.fn(), registries: [] }
+      expect((await installManagedCodex(options)).result.error).toContain('Codex is in use')
+      await auth.close()
+      auth = undefined
+      expect((await installManagedCodex(options)).result.error).toBe('no registries configured')
+    } finally {
+      await auth?.close()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('legacy branded Codex markers', () => {
+  it.each(['EconoMind', 'Open-Science', 'Open Science'])(
+    'restores preserved user config while replacing an imported route marked %s',
+    async (brand) => {
+      const root = await mkdtemp(join(tmpdir(), 'codex-legacy-marker-'))
+      const source = join(root, 'source')
+      const destination = join(root, 'destination')
+      const configPath = join(destination, 'config.toml')
+      try {
+        await mkdir(source)
+        await mkdir(destination)
+        await writeFile(join(source, 'auth.json'), '{"tokens":{"access_token":"fixture"}}')
+        await writeFile(
+          join(source, 'config.toml'),
+          [
+            'model_provider = "imported"',
+            '[model_providers.imported]',
+            'name = "OpenAI"',
+            'base_url = "http://127.0.0.1:1234/v1"',
+            'wire_api = "responses"',
+            'requires_openai_auth = true',
+            ''
+          ].join('\n')
+        )
+        await writeFile(configPath, 'model = "preserve"\nmodel_provider = "user-route"\n')
+        await importCodexAuthentication(source, destination)
+        const current = await readFile(configPath, 'utf8')
+        await writeFile(configPath, current.replaceAll('# EconoMind:', `# ${brand}:`))
+        await writeFile(join(source, 'config.toml'), 'model = "ignored"\n')
+        await importCodexAuthentication(source, destination)
+        const restored = await readFile(configPath, 'utf8')
+        expect(restored).toContain('model = "preserve"')
+        expect(restored).toContain('model_provider = "user-route"')
+        expect(restored).not.toContain('imported Codex')
+        expect(restored).not.toContain('model_providers."imported"')
+        await importCodexAuthentication(source, destination)
+        expect(await readFile(configPath, 'utf8')).toBe(restored)
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it.each(['Open-Science', 'Open Science'])(
+    'replaces %s transport marker pairs without duplicating providers or dropping user comments',
+    async (brand) => {
+      const root = await mkdtemp(join(tmpdir(), 'codex-legacy-transport-'))
+      const configPath = join(codexSubscriptionStorageDir(root), 'config.toml')
+      try {
+        await ensureCodexAuthHome('isolated', root, 'https')
+        const current = await readFile(configPath, 'utf8')
+        const comment = `# ${brand}: user comment, not a managed marker`
+        await writeFile(
+          configPath,
+          `${comment}\n${current.replaceAll('# EconoMind:', `# ${brand}:`)}`
+        )
+        await ensureCodexAuthHome('isolated', root, 'websocket')
+        const updated = await readFile(configPath, 'utf8')
+        expect(updated).toContain(comment)
+        expect(updated).not.toContain(`# ${brand}: begin Codex transport`)
+        expect(updated).not.toContain('open-science-chatgpt-https')
+        expect(updated).toContain('# EconoMind: begin Codex transport')
+        await ensureCodexAuthHome('isolated', root, 'websocket')
+        expect(await readFile(configPath, 'utf8')).toBe(updated)
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    }
+  )
 })

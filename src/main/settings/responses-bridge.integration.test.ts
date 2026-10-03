@@ -3,11 +3,14 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
+import { createInterface } from 'node:readline'
 
 import * as acp from '@agentclientprotocol/sdk'
 import { expect, it, vi } from 'vitest'
 
 import { CODEX_BRIDGE_MODEL, createCodexFramework } from '../agent-framework/codex'
+import { CODEX_VERSION } from './managed-codex'
+import { toAcpRuntimeEvent } from '../acp/runtime-events'
 import { terminateProcessTree } from '../process-tree'
 import { REVIEWER_BRIDGE_NAMESPACED_TOOLS } from '../reviewer/bridge-tools'
 import { ReviewerMcpServer, type SubmitFindingsHandler } from '../reviewer/mcp-server'
@@ -267,36 +270,38 @@ it.runIf(runLiveContract)(
         Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
         Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>
       )
-      await acp
-        .client({ name: 'open-science-native-auth-contract' })
-        .onRequest(acp.methods.client.session.requestPermission, (ctx) => ({
-          outcome: {
-            outcome: 'selected',
-            optionId:
-              ctx.params.options.find((option) => option.kind === 'allow_once')?.optionId ??
-              ctx.params.options[0].optionId
-          }
-        }))
-        .onRequest(acp.methods.client.fs.readTextFile, () => ({ content: '' }))
-        .onRequest(acp.methods.client.fs.writeTextFile, () => ({}))
-        .connectWith(stream, async (ctx) => {
-          await ctx.request(acp.methods.agent.initialize, {
-            protocolVersion: acp.PROTOCOL_VERSION,
-            clientInfo: { name: 'open-science-native-auth-contract', version: '1.0.0' },
-            clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } }
-          })
-          await ctx.request(acp.methods.agent.providers.set, modelConfig.providerConfiguration!)
-
-          await ctx
-            .buildSession({ cwd: workspace, mcpServers: [] })
-            .withSession(async (session) => {
-              session.prompt('Confirm authentication.')
-              for (;;) {
-                const update = await session.nextUpdate()
-                if (update.kind === 'stop') return
-              }
+      await expect(
+        acp
+          .client({ name: 'open-science-native-auth-contract' })
+          .onRequest(acp.methods.client.session.requestPermission, (ctx) => ({
+            outcome: {
+              outcome: 'selected',
+              optionId:
+                ctx.params.options.find((option) => option.kind === 'allow_once')?.optionId ??
+                ctx.params.options[0].optionId
+            }
+          }))
+          .onRequest(acp.methods.client.fs.readTextFile, () => ({ content: '' }))
+          .onRequest(acp.methods.client.fs.writeTextFile, () => ({}))
+          .connectWith(stream, async (ctx) => {
+            await ctx.request(acp.methods.agent.initialize, {
+              protocolVersion: acp.PROTOCOL_VERSION,
+              clientInfo: { name: 'open-science-native-auth-contract', version: '1.0.0' },
+              clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } }
             })
-        })
+            await ctx.request(acp.methods.agent.providers.set, modelConfig.providerConfiguration!)
+
+            await ctx
+              .buildSession({ cwd: workspace, mcpServers: [] })
+              .withSession(async (session) => {
+                session.prompt('Confirm authentication.')
+                for (;;) {
+                  const update = await session.nextUpdate()
+                  if (update.kind === 'stop') return
+                }
+              })
+          })
+      ).rejects.toThrow('Incorrect API key provided')
 
       expect(upstreamFetch).toHaveBeenCalledOnce()
     } catch (error) {
@@ -557,11 +562,11 @@ it.runIf(runLiveContract)(
       expect(result.initial.stopReason).toBe('end_turn')
       expect(
         result.compact.updates
-          .map((notification) => notification.update)
-          .filter((update) => update._meta?.contextCompaction === true)
+          .map((notification) => toAcpRuntimeEvent(notification, 'native-compaction'))
+          .filter((event) => event?.kind === 'compaction')
       ).toMatchObject([
-        { sessionUpdate: 'tool_call', status: 'in_progress' },
-        { sessionUpdate: 'tool_call_update', status: 'completed' }
+        { kind: 'compaction', status: 'in_progress' },
+        { kind: 'compaction', status: 'completed' }
       ])
       expect(result.compact.updates.map((notification) => notification.update)).toEqual(
         expect.arrayContaining([
@@ -851,4 +856,139 @@ it.runIf(runLiveContract)(
     }
   },
   30_000
+)
+
+it.runIf(runLiveContract)(
+  'creates an Astra session with bundled metadata from the tested native runtime',
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-astra-catalog-'))
+    const proxy = new NativeResponsesCompatibilityProxy(
+      { baseUrl: 'https://vendor.invalid/v1', model: 'gpt-6-astra' },
+      async () => {
+        throw new Error('This metadata check must not make a model request')
+      }
+    )
+    const connection = await proxy.start()
+    const config = createCodexFramework().prepareModelConfig(
+      {
+        type: 'official',
+        vendorId: 'openai',
+        apiEndpoints: ['responses'],
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-6-astra'
+      },
+      {
+        storageRoot: root,
+        executablePath: adapterPath!,
+        nativeVersion: CODEX_VERSION,
+        responsesBridge: connection
+      }
+    )
+    expect(JSON.parse(config.env!.CODEX_CONFIG)).not.toHaveProperty('model_catalog_json')
+    for (const file of config.configFiles ?? []) {
+      await mkdir(dirname(file.path), { recursive: true })
+      await writeFile(file.path, file.content)
+    }
+    const child = spawnAdapter(root, {
+      ...process.env,
+      ...config.env,
+      CODEX_PATH: nativeCodexPath!
+    })
+    const stderr: string[] = []
+    child.stderr.on('data', (chunk) => stderr.push(String(chunk)))
+    try {
+      await acp
+        .client({ name: 'astra-metadata-contract' })
+        .connectWith(
+          acp.ndJsonStream(
+            Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
+            Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>
+          ),
+          async (ctx) => {
+            await ctx.request(acp.methods.agent.initialize, {
+              protocolVersion: acp.PROTOCOL_VERSION,
+              clientCapabilities: {}
+            })
+            await ctx.request(acp.methods.agent.providers.set, config.providerConfiguration!)
+            const session = await ctx.request(acp.methods.agent.session.new, {
+              cwd: root,
+              mcpServers: []
+            })
+            expect(session.configOptions).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({ id: 'model', currentValue: 'gpt-6-astra' })
+              ])
+            )
+            expect(JSON.stringify(session.configOptions)).toContain('gpt-6-astra')
+            await ctx.request(acp.methods.agent.session.close, { sessionId: session.sessionId })
+          }
+        )
+      expect(stderr.join('')).not.toContain('Model metadata for gpt-6-astra not found')
+    } finally {
+      await terminate(child)
+      await proxy.close()
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    }
+  },
+  30_000
+)
+
+it.runIf(runLiveContract)(
+  'bundles Astra in the native model catalog without generated metadata',
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-native-models-'))
+    const child = spawn(nativeCodexPath!, ['app-server'], {
+      env: {
+        PATH: process.env.PATH,
+        SystemRoot: process.env.SystemRoot,
+        HOME: root,
+        USERPROFILE: root,
+        CODEX_HOME: root
+      },
+      stdio: 'pipe',
+      windowsHide: true
+    })
+    const lines = createInterface({ input: child.stdout })
+    child.stderr.resume()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const models = await new Promise<Array<{ model: string }>>((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('Native model/list timed out')), 10_000)
+        child.once('error', reject)
+        child.once('close', () => reject(new Error('Native app-server closed before model/list')))
+        lines.on('line', (line) => {
+          const response = JSON.parse(line) as {
+            id?: number
+            error?: unknown
+            result?: { data?: Array<{ model: string }> }
+          }
+          if (response.error) {
+            reject(new Error(JSON.stringify(response.error)))
+            return
+          }
+          if (response.id === 1)
+            child.stdin.write(
+              JSON.stringify({ id: 2, method: 'model/list', params: { includeHidden: true } }) +
+                '\n'
+            )
+          if (response.id === 2) resolve(response.result?.data ?? [])
+        })
+        child.stdin.write(
+          JSON.stringify({
+            id: 1,
+            method: 'initialize',
+            params: { clientInfo: { name: 'astra-model-contract', version: '1' } }
+          }) + '\n'
+        )
+      })
+      expect(models).toEqual(
+        expect.arrayContaining([expect.objectContaining({ model: 'gpt-6-astra' })])
+      )
+    } finally {
+      clearTimeout(timer)
+      lines.close()
+      await terminate(child)
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    }
+  }
 )

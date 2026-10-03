@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, Component, type ReactNode } from 'react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -9,8 +10,17 @@ import {
 } from '../../../../../../shared/web-event-connection'
 import { createManagedPdfLoadingTask } from '../managed-pdf-document'
 import { PdfPreviewContent, PdfPreviewRenderer } from './PdfPreview'
+import * as nearViewport from '../useNearViewport'
 import { PdfOutlineSidebar } from './PdfOutlineSidebar'
-import { requestAnnotationReveal } from '../../annotations/annotation-reveal'
+import {
+  requestAnnotationReveal,
+  requestPdfAnnotationReveal
+} from '../../annotations/annotation-reveal'
+import type { PdfAnnotation as SavedPdfAnnotation } from '../../../../../../shared/pdf-annotations'
+import { TooltipProvider } from '@/components/ui/tooltip'
+import { PdfAnnotationsProvider } from '../../pdf-annotations/PdfAnnotationsProvider'
+import { useSessionStore } from '@/stores/session-store'
+import { usePreviewWorkbenchStore } from '@/stores/preview-workbench-store'
 
 vi.mock('../managed-pdf-document', () => ({ createManagedPdfLoadingTask: vi.fn() }))
 const { cancelTextLayer, renderTextLayer } = vi.hoisted(() => ({
@@ -76,6 +86,7 @@ vi.mock('pdfjs-dist/web/pdf_viewer.mjs', () => ({
 }))
 vi.mock('../pdfjs', () => ({
   pdfjsLib: {
+    AnnotationMode: { ENABLE_STORAGE: 3 },
     TextLayer: class {
       constructor(
         private readonly options: {
@@ -139,6 +150,16 @@ describe('PdfPreviewContent', () => {
       }
     )
     window.api = {
+      pdfStructure: {
+        readCached: vi.fn().mockResolvedValue(undefined),
+        parse: vi.fn(() => new Promise(() => {})),
+        cancel: vi.fn().mockResolvedValue(undefined)
+      },
+      localModels: {
+        getSnapshot: vi
+          .fn()
+          .mockResolvedValue({ availability: 'notInstalled', updateAvailable: false })
+      },
       previewResources: {
         acquire: vi.fn().mockResolvedValue({
           id: 'resource-1',
@@ -178,6 +199,11 @@ describe('PdfPreviewContent', () => {
     vi.useRealTimers()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+    useSessionStore.setState({ sessions: [], selectedSessionId: undefined } as never)
+    usePreviewWorkbenchStore.setState({
+      activeProjectId: undefined,
+      pendingPdfContextByProject: {}
+    })
     delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView
   })
 
@@ -221,6 +247,65 @@ describe('PdfPreviewContent', () => {
         })
     }
   }
+
+  it('does not rerender page placeholders when opening the search toolbar', async () => {
+    observe()
+    const pageRenders = vi.spyOn(nearViewport, 'useNearViewport')
+    vi.mocked(createManagedPdfLoadingTask).mockReturnValue({
+      promise: Promise.resolve({ numPages: 400, getPage, destroy: destroyDocument }),
+      destroy: vi.fn().mockResolvedValue(undefined)
+    } as never)
+    await act(async () => {
+      root.render(<PdfPreviewContent path="/audit/long.pdf" name="long.pdf" />)
+      await flush()
+    })
+    pageRenders.mockClear()
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Search"]')!.click()
+    )
+    expect(container.querySelector('[aria-label="Search document"]')).not.toBeNull()
+    expect(pageRenders).not.toHaveBeenCalled()
+    expect(getPage).not.toHaveBeenCalled()
+  })
+
+  it('bounds layout reads when tracking the current page near the end of a long PDF', async () => {
+    observe()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    vi.mocked(createManagedPdfLoadingTask).mockReturnValue({
+      promise: Promise.resolve({ numPages: 1000, getPage, destroy: destroyDocument }),
+      destroy: vi.fn().mockResolvedValue(undefined)
+    } as never)
+    const onReadingPositionChange = vi.fn()
+    await act(async () => {
+      root.render(
+        <PdfPreviewContent
+          path="/audit/long.pdf"
+          name="long.pdf"
+          onReadingPositionChange={onReadingPositionChange}
+        />
+      )
+      await flush()
+    })
+    const scroll = container.querySelector<HTMLElement>('[role="region"]')!
+    scroll.getBoundingClientRect = () => new DOMRect(0, 0, 400, 600)
+    let reads = 0
+    for (const [index, page] of [
+      ...container.querySelectorAll<HTMLElement>('[data-page-number]')
+    ].entries()) {
+      page.getBoundingClientRect = () => {
+        reads++
+        return new DOMRect(0, index * 812 - scroll.scrollTop, 600, 800)
+      }
+    }
+    scroll.scrollTop = 999 * 812
+    await act(async () => {
+      fireEvent.scroll(scroll)
+      await vi.advanceTimersByTimeAsync(110)
+    })
+    expect(onReadingPositionChange).toHaveBeenLastCalledWith({ pageNumber: 1000, pageCount: 1000 })
+    expect(reads).toBeLessThanOrEqual(12)
+    expect(getPage).not.toHaveBeenCalled()
+  })
 
   it.each(['ready', 'error'] as const)(
     're-entering a previously %s page displays loading while pending',
@@ -330,6 +415,209 @@ describe('PdfPreviewContent', () => {
       'Page 2',
       'Page 3'
     ])
+  })
+
+  it('keeps the notes toggle visible and enables the sidebar within the reader width budget', async () => {
+    let width = 1200
+    const callbacks: ResizeObserverCallback[] = []
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          callbacks.push(callback)
+        }
+        observe = vi.fn()
+        disconnect = vi.fn()
+        unobserve = vi.fn()
+      }
+    )
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(() => width)
+    await act(async () => {
+      root.render(
+        <PdfPreviewContent
+          path="literature-attachment-version:version-1"
+          name="paper.pdf"
+          source="literature"
+        />
+      )
+      await flush()
+    })
+    const button = await vi.waitFor(() => {
+      const toggle = container.querySelector<HTMLButtonElement>('[aria-label="Show notes sidebar"]')
+      expect(toggle).not.toBeNull()
+      return toggle!
+    })
+    const notebook = container.querySelector('[data-pdf-notebook-view]')!
+    const loadCount = vi.mocked(createManagedPdfLoadingTask).mock.calls.length
+    await act(async () => button.click())
+    const navigationToggle = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Show navigation"]'
+    )!
+    expect(navigationToggle.closest('[role="tablist"]')).not.toBeNull()
+    expect(navigationToggle.closest('[data-pdf-controls="interaction"]')).toBeNull()
+    expect(notebook.getAttribute('data-pdf-notes-sidebar')).toBe('true')
+    expect(notebook.getAttribute('tabindex')).toBe('-1')
+    expect(notebook.getAttribute('aria-hidden')).toBe('false')
+    expect(container.querySelector<HTMLElement>('[data-pdf-original-view]')!.style.right).toBe(
+      '320px'
+    )
+    const separator = container.querySelector<HTMLElement>('[aria-label="Resize notes sidebar"]')!
+    await act(async () =>
+      separator.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+    )
+    expect(separator.getAttribute('aria-valuenow')).toBe('336')
+    const resize = async (next: number): Promise<void> => {
+      width = next
+      await act(async () => {
+        callbacks.forEach((callback) => callback([], {} as ResizeObserver))
+        await flush()
+      })
+    }
+    await resize(900)
+    const narrowToggle = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Show notes sidebar"]'
+    )!
+    expect(narrowToggle).not.toBeNull()
+    expect(narrowToggle.getAttribute('aria-disabled')).toBe('true')
+    await act(async () => narrowToggle.click())
+    expect(notebook.hasAttribute('inert')).toBe(true)
+    await resize(1200)
+    expect(
+      container.querySelector('[aria-label="Hide notes sidebar"]')?.getAttribute('aria-disabled')
+    ).toBe('false')
+    expect(notebook.getAttribute('data-pdf-notes-sidebar')).toBe('true')
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Show navigation"]')!.click()
+    )
+    expect(notebook.getAttribute('data-pdf-notes-sidebar')).toBe('true')
+    expect(notebook.hasAttribute('inert')).toBe(false)
+    const toggleWithNavigation = container.querySelector<HTMLButtonElement>(
+      '[role="tablist"] [aria-label="Hide notes sidebar"]'
+    )!
+    expect(toggleWithNavigation.getAttribute('aria-disabled')).toBe('false')
+    await act(async () => toggleWithNavigation.click())
+    expect(notebook.hasAttribute('inert')).toBe(true)
+    await act(async () => toggleWithNavigation.click())
+    expect(notebook.getAttribute('data-pdf-notes-sidebar')).toBe('true')
+    await resize(1480)
+    expect(notebook.getAttribute('data-pdf-notes-sidebar')).toBe('true')
+    expect(container.querySelectorAll('[data-pdf-notebook-view]')).toHaveLength(1)
+    expect(container.querySelector('[data-pdf-notebook-view]')).toBe(notebook)
+    expect(createManagedPdfLoadingTask).toHaveBeenCalledTimes(loadCount)
+    expect(window.api.previewResources.acquire).toHaveBeenCalledTimes(1)
+    expect(destroyDocument).not.toHaveBeenCalled()
+  })
+
+  it('switches Literature reading modes without releasing or resetting the original PDF', async () => {
+    window.api.pdfStructure = {
+      readCached: vi.fn().mockResolvedValue(undefined),
+      parse: vi.fn(() => new Promise(() => {})),
+      cancel: vi.fn().mockResolvedValue(undefined)
+    } as unknown as Window['api']['pdfStructure']
+    window.api.localModels = {
+      getSnapshot: vi.fn().mockResolvedValue({
+        availability: 'ready',
+        installedRevision: 'v1',
+        updateAvailable: false
+      })
+    } as unknown as Window['api']['localModels']
+    await act(async () =>
+      root.render(
+        <PdfPreviewContent
+          path="literature-attachment-version:version-1"
+          name="paper.pdf"
+          source="literature"
+          annotationProps={{
+            item: {
+              id: 'literature:version-1',
+              sessionId: 'literature-library',
+              type: 'file',
+              format: 'pdf',
+              source: 'literature',
+              path: 'literature-attachment-version:version-1',
+              name: 'paper.pdf',
+              title: 'paper.pdf'
+            }
+          }}
+        />
+      )
+    )
+    const original = container.querySelector<HTMLElement>('[data-pdf-original-view]')!
+    const scroller = original.querySelector<HTMLElement>('[role="region"]')!
+    // Only the real PDF scroller is a keyboard stop, not its structural tab wrapper.
+    expect(original.tabIndex).toBe(-1)
+    expect(scroller.tabIndex).toBe(0)
+    scroller.scrollTop = 275
+    const clickMode = async (label: string): Promise<void> => {
+      const button = [...container.querySelectorAll('button')].find(
+        (node) => node.textContent === label
+      )!
+      await act(async () =>
+        button.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
+      )
+    }
+    await clickMode('Figures & Tables')
+    const activeTab = container.querySelector('[role="tab"][aria-selected="true"]')!
+    expect(activeTab.textContent).toBe('Figures & Tables')
+    expect(container.querySelector('[data-pdf-figures-view]')?.id).toBe(
+      activeTab.getAttribute('aria-controls')
+    )
+    expect(original.getAttribute('aria-hidden')).toBe('true')
+    expect(original.hasAttribute('inert')).toBe(true)
+    expect(container.querySelector('[data-pdf-figures-view]')?.getAttribute('tabindex')).toBe('-1')
+    const figures = container.querySelector('[data-pdf-figures-content]')
+    expect(figures).not.toBeNull()
+    await act(async () => {
+      ;[...container.querySelectorAll('button')]
+        .find((node) => node.textContent === 'Analyze PDF')!
+        .click()
+    })
+    expect(activeTab.querySelector('[role="status"]')).not.toBeNull()
+    await clickMode('Original PDF')
+    expect(activeTab.querySelector('[role="status"]')).not.toBeNull()
+    expect(window.api.pdfStructure.cancel).not.toHaveBeenCalled()
+    expect(container.querySelector('[data-pdf-original-view]')).toBe(original)
+    expect(scroller.scrollTop).toBe(275)
+    expect(original.hasAttribute('inert')).toBe(false)
+    await clickMode('Figures & Tables')
+    expect(container.querySelector('[data-pdf-figures-content]')).toBe(figures)
+    await act(async () => {
+      ;[...container.querySelectorAll('button')]
+        .find((node) => node.textContent === 'Cancel')!
+        .click()
+    })
+    expect(activeTab.querySelector('[role="status"]')).toBeNull()
+    await act(async () =>
+      document.dispatchEvent(
+        new CustomEvent('pdf-reading-reveal', {
+          detail: { path: 'literature-attachment-version:version-1', pageNumber: 1 }
+        })
+      )
+    )
+    expect(original.getAttribute('aria-hidden')).toBe('false')
+    await clickMode('Figures & Tables')
+    await act(async () =>
+      document.dispatchEvent(
+        new CustomEvent('annotation-reveal-prepare', {
+          detail: {
+            kind: 'pdf',
+            source: { path: 'literature-attachment-version:version-1' },
+            selector: { pageNumber: 1 }
+          }
+        })
+      )
+    )
+    expect(original.getAttribute('aria-hidden')).toBe('false')
+    await clickMode('Figures & Tables')
+    expect(window.api.previewResources.acquire).toHaveBeenCalledOnce()
+    expect(window.api.previewResources.release).not.toHaveBeenCalled()
+    await act(async () =>
+      root.render(<PdfPreviewContent path="/workspace/other.pdf" name="other.pdf" source="local" />)
+    )
+    expect(container.querySelector('[data-pdf-figures-content]')).toBeNull()
+    expect(container.querySelector('[data-pdf-original-view]')?.getAttribute('aria-hidden')).toBe(
+      'false'
+    )
   })
 
   it('renders through the managed range resource and releases it on unmount', async () => {
@@ -500,6 +788,102 @@ describe('PdfPreviewContent', () => {
     }
   })
 
+  it('keeps the PDF resource and zoom while the conversation Session binds', async () => {
+    window.api.pdfAnnotations = {
+      list: vi.fn().mockResolvedValue({ items: [], total: 0 })
+    } as unknown as Window['api']['pdfAnnotations']
+    const render = async (sessionId?: string): Promise<void> => {
+      await act(async () => {
+        root.render(
+          <TooltipProvider>
+            <PdfAnnotationsProvider
+              projectId={sessionId ? 'project-1' : undefined}
+              sessionId={sessionId}
+              loadAnnotations={false}
+            >
+              <PdfPreviewRenderer
+                item={{
+                  id: 'upload-1',
+                  projectId: 'project-1',
+                  sessionId: 'creator',
+                  title: 'paper.pdf',
+                  type: 'file',
+                  source: 'upload',
+                  path: 'upload-version:version-1',
+                  name: 'paper.pdf',
+                  format: 'pdf',
+                  managedFileId: 'upload-1',
+                  selectedVersionId: 'version-1'
+                }}
+              />
+            </PdfAnnotationsProvider>
+          </TooltipProvider>
+        )
+        await flush()
+      })
+    }
+    await render()
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Zoom in' })))
+    expect(container.textContent).toContain('125%')
+    const scroll = screen.getByLabelText('paper.pdf scrollable preview')
+    const loads = vi.mocked(createManagedPdfLoadingTask).mock.calls.length
+    await render('pending-session')
+    await render('bound-session')
+    expect(container.textContent).toContain('125%')
+    expect(screen.getByLabelText('paper.pdf scrollable preview')).toBe(scroll)
+    expect(window.api.previewResources.acquire).toHaveBeenCalledTimes(1)
+    expect(createManagedPdfLoadingTask).toHaveBeenCalledTimes(loads)
+    expect(destroyDocument).not.toHaveBeenCalled()
+    expect(window.api.previewResources.release).not.toHaveBeenCalled()
+  })
+
+  it.each([undefined, 'artifact'] as const)(
+    'opens read-only replay PDF versions without writable annotation/bookmark access (source: %s)',
+    async (source) => {
+      const list = vi.fn()
+      const resolveSource = vi.fn()
+      window.api.pdfAnnotations = { list } as never
+      window.api.bookmarks = { resolveSource } as never
+      useSessionStore.setState({
+        selectedSessionId: 'discussion',
+        sessions: [{ id: 'discussion', projectId: 'project-1' }] as never
+      })
+      await act(async () => {
+        root.render(
+          <PdfPreviewRenderer
+            readOnly
+            item={{
+              id: 'recorded-pdf',
+              projectId: 'project-1',
+              sessionId: 'creator',
+              title: 'report.pdf',
+              name: 'report.pdf',
+              type: 'file',
+              format: 'pdf',
+              source,
+              path: 'artifact-version:historical',
+              managedFileId: 'artifact-1',
+              selectedVersionId: 'historical'
+            }}
+          />
+        )
+        await flush()
+      })
+      await vi.waitFor(() =>
+        expect(window.api.previewResources.acquire).toHaveBeenCalledWith({
+          source: 'artifact',
+          projectId: 'project-1',
+          fileId: 'artifact-1',
+          versionId: 'historical'
+        })
+      )
+      expect(list).not.toHaveBeenCalled()
+      expect(resolveSource).not.toHaveBeenCalled()
+      await act(async () => root.render(null))
+      expect(window.api.previewResources.release).toHaveBeenCalled()
+    }
+  )
+
   it('acquires the exact managed Artifact version selected by the preview item', async () => {
     await act(async () => {
       root.render(
@@ -530,6 +914,472 @@ describe('PdfPreviewContent', () => {
       })
     )
   })
+
+  it.each([undefined, 'another-project'])(
+    'reveals a project annotation from its document provider with selected project %s',
+    async (selectedProject) => {
+      useSessionStore.setState({
+        selectedSessionId: selectedProject ? 'other-session' : undefined,
+        sessions: selectedProject ? [{ id: 'other-session', projectId: selectedProject }] : []
+      } as never)
+      const annotation: SavedPdfAnnotation = {
+        id: 'note-1',
+        projectId: 'project-1',
+        version: 1,
+        origin: 'user',
+        kind: 'page-note',
+        tagIds: [],
+        note: 'Saved evidence',
+        createdAt: '2026-09-19T00:00:00.000Z',
+        updatedAt: '2026-09-19T00:00:00.000Z',
+        target: {
+          source: {
+            kind: 'upload-version',
+            projectId: 'project-1',
+            sessionId: 'creator',
+            sourceFileId: 'upload-1',
+            versionId: 'version-1',
+            name: 'paper.pdf',
+            path: 'upload-version:version-1',
+            checksum: 'a'.repeat(64)
+          },
+          selector: { kind: 'page-note', pageNumber: 1, pageRotation: 0, coordinateVersion: 1 }
+        }
+      }
+      const resolvePdfSource = vi.fn()
+      window.api = {
+        ...window.api,
+        bookmarks: { resolvePdfSource },
+        pdfAnnotations: {
+          list: vi
+            .fn()
+            .mockResolvedValue({ items: [annotation], total: 1, nativeImport: { nativeRefs: [] } })
+        },
+        tags: { snapshot: vi.fn().mockResolvedValue({ revision: 0, tags: [], assignments: [] }) }
+      } as unknown as Window['api']
+      await act(async () =>
+        root.render(
+          <TooltipProvider>
+            <PdfAnnotationsProvider
+              projectId="project-1"
+              sourceFileId="upload-1"
+              versionId="version-1"
+            >
+              <PdfPreviewRenderer
+                item={{
+                  id: 'upload-1',
+                  projectId: 'project-1',
+                  sessionId: 'creator',
+                  title: 'paper.pdf',
+                  type: 'file',
+                  source: 'upload',
+                  path: annotation.target.source.path,
+                  name: 'paper.pdf',
+                  format: 'pdf',
+                  managedFileId: 'upload-1',
+                  selectedVersionId: 'version-1'
+                }}
+              />
+            </PdfAnnotationsProvider>
+          </TooltipProvider>
+        )
+      )
+      await vi.waitFor(() =>
+        expect(
+          container.querySelector<HTMLButtonElement>('[aria-label="Annotate selected text"]')
+            ?.disabled
+        ).toBe(false)
+      )
+      let outcome: string | undefined
+      await act(async () => {
+        outcome = await requestPdfAnnotationReveal(annotation, { activatePreview: false })
+      })
+      expect(outcome).toBe('revealed')
+      expect(resolvePdfSource).not.toHaveBeenCalled()
+      expect(useSessionStore.getState().selectedSessionId).toBe(
+        selectedProject ? 'other-session' : undefined
+      )
+    }
+  )
+
+  it.each([undefined, 'project-1'])(
+    'enables annotations from Literature with project context %s and shows the empty Notes page',
+    async (projectId) => {
+      const source = {
+        kind: 'literature-attachment-version' as const,
+        sourceFileId: 'attachment-1',
+        versionId: 'version-1',
+        name: 'paper.pdf',
+        path: 'literature-attachment-version:version-1',
+        checksum: 'a'.repeat(64)
+      }
+      window.api = {
+        ...window.api,
+        pdfAnnotations: { list: vi.fn().mockResolvedValue({ items: [], total: 0, source }) },
+        tags: { snapshot: vi.fn().mockResolvedValue({ revision: 0, tags: [], assignments: [] }) }
+      } as unknown as Window['api']
+      await act(async () =>
+        root.render(
+          <PdfPreviewRenderer
+            item={{
+              id: 'library-pdf',
+              projectId,
+              sessionId: 'literature-preview',
+              title: 'paper.pdf',
+              name: 'paper.pdf',
+              path: source.path,
+              type: 'file',
+              format: 'pdf',
+              source: 'literature',
+              managedFileId: 'attachment-1'
+            }}
+          />
+        )
+      )
+      await vi.waitFor(() =>
+        expect(
+          container.querySelector<HTMLButtonElement>('[aria-label="Annotate selected text"]')
+            ?.disabled
+        ).toBe(false)
+      )
+      expect(
+        container.querySelector<HTMLButtonElement>('[aria-label="Select area to annotate"]')
+          ?.disabled
+      ).toBe(false)
+      expect(window.api.pdfAnnotations.list).toHaveBeenCalledWith({
+        literatureVersionId: 'version-1',
+        sourceFileId: 'attachment-1',
+        versionId: 'version-1',
+        limit: 100,
+        cursor: undefined
+      })
+      const tabs = [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
+      expect(tabs).toHaveLength(3)
+      for (const tab of tabs) expect(tab.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
+      await act(async () =>
+        fireEvent.mouseDown(
+          tabs.find((tab) => tab.textContent === 'Notes & Annotations')!,
+          { button: 0, ctrlKey: false }
+        )
+      )
+      expect(container.querySelector('[data-pdf-notebook-view]')?.textContent).toContain(
+        'No annotations yet.'
+      )
+      const back = [
+        ...container.querySelectorAll<HTMLButtonElement>('[data-pdf-notebook-view] button')
+      ].find((button) => button.textContent === 'Original PDF')!
+      await act(async () => back.click())
+      expect(tabs[0].getAttribute('data-state')).toBe('active')
+      await act(async () =>
+        fireEvent.keyDown(container.querySelector('[aria-label="Area selection actions"]')!, {
+          key: 'Enter'
+        })
+      )
+      const unavailable = screen.getByRole('menuitem', { name: 'Select area for Agent' })
+      expect(unavailable.getAttribute('aria-disabled')).toBe('true')
+      await act(async () => {
+        unavailable.focus()
+      })
+      await vi.waitFor(() =>
+        expect(screen.getByRole('tooltip').textContent).toBe(
+          'Open this PDF in a conversation to send an area to Agent.'
+        )
+      )
+      await act(async () => fireEvent.click(unavailable))
+      expect(
+        container.querySelector('[data-pdf-cursor-mode]')?.getAttribute('data-pdf-cursor-mode')
+      ).toBe('select')
+      expect(screen.getByRole('menuitem', { name: 'Select area to annotate' })).not.toBeNull()
+    }
+  )
+
+  it('adds a Library PDF region to a new conversation draft and disables selection after unlink', async () => {
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400)
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue({
+      drawImage: vi.fn()
+    } as unknown as CanvasRenderingContext2D)
+    vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,AQID')
+    const source = {
+      kind: 'literature-attachment-version' as const,
+      sourceFileId: 'attachment-1',
+      versionId: 'version-1',
+      name: 'paper.pdf',
+      path: 'literature-attachment-version:version-1',
+      checksum: 'a'.repeat(64)
+    }
+    const onAddAnnotation = vi.fn()
+    const createSession = vi.fn()
+    window.api = {
+      ...window.api,
+      sessions: { create: createSession },
+      pdfAnnotations: { list: vi.fn().mockResolvedValue({ items: [], total: 0, source }) },
+      tags: { snapshot: vi.fn().mockResolvedValue({ revision: 0, tags: [], assignments: [] }) }
+    } as unknown as Window['api']
+    usePreviewWorkbenchStore.setState({
+      activeProjectId: 'project-1',
+      pendingPdfContextByProject: {
+        'project-1': {
+          kind: 'version',
+          sourceKind: source.kind,
+          sourceVersionId: source.versionId,
+          previewItemId: 'library-pdf'
+        }
+      }
+    })
+    await act(async () => {
+      root.render(
+        <PdfPreviewRenderer
+          item={{
+            id: 'library-pdf',
+            projectId: 'project-1',
+            sessionId: '__literature__',
+            title: source.name,
+            name: source.name,
+            path: source.path,
+            type: 'file',
+            format: 'pdf',
+            source: 'literature',
+            managedFileId: source.sourceFileId
+          }}
+          onAddAnnotation={onAddAnnotation}
+        />
+      )
+      await flush()
+    })
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Select area for Agent"]')!.click()
+    )
+    const overlay = container.querySelector<HTMLElement>('[data-pdf-region-selection]')!
+    expect(overlay).not.toBeNull()
+    overlay.setPointerCapture = vi.fn()
+    overlay.hasPointerCapture = vi.fn(() => true)
+    overlay.releasePointerCapture = vi.fn()
+    overlay.getBoundingClientRect = () => new DOMRect(0, 0, 400, 560)
+    await act(async () =>
+      dispatchPointer(overlay, 'pointerdown', { clientX: 40, clientY: 56, button: 0 })
+    )
+    await act(async () =>
+      dispatchPointer(overlay, 'pointerup', { clientX: 200, clientY: 280, button: 0 })
+    )
+    expect(onAddAnnotation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'pdf',
+        target: 'agent',
+        source: { ...source, projectId: 'project-1' },
+        selector: expect.objectContaining({ kind: 'region', pageNumber: 1 })
+      })
+    )
+    expect(createSession).not.toHaveBeenCalled()
+    expect(useSessionStore.getState().sessions).toHaveLength(0)
+    await act(async () => {
+      usePreviewWorkbenchStore.getState().setPendingPdfContext('project-1', undefined)
+    })
+    await act(async () =>
+      fireEvent.keyDown(container.querySelector('[aria-label="Area selection actions"]')!, {
+        key: 'Enter'
+      })
+    )
+    expect(
+      screen.getByRole('menuitem', { name: 'Select area for Agent' }).getAttribute('aria-disabled')
+    ).toBe('true')
+  })
+
+  it.each(['artifact', 'upload'] as const)(
+    'resolves a draft %s PDF from its exact managed Version',
+    async (source) => {
+      const inspect = vi.fn().mockResolvedValue({
+        ok: true,
+        value: {
+          sessionId: 'source-session',
+          selectedVersion: {
+            id: 'version-1',
+            fileId: 'file-1',
+            source,
+            displayName: 'paper.pdf',
+            checksum: 'b'.repeat(64),
+            sizeBytes: 10
+          }
+        }
+      })
+      window.api = {
+        ...window.api,
+        managedFileVersions: { inspect },
+        pdfAnnotations: { list: vi.fn().mockResolvedValue({ items: [], total: 0 }) },
+        tags: { snapshot: vi.fn().mockResolvedValue({ revision: 0, tags: [], assignments: [] }) }
+      } as unknown as Window['api']
+      usePreviewWorkbenchStore.setState({
+        activeProjectId: 'project-1',
+        pendingPdfContextByProject: {
+          'project-1': {
+            kind: 'version',
+            sourceKind: source === 'artifact' ? 'artifact-version' : 'upload-version',
+            sourceFileId: 'file-1',
+            sourceVersionId: 'version-1',
+            previewItemId: 'file-1'
+          }
+        }
+      })
+      await act(async () => {
+        root.render(
+          <PdfPreviewRenderer
+            item={{
+              id: 'file-1',
+              projectId: 'project-1',
+              sessionId: 'source-session',
+              title: 'paper.pdf',
+              name: 'paper.pdf',
+              path:
+                source === 'upload'
+                  ? 'upload-version:project-1/source-session/file-1/version-1'
+                  : 'unused-path',
+              type: 'file',
+              format: 'pdf',
+              source,
+              managedFileId: 'file-1',
+              selectedVersionId: 'version-1'
+            }}
+            onAddAnnotation={vi.fn()}
+          />
+        )
+        await flush()
+      })
+      expect(inspect).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        source,
+        fileId: 'file-1',
+        versionId: 'version-1'
+      })
+      await act(async () =>
+        container.querySelector<HTMLButtonElement>('[aria-label="Select area for Agent"]')!.click()
+      )
+      expect(
+        container.querySelector('[data-pdf-cursor-mode]')?.getAttribute('data-pdf-cursor-mode')
+      ).toBe('area')
+      await act(async () => usePreviewWorkbenchStore.setState({ activeProjectId: 'other-project' }))
+      expect(
+        container.querySelector('[data-pdf-cursor-mode]')?.getAttribute('data-pdf-cursor-mode')
+      ).toBe('select')
+    }
+  )
+
+  it('resolves an exact bookmark source without a PDF Agent-context binding', async () => {
+    const resolvePdfSource = vi.fn().mockResolvedValue({ ok: false, reason: 'source-unavailable' })
+    window.api = {
+      ...window.api,
+      bookmarks: { resolvePdfSource }
+    } as unknown as Window['api']
+    useSessionStore.setState({
+      selectedSessionId: 'session-owner',
+      sessions: [{ id: 'session-owner', projectId: 'project-1' }]
+    } as never)
+
+    await act(async () => {
+      root.render(
+        <PdfPreviewRenderer
+          item={{
+            id: 'artifact-1',
+            projectId: 'project-1',
+            sessionId: 'source-session',
+            title: 'report.pdf',
+            type: 'file',
+            source: 'artifact',
+            path: 'artifact-version:stale-projection',
+            name: 'report.pdf',
+            format: 'pdf',
+            managedFileId: 'artifact-1',
+            selectedVersionId: 'artifact-v2'
+          }}
+        />
+      )
+    })
+
+    await vi.waitFor(() =>
+      expect(resolvePdfSource).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        sessionId: 'session-owner',
+        sourceKind: 'artifact-version',
+        sourceFileId: 'artifact-1',
+        versionId: 'artifact-v2'
+      })
+    )
+  })
+
+  it.each(['upload', 'artifact'] as const)(
+    'opens Figures & Tables for a finalized %s without Agent context',
+    async (kind) => {
+      const source = {
+        kind: kind === 'upload' ? ('upload-version' as const) : ('artifact-version' as const),
+        projectId: 'project-1',
+        sessionId: 'source-session',
+        sourceFileId: 'file-1',
+        versionId: 'version-1',
+        checksum: 'a'.repeat(64),
+        name: 'paper.pdf',
+        path:
+          kind === 'upload'
+            ? 'upload-version:project-1/source-session/file-1/version-1'
+            : 'artifact-version:version-1'
+      }
+      window.api = {
+        ...window.api,
+        bookmarks: { resolvePdfSource: vi.fn().mockResolvedValue({ ok: true, source }) },
+        pdfAnnotations: { list: vi.fn().mockResolvedValue({ items: [], total: 0 }) },
+        tags: { snapshot: vi.fn().mockResolvedValue({ revision: 0, tags: [], assignments: [] }) },
+        localModels: {
+          getSnapshot: vi.fn().mockResolvedValue({
+            installedRevision: 'v1',
+            availability: 'ready',
+            updateAvailable: false
+          })
+        }
+      } as unknown as Window['api']
+      useSessionStore.setState({
+        selectedSessionId: 'session-owner',
+        sessions: [{ id: 'session-owner', projectId: 'project-1' }]
+      } as never)
+      await act(async () => {
+        root.render(
+          <PdfPreviewRenderer
+            item={{
+              id: 'file-1',
+              type: 'file',
+              format: 'pdf',
+              source: kind,
+              projectId: 'project-1',
+              sessionId: 'source-session',
+              managedFileId: 'file-1',
+              selectedVersionId: 'version-1',
+              title: 'paper.pdf',
+              name: 'paper.pdf',
+              path: source.path
+            }}
+          />
+        )
+        await flush()
+      })
+      expect(window.api.pdfStructure.parse).not.toHaveBeenCalled()
+      const figures = screen.getByRole('tab', { name: /Figures & Tables/ })
+      await act(async () => fireEvent.mouseDown(figures, { button: 0 }))
+      expect(figures.getAttribute('aria-selected')).toBe('true')
+      expect(window.api.pdfStructure.parse).not.toHaveBeenCalled()
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Analyze PDF' })))
+      expect(window.api.pdfStructure.parse).toHaveBeenCalledWith({
+        source: {
+          kind: 'managed',
+          projectId: 'project-1',
+          sourceKind: source.kind,
+          sourceFileId: 'file-1',
+          sourceVersionId: 'version-1'
+        },
+        page: 1,
+        requestId: expect.any(String)
+      })
+      expect(useSessionStore.getState().sessions[0].runtimeContext).toBeUndefined()
+      expect(screen.getByRole('tab', { name: 'Notes & Annotations' })).not.toBeNull()
+      await act(async () => root.render(<div />))
+      expect(window.api.pdfStructure.cancel).toHaveBeenCalledOnce()
+    }
+  )
 
   it('shows a native outline, expands nested sections, and navigates to their PDF pages', async () => {
     const getDestination = vi.fn().mockResolvedValue([{ num: 20, gen: 0 }])
@@ -565,7 +1415,7 @@ describe('PdfPreviewContent', () => {
       expect(button).not.toBeNull()
       return button!
     })
-    expect(outlineToggle.title).toBe('Navigation')
+    expect(outlineToggle.hasAttribute('title')).toBe(false)
 
     await act(async () => outlineToggle.click())
     const outline = container.querySelector<HTMLElement>('#pdf-navigation-sidebar')!
@@ -774,6 +1624,35 @@ describe('PdfPreviewContent', () => {
     )
     expect(thumbnails.length).toBeGreaterThan(0)
     expect(thumbnails.length).toBeLessThanOrEqual(24)
+  })
+
+  it('keeps search presentation in document flow without reader controls or intercepted shortcuts', async () => {
+    await act(async () => {
+      root.render(
+        <PdfPreviewContent
+          path="literature-attachment-version:version-1"
+          name="paper.pdf"
+          source="literature"
+          presentation="search"
+        />
+      )
+    })
+    await vi.waitFor(() => expect(container.querySelector('canvas')).not.toBeNull())
+    const original = container.querySelector<HTMLElement>('[data-pdf-original-view]')!
+    const scroll = original.querySelector<HTMLElement>('[role="region"]')!
+    expect(original.classList.contains('absolute')).toBe(false)
+    expect(scroll.classList.contains('overflow-auto')).toBe(false)
+    expect(container.querySelector('[aria-label="PDF reading mode"]')).toBeNull()
+    expect(container.querySelector('[aria-label="Zoom in"]')).toBeNull()
+    const shortcut = new KeyboardEvent('keydown', {
+      key: 'f',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true
+    })
+    await act(async () => scroll.dispatchEvent(shortcut))
+    expect(shortcut.defaultPrevented).toBe(false)
+    expect(container.querySelector('[aria-label="Search document"]')).toBeNull()
   })
 
   it('scopes Cmd+F to the PDF and searches every page without opening a global search', async () => {
@@ -1550,6 +2429,122 @@ describe('PdfPreviewContent', () => {
     expect(container.querySelector('[data-pdf-page-control]')?.textContent).toBe('2/3')
   })
 
+  it.each([
+    ['interaction', 'Show navigation', 'Hand', 200],
+    ['view', 'Page 1 of 2', 'Zoom in', 200]
+  ])(
+    'delays the first hint and shares a 300ms skip window in the %s toolbar',
+    async (_, firstLabel, nextLabel, delay) => {
+      vi.mocked(createManagedPdfLoadingTask).mockReturnValue({
+        promise: Promise.resolve({ numPages: 2, getPage, destroy: destroyDocument }),
+        destroy: vi.fn().mockResolvedValue(undefined)
+      } as never)
+      await act(async () => {
+        root.render(<PdfPreviewContent path="/workspace/hints.pdf" name="hints.pdf" />)
+      })
+      await vi.waitFor(() => expect(container.querySelector('canvas')).not.toBeNull())
+      vi.useFakeTimers()
+      const first = container.querySelector<HTMLButtonElement>(`[aria-label="${firstLabel}"]`)!
+      const next = container.querySelector<HTMLButtonElement>(`[aria-label="${nextLabel}"]`)!
+      const hover = (element: Element): void => {
+        fireEvent.pointerOver(element, { pointerType: 'mouse' })
+        fireEvent.pointerMove(element, { pointerType: 'mouse' })
+      }
+      const leave = (element: Element): void => {
+        fireEvent.pointerLeave(element)
+        fireEvent.pointerMove(document.body, { pointerType: 'mouse', clientX: 1000, clientY: 1000 })
+      }
+      expect(first.hasAttribute('title')).toBe(false)
+      hover(first)
+      await act(async () => vi.advanceTimersByTimeAsync(delay - 1))
+      expect(first.getAttribute('data-state')).toBe('closed')
+      await act(async () => vi.advanceTimersByTimeAsync(1))
+      expect(first.getAttribute('data-state')).toBe('delayed-open')
+      leave(first)
+      hover(next)
+      await act(async () => vi.advanceTimersByTimeAsync(0))
+      expect(next.getAttribute('data-state')).toBe('instant-open')
+      leave(next)
+      await act(async () => vi.advanceTimersByTimeAsync(301))
+      hover(first)
+      await act(async () => vi.advanceTimersByTimeAsync(delay - 1))
+      expect(first.getAttribute('data-state')).toBe('closed')
+      await act(async () => vi.advanceTimersByTimeAsync(1))
+      expect(first.getAttribute('data-state')).toBe('delayed-open')
+      act(() => fireEvent.keyDown(first, { key: 'Escape' }))
+      expect(first.getAttribute('data-state')).toBe('closed')
+    }
+  )
+
+  it('explains page entry on focus and dismisses the hint while editing or cancelling', async () => {
+    await act(async () => {
+      root.render(<PdfPreviewContent path="/workspace/hints.pdf" name="hints.pdf" />)
+    })
+    await vi.waitFor(() => expect(container.querySelector('canvas')).not.toBeNull())
+    const button = container.querySelector<HTMLButtonElement>('[data-pdf-page-control] button')!
+    await act(async () => button.focus())
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(
+      'Click to enter a page number'
+    )
+    await act(async () => button.click())
+    const input = container.querySelector<HTMLInputElement>('[data-pdf-page-control] input')!
+    expect(document.activeElement).toBe(input)
+    expect(document.querySelector('[role="tooltip"]')).toBeNull()
+    act(() => fireEvent.change(input, { target: { value: '99' } }))
+    act(() => fireEvent.keyDown(input, { key: 'Escape' }))
+    expect(container.querySelector('[data-pdf-page-control]')?.textContent).toBe('1/1')
+    expect(document.querySelector('[role="tooltip"]')).toBeNull()
+  })
+
+  it('provides keyboard hints for search actions and the sidebar close action', async () => {
+    vi.mocked(createManagedPdfLoadingTask).mockReturnValue({
+      promise: Promise.resolve({ numPages: 2, getPage, destroy: destroyDocument }),
+      destroy: vi.fn().mockResolvedValue(undefined)
+    } as never)
+    await act(async () => {
+      root.render(<PdfPreviewContent path="/workspace/hints.pdf" name="hints.pdf" />)
+    })
+    await vi.waitFor(() => expect(container.querySelector('canvas')).not.toBeNull())
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Search"]')!.click()
+    )
+    act(() =>
+      fireEvent.change(container.querySelector('[aria-label="Search document"]')!, {
+        target: { value: 'Selectable' }
+      })
+    )
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector<HTMLButtonElement>('[aria-label="Next match"]')?.disabled
+      ).toBe(false)
+    )
+    for (const label of ['Previous match', 'Next match', 'Close search']) {
+      const button = container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!
+      await act(async () => button.focus())
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(label)
+      act(() => fireEvent.keyDown(button, { key: 'Escape' }))
+      expect(document.querySelector('[role="tooltip"]')).toBeNull()
+    }
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Close search"]')!.click()
+    )
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Show navigation"]')!.click()
+    )
+    const close = container.querySelector<HTMLButtonElement>(
+      'aside [aria-label="Hide navigation"]'
+    )!
+    expect(close.hasAttribute('title')).toBe(false)
+    await act(async () => close.focus())
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toBe('Hide navigation')
+    await act(async () => close.click())
+    expect(container.querySelector('aside')).toBeNull()
+    expect(document.querySelector('[role="tooltip"]')).toBeNull()
+    expect(
+      container.querySelector('[aria-label="Show navigation"] .lucide-panel-left')
+    ).not.toBeNull()
+  })
+
   it('matches the artifact image zoom action order and reset icon', async () => {
     await act(async () => {
       root.render(<PdfPreviewContent path="/workspace/paper.pdf" name="paper.pdf" />)
@@ -1565,7 +2560,9 @@ describe('PdfPreviewContent', () => {
       'Reset zoom'
     ])
     expect(zoomButtons.at(-1)?.querySelector('.lucide-shrink')).not.toBeNull()
-    expect(container.querySelector('[data-pdf-controls="view"] [aria-label="Area"]')).toBeNull()
+    expect(
+      container.querySelector('[data-pdf-controls="view"] [aria-label="Select area for Agent"]')
+    ).toBeNull()
     expect(
       container.querySelector('[data-pdf-controls="interaction"] [aria-label="Back"]')
     ).toBeNull()
@@ -1573,7 +2570,7 @@ describe('PdfPreviewContent', () => {
       container.querySelector('[data-pdf-controls="interaction"] [aria-label="Forward"]')
     ).toBeNull()
     expect(
-      Array.from(container.querySelectorAll('[data-pdf-controls] button')).every(
+      Array.from(container.querySelectorAll('[data-pdf-controls="view"] button')).every(
         (button) => button.getAttribute('data-size') === 'icon-sm'
       )
     ).toBe(true)
@@ -2067,15 +3064,17 @@ describe('PdfPreviewContent', () => {
     expect(container.querySelector('[data-pdf-evidence-highlight="region-1"]')).not.toBe(revealed)
 
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[aria-label="Area"]')?.click()
+      container.querySelector<HTMLButtonElement>('[aria-label="Select area for Agent"]')?.click()
     })
     expect(container.querySelector('[data-pdf-region-selection="true"]')).not.toBeNull()
     expect(
       container
-        .querySelector('[data-pdf-controls="interaction"] [aria-label="Area"]')
+        .querySelector('[data-pdf-controls="interaction"] [aria-label="Select area for Agent"]')
         ?.getAttribute('aria-pressed')
     ).toBe('true')
-    expect(container.querySelector('[data-pdf-controls="view"] [aria-label="Area"]')).toBeNull()
+    expect(
+      container.querySelector('[data-pdf-controls="view"] [aria-label="Select area for Agent"]')
+    ).toBeNull()
 
     const areaSelection = container.querySelector<HTMLElement>(
       '[data-pdf-region-selection="true"]'
@@ -2105,6 +3104,331 @@ describe('PdfPreviewContent', () => {
     expect(container.querySelector('[data-pdf-region-draft="true"]')).toBeNull()
 
     clientWidthSpy.mockRestore()
+  })
+
+  it('keeps the toolbar text tool exclusive, preserves its style, and exits on Escape', async () => {
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400)
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue({
+      drawImage: vi.fn()
+    } as unknown as CanvasRenderingContext2D)
+    vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,AQID')
+    const source = {
+      kind: 'upload-version' as const,
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      sourceFileId: 'upload-1',
+      versionId: 'version-1',
+      name: 'paper.pdf',
+      path: 'upload-version:version-1',
+      checksum: 'a'.repeat(64)
+    }
+    const onAddAnnotation = vi.fn()
+    const create = vi.fn(async (input) => ({
+      ...input,
+      version: 1,
+      createdAt: '2026-09-19T00:00:00.000Z',
+      updatedAt: '2026-09-19T00:00:00.000Z'
+    }))
+    window.api = {
+      ...window.api,
+      pdfAnnotations: { list: vi.fn().mockResolvedValue({ items: [], total: 0 }), create }
+    } as unknown as Window['api']
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <PdfAnnotationsProvider projectId="project-1" sessionId="session-1">
+            <PdfPreviewContent
+              path={source.path}
+              name={source.name}
+              source="upload"
+              projectId={source.projectId}
+              sessionId={source.sessionId}
+              managedFileId="upload-1"
+              selectedVersionId={source.versionId}
+              pdfEvidenceSource={source}
+              pdfBookmarkSource={source}
+              annotationProps={{
+                item: {
+                  id: 'upload-1',
+                  type: 'file',
+                  format: 'pdf',
+                  source: 'upload',
+                  projectId: 'project-1',
+                  sessionId: 'session-1',
+                  path: source.path,
+                  name: source.name,
+                  title: source.name
+                },
+                onAddAnnotation
+              }}
+            />
+          </PdfAnnotationsProvider>
+        </TooltipProvider>
+      )
+      await flush()
+    })
+    const tool = (): HTMLButtonElement =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Annotate selected text"]')!
+    expect(tool().disabled).toBe(false)
+    await act(async () => tool().click())
+    expect(tool().getAttribute('aria-pressed')).toBe('true')
+    const styleTrigger = (): HTMLButtonElement =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Mark style"]')!
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const previousFocus = document.activeElement
+    await act(async () => {
+      fireEvent.pointerEnter(tool(), { pointerType: 'mouse' })
+      await vi.advanceTimersByTimeAsync(120)
+    })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    await act(async () => {
+      fireEvent.pointerEnter(styleTrigger(), { pointerType: 'mouse' })
+      await vi.advanceTimersByTimeAsync(120)
+    })
+    expect(screen.getByRole('dialog')).not.toBeNull()
+    expect(document.activeElement).toBe(previousFocus)
+    await act(async () => {
+      fireEvent.pointerLeave(styleTrigger(), { pointerType: 'mouse' })
+      fireEvent.pointerEnter(screen.getByRole('dialog'), { pointerType: 'mouse' })
+      await vi.advanceTimersByTimeAsync(200)
+    })
+    expect(screen.getByRole('dialog')).not.toBeNull()
+    await act(async () => {
+      fireEvent.pointerLeave(screen.getByRole('dialog'), { pointerType: 'mouse' })
+      await vi.advanceTimersByTimeAsync(180)
+    })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    const areaTrigger = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Area selection actions"]'
+    )!
+    await act(async () => {
+      fireEvent.pointerEnter(areaTrigger, { pointerType: 'mouse' })
+      await vi.advanceTimersByTimeAsync(120)
+    })
+    expect(screen.getByRole('menu')).not.toBeNull()
+    await act(async () => {
+      fireEvent.pointerLeave(areaTrigger, { pointerType: 'mouse' })
+      fireEvent.pointerEnter(screen.getByRole('menu'), { pointerType: 'mouse' })
+      await vi.advanceTimersByTimeAsync(200)
+    })
+    expect(screen.getByRole('menu')).not.toBeNull()
+    await act(async () => {
+      fireEvent.pointerDown(areaTrigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.pointerLeave(screen.getByRole('menu'), { pointerType: 'mouse' })
+      await vi.advanceTimersByTimeAsync(200)
+    })
+    expect(screen.getByRole('menu')).not.toBeNull()
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+    })
+    expect(screen.queryByRole('menu')).toBeNull()
+    vi.useRealTimers()
+    await act(async () => styleTrigger().click())
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Wavy underline' })))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Purple' })))
+    expect(screen.getByRole('button', { name: 'Purple' }).getAttribute('aria-pressed')).toBe('true')
+    await act(async () =>
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Purple' }), { key: 'Escape' })
+    )
+    expect(tool().getAttribute('aria-pressed')).toBe('true')
+    container.setAttribute('role', 'dialog')
+    await act(async () =>
+      fireEvent.keyDown(container.querySelector('[data-pdf-preview-root]')!, { key: 'Escape' })
+    )
+    await act(flush)
+    expect(tool().getAttribute('aria-pressed')).toBe('false')
+    expect(
+      container.querySelector('[data-pdf-cursor-mode]')?.getAttribute('data-pdf-cursor-mode')
+    ).toBe('select')
+    await act(async () => tool().click())
+    await act(async () => styleTrigger().click())
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
+    expect(
+      screen.getByRole('button', { name: 'Wavy underline' }).getAttribute('aria-pressed')
+    ).toBe('true')
+    await act(async () =>
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Purple' }), { key: 'Escape' })
+    )
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Hand"]')!.click()
+    )
+    expect(tool().getAttribute('aria-pressed')).toBe('false')
+    expect(create).not.toHaveBeenCalled()
+    expect(onAddAnnotation).not.toHaveBeenCalled()
+  })
+
+  it('keeps area-to-Agent immediate and routes area annotations independently, then resets the mode', async () => {
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400)
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue({
+      drawImage: vi.fn()
+    } as unknown as CanvasRenderingContext2D)
+    vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,AQID')
+    const source = {
+      kind: 'upload-version' as const,
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      sourceFileId: 'upload-1',
+      versionId: 'version-1',
+      name: 'paper.pdf',
+      path: 'upload-version:version-1',
+      checksum: 'a'.repeat(64)
+    }
+    const onAddAnnotation = vi.fn()
+    const create = vi.fn(async (input) => ({
+      ...input,
+      version: 1,
+      createdAt: '2026-09-19T00:00:00.000Z',
+      updatedAt: '2026-09-19T00:00:00.000Z'
+    }))
+    window.api = {
+      ...window.api,
+      pdfAnnotations: { list: vi.fn().mockResolvedValue({ items: [], total: 0 }), create }
+    } as unknown as Window['api']
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <PdfAnnotationsProvider projectId="project-1" sessionId="session-1">
+            <PdfPreviewContent
+              path={source.path}
+              name={source.name}
+              source="upload"
+              projectId={source.projectId}
+              sessionId={source.sessionId}
+              managedFileId="upload-1"
+              selectedVersionId={source.versionId}
+              pdfEvidenceSource={source}
+              pdfBookmarkSource={source}
+              annotationProps={{
+                item: {
+                  id: 'upload-1',
+                  type: 'file',
+                  format: 'pdf',
+                  source: 'upload',
+                  projectId: 'project-1',
+                  sessionId: 'session-1',
+                  path: source.path,
+                  name: source.name,
+                  title: source.name
+                },
+                onAddAnnotation
+              }}
+            />
+          </PdfAnnotationsProvider>
+        </TooltipProvider>
+      )
+      await flush()
+    })
+    const dragArea = async (): Promise<void> => {
+      const overlay = container.querySelector<HTMLElement>('[data-pdf-region-selection]')!
+      expect(overlay).not.toBeNull()
+      overlay.setPointerCapture = vi.fn()
+      overlay.hasPointerCapture = vi.fn(() => true)
+      overlay.releasePointerCapture = vi.fn()
+      overlay.getBoundingClientRect = () => new DOMRect(0, 0, 400, 560)
+      await act(async () =>
+        dispatchPointer(overlay, 'pointerdown', { clientX: 40, clientY: 56, button: 0 })
+      )
+      await act(async () =>
+        dispatchPointer(overlay, 'pointerup', { clientX: 200, clientY: 280, button: 0 })
+      )
+    }
+    const startAnnotation = async (): Promise<void> => {
+      await act(async () =>
+        fireEvent.keyDown(container.querySelector('[aria-label="Area selection actions"]')!, {
+          key: 'Enter'
+        })
+      )
+      const item = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
+        (item) => item.textContent === 'Select area to annotate'
+      )!
+      expect(item).toBeDefined()
+      await act(async () => item.click())
+      // Let the closing menu restore focus before beginning the next pointer gesture.
+      await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
+      expect(container.textContent).toContain('Drag to annotate an area')
+    }
+    const expectReset = (): void => {
+      expect(container.querySelector('[data-pdf-region-selection]')).toBeNull()
+      expect(document.querySelector('[data-pdf-region-bookmark-editor]')).toBeNull()
+      expect(container.querySelector('[aria-label="Select"]')?.getAttribute('aria-pressed')).toBe(
+        'true'
+      )
+      expect(
+        container
+          .querySelector('[aria-label="Select area for Agent"]')
+          ?.getAttribute('aria-pressed')
+      ).toBe('false')
+    }
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Select area for Agent"]')!.click()
+    )
+    await dragArea()
+    expect(onAddAnnotation).toHaveBeenCalledTimes(1)
+    expect(onAddAnnotation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'pdf',
+        target: 'agent',
+        selector: expect.objectContaining({
+          kind: 'region',
+          image: expect.objectContaining({ mimeType: 'image/png' })
+        })
+      })
+    )
+    expect(create).not.toHaveBeenCalled()
+    expectReset()
+
+    await startAnnotation()
+    await dragArea()
+    await waitFor(() =>
+      expect(document.querySelector('[data-pdf-region-bookmark-editor]')).not.toBeNull()
+    )
+    const editor = document.querySelector<HTMLElement>('[data-pdf-region-bookmark-editor]')!
+    expect(editor.textContent).not.toContain('For me')
+    expect(editor.querySelector('[role="tablist"]')).toBeNull()
+    await act(async () =>
+      fireEvent.change(editor.querySelector('textarea')!, {
+        target: { value: 'Compare the chart with Figure 2.' }
+      })
+    )
+    await act(async () =>
+      Array.from(editor.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Save annotation')!
+        .click()
+    )
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'area',
+        note: 'Compare the chart with Figure 2.',
+        target: expect.objectContaining({
+          selector: expect.objectContaining({ kind: 'region', coordinateVersion: 1 })
+        })
+      })
+    )
+    expect(onAddAnnotation).toHaveBeenCalledTimes(1)
+    expectReset()
+
+    await startAnnotation()
+    await dragArea()
+    await act(async () =>
+      Array.from(document.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Cancel')!
+        .click()
+    )
+    expectReset()
+    await startAnnotation()
+    await dragArea()
+    await waitFor(() =>
+      expect(document.querySelector('[data-pdf-region-bookmark-editor] textarea')).not.toBeNull()
+    )
+    await act(async () =>
+      fireEvent.keyDown(document.querySelector('[data-pdf-region-bookmark-editor] textarea')!, {
+        key: 'Escape'
+      })
+    )
+    expectReset()
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(onAddAnnotation).toHaveBeenCalledTimes(1)
   })
 
   it('reveals sent PDF Evidence after the composer draft annotations are cleared', async () => {
@@ -2405,6 +3729,8 @@ describe('PdfPreviewContent', () => {
       root.render(<PdfPreviewContent path="/workspace/wheel.pdf" name="wheel.pdf" source="local" />)
     })
     await vi.waitFor(() => expect(container.querySelector('canvas')?.width).toBe(400))
+    // Radix tab panels use one frame to suppress their initial enter animation.
+    await act(async () => flushFrame())
 
     // The scroll container owns the wheel listener; it is the parent of the measurement probe.
     const scroll = container.querySelector<HTMLElement>('[aria-hidden="true"]')?.parentElement
@@ -2884,6 +4210,32 @@ describe('PdfPreviewContent', () => {
     consoleError.mockRestore()
   })
 
+  it('releases a canceled PDF load without reporting worker destruction as a failure', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    let rejectLoadingTask!: (error: Error) => void
+    const promise = new Promise((_, reject) => {
+      rejectLoadingTask = reject
+    })
+    const destroyLoadingTask = vi.fn(async () => {
+      rejectLoadingTask(new Error('Worker was destroyed'))
+    })
+    vi.mocked(createManagedPdfLoadingTask).mockReturnValue({
+      promise,
+      destroy: destroyLoadingTask
+    } as never)
+    await act(async () => {
+      root.render(
+        <PdfPreviewContent path="/workspace/report.pdf" name="report.pdf" source="local" />
+      )
+    })
+    await act(async () => root.render(null))
+    expect(destroyLoadingTask).toHaveBeenCalledTimes(1)
+    expect(window.api.previewResources.release).toHaveBeenCalledExactlyOnceWith({
+      resourceId: 'resource-1'
+    })
+    expect(consoleError).not.toHaveBeenCalled()
+  })
+
   it('destroys the loading task when PDF parsing fails', async () => {
     const destroyLoadingTask = vi.fn().mockResolvedValue(undefined)
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -3167,4 +4519,219 @@ describe('PdfPreviewContent', () => {
       destroyDocument.mock.invocationCallOrder[0] as number
     )
   })
+
+  it('selects a saved PDF mark and exposes its delete action', async () => {
+    getPage.mockResolvedValue({
+      getViewport: vi.fn(() => ({ width: 600, height: 800, rotation: 0 })),
+      getTextContent: vi
+        .fn()
+        .mockResolvedValue({ items: [{ str: 'Selectable text' }], styles: {} }),
+      render: vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() })),
+      cleanup: vi.fn()
+    })
+    const source = {
+      kind: 'upload-version' as const,
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      sourceFileId: 'upload-1',
+      versionId: 'version-1',
+      name: 'paper.pdf',
+      path: 'upload-version:version-1',
+      checksum: 'a'.repeat(64)
+    }
+    const annotation = {
+      id: 'bookmark-1',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      version: 1,
+      origin: 'user' as const,
+      target: {
+        source,
+        selector: {
+          kind: 'text' as const,
+          pageNumber: 1,
+          exact: 'Selectable text',
+          position: { start: 0, end: 15 },
+          quads: [{ x: 0.1, y: 0.2, width: 0.3, height: 0.03 }],
+          extractorVersion: 'pdfjs-test',
+          pageRotation: 0,
+          coordinateVersion: 1
+        }
+      },
+      kind: 'highlight' as const,
+      color: 'yellow' as const,
+      tagIds: [],
+      note: 'Saved note',
+      createdAt: '2026-09-19T00:00:00.000Z',
+      updatedAt: '2026-09-19T00:00:00.000Z'
+    }
+    const deleteAnnotation = vi.fn().mockResolvedValue({ deleted: true })
+    window.api = {
+      ...window.api,
+      tags: { snapshot: vi.fn().mockResolvedValue({ revision: 1, tags: [], assignments: [] }) },
+      pdfAnnotations: {
+        list: vi.fn().mockResolvedValue({ source, items: [annotation], total: 1 }),
+        delete: deleteAnnotation
+      }
+    } as unknown as Window['api']
+    await act(async () => {
+      root.render(
+        <PdfAnnotationsProvider projectId="project-1" sessionId="session-1">
+          <PdfPreviewContent
+            path={source.path}
+            name={source.name}
+            source="upload"
+            projectId={source.projectId}
+            sessionId={source.sessionId}
+            managedFileId="upload-1"
+            selectedVersionId={source.versionId}
+            pdfBookmarkSource={source}
+          />
+        </PdfAnnotationsProvider>
+      )
+      await flush()
+    })
+    await vi.waitFor(() => expect(container.querySelector('canvas')).not.toBeNull())
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-pdf-bookmark-highlight="bookmark-1"]')).not.toBeNull()
+    )
+    const highlight = container.querySelector<HTMLButtonElement>(
+      '[data-pdf-bookmark-highlight="bookmark-1"]'
+    )
+    await act(async () => highlight?.click())
+    expect(highlight?.getAttribute('aria-pressed')).toBe('true')
+    expect(container.querySelector('[aria-label="Delete annotation"]')).toBeNull()
+    const marker = container.querySelector<HTMLButtonElement>('[data-pdf-annotation-marker]')!
+    await act(async () => marker.click())
+    const remove = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')
+    ).find((button) => button.textContent === 'Delete annotation')!
+    expect(remove).toBeDefined()
+    await act(async () => remove.click())
+    await vi.waitFor(() =>
+      expect(deleteAnnotation).toHaveBeenCalledWith(expect.objectContaining({ id: 'bookmark-1' }))
+    )
+  })
+  it.each(['literature', 'upload'] as const)(
+    'handles selected annotation Escape only in the %s reader',
+    async (previewSource) => {
+      getPage.mockResolvedValue({
+        getViewport: vi.fn(() => ({ width: 600, height: 800, rotation: 0 })),
+        getTextContent: vi
+          .fn()
+          .mockResolvedValue({ items: [{ str: 'Selectable text' }], styles: {} }),
+        render: vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() })),
+        cleanup: vi.fn()
+      })
+      vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1200)
+      const source = {
+        kind:
+          previewSource === 'literature'
+            ? ('literature-attachment-version' as const)
+            : ('upload-version' as const),
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        sourceFileId: 'file-1',
+        versionId: 'version-1',
+        name: 'paper.pdf',
+        path: `${previewSource === 'literature' ? 'literature-attachment-version' : 'upload-version'}:version-1`,
+        checksum: 'a'.repeat(64)
+      }
+      const annotation: SavedPdfAnnotation = {
+        id: 'bookmark-1',
+        projectId: source.projectId,
+        sessionId: source.sessionId,
+        version: 1,
+        origin: 'user',
+        target: {
+          source,
+          selector: {
+            kind: 'text',
+            pageNumber: 1,
+            exact: 'Selectable text',
+            position: { start: 0, end: 15 },
+            quads: [{ x: 0.1, y: 0.2, width: 0.3, height: 0.03 }],
+            extractorVersion: 'pdfjs-test',
+            pageRotation: 0,
+            coordinateVersion: 1
+          }
+        },
+        kind: 'underline',
+        color: 'pink',
+        tagIds: [],
+        note: 'Saved note',
+        createdAt: '2026-09-19T00:00:00.000Z',
+        updatedAt: '2026-09-19T00:00:00.000Z'
+      }
+      window.api = {
+        ...window.api,
+        tags: { snapshot: vi.fn().mockResolvedValue({ revision: 1, tags: [], assignments: [] }) },
+        pdfAnnotations: {
+          list: vi.fn().mockResolvedValue({ source, items: [annotation], total: 1 })
+        }
+      } as unknown as Window['api']
+      await act(async () => {
+        root.render(
+          <PdfAnnotationsProvider projectId={source.projectId} sessionId={source.sessionId}>
+            <PdfPreviewContent
+              path={source.path}
+              name={source.name}
+              source={previewSource}
+              projectId={source.projectId}
+              sessionId={source.sessionId}
+              managedFileId={source.sourceFileId}
+              selectedVersionId={source.versionId}
+              pdfBookmarkSource={source}
+            />
+          </PdfAnnotationsProvider>
+        )
+        await flush()
+      })
+      const highlight = await waitFor(() => {
+        const element = container.querySelector<HTMLButtonElement>(
+          '[data-pdf-bookmark-highlight="bookmark-1"]'
+        )
+        expect(element).not.toBeNull()
+        return element!
+      })
+      await act(async () => highlight.click())
+      const pdfRoot = container.querySelector<HTMLElement>('[data-pdf-preview-root]')!
+      expect(highlight.getAttribute('aria-pressed')).toBe('true')
+      expect(pdfRoot.hasAttribute('data-preview-escape-boundary')).toBe(
+        previewSource === 'literature'
+      )
+      const composingEscape = new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+        isComposing: true
+      })
+      await act(async () => document.activeElement!.dispatchEvent(composingEscape))
+      expect(highlight.getAttribute('aria-pressed')).toBe('true')
+      // An inner panel owns its Escape, even when it is portalled outside the reader.
+      const marker = container.querySelector<HTMLButtonElement>('[data-pdf-annotation-marker]')!
+      await act(async () => marker.click())
+      const panel = await screen.findByRole('dialog')
+      await act(async () => fireEvent.keyDown(panel, { key: 'Escape' }))
+      expect(highlight.getAttribute('aria-pressed')).toBe('true')
+      const escape = new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true
+      })
+      await act(async () => pdfRoot.dispatchEvent(escape))
+      expect(escape.defaultPrevented).toBe(previewSource === 'literature')
+      expect(highlight.getAttribute('aria-pressed')).toBe(
+        previewSource === 'literature' ? 'false' : 'true'
+      )
+      expect(pdfRoot.hasAttribute('data-preview-escape-boundary')).toBe(false)
+      const nextEscape = new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true
+      })
+      await act(async () => pdfRoot.dispatchEvent(nextEscape))
+      expect(nextEscape.defaultPrevented).toBe(false)
+    }
+  )
 })

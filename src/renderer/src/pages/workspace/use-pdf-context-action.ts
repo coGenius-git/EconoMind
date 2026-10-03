@@ -36,7 +36,11 @@ export const resolvePdfContextTarget = (item: PreviewFileItem): PdfContextTarget
   if (item.source === 'literature') {
     const versionId = parseLiteratureAttachmentVersionReference(item.path)
     return versionId
-      ? { sourceKind: 'literature-attachment-version', sourceVersionId: versionId }
+      ? {
+          sourceKind: 'literature-attachment-version',
+          ...(item.managedFileId ? { sourceFileId: item.managedFileId } : {}),
+          sourceVersionId: versionId
+        }
       : undefined
   }
   if (item.source === 'notebook-input') {
@@ -189,6 +193,10 @@ export const usePdfContextAction = (
   const updatePendingPdfContext = (): void => {
     if (!projectId || activeSession || (!stagedAttachmentInDraft && !pdfContextTarget)) return
     if (pendingSelection) {
+      if (mutations.unlink) {
+        mutations.unlink(pendingPdfContextBindingId(pendingSelection))
+        return
+      }
       usePreviewWorkbenchStore
         .getState()
         .clearPdfReadingPosition(pendingPdfContextBindingId(pendingSelection))

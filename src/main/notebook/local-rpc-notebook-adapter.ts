@@ -18,6 +18,7 @@ import {
 } from '../../shared/notebook'
 import type { ManageEnvironmentsRequest, ManageEnvironmentsResult } from '../../shared/notebook-env'
 import type { InstallRequest, InstallResult } from './package-manager'
+import { shellRuntimeBindingSchema } from './shell-runtime'
 
 const provenanceContextSchema = z
   .object({
@@ -44,7 +45,8 @@ const registeredInputFileSchema = z
     sizeBytes: z.number(),
     checksum: z.string(),
     storageKey: z.string(),
-    association: z.enum(['turn-attached', 'resolver-accessed'])
+    association: z.enum(['turn-attached', 'resolver-accessed']),
+    accessEvidence: z.enum(['resolver', 'file-evidence']).optional()
   })
   .strict()
 
@@ -55,6 +57,7 @@ const notebookSessionRequestSchema = z
     workspaceCwd: z.string(),
     provenanceContext: provenanceContextSchema.optional(),
     executionInvocationId: z.string().optional(),
+    rootExecutionId: z.string().optional(),
     registeredInputFiles: z.array(registeredInputFileSchema).optional(),
     registeredHelperSkillIds: z.array(z.string()).optional(),
     inputRunLeaseId: z.string().optional(),
@@ -129,7 +132,8 @@ const notebookLocalRpcRequestSchemas = {
   executeShell: notebookSessionRequestSchema.extend({
     command: z.string(),
     background: z.boolean().optional(),
-    timeoutMs: positiveTimeoutSchema.optional()
+    timeoutMs: positiveTimeoutSchema.optional(),
+    shellRuntime: shellRuntimeBindingSchema.optional()
   }),
   requestNetworkAccess: notebookSessionRequestSchema.extend({
     hostname: z.string().trim().min(1).max(253),
@@ -140,6 +144,7 @@ const notebookLocalRpcRequestSchemas = {
   state: notebookSessionRequestSchema,
   restart: z.union([
     notebookSessionRequestSchema,
+    notebookSessionRequestSchema.extend({ kernel: z.literal('repl') }),
     notebookSessionRequestSchema.extend({
       language: notebookLanguageSchema,
       environment: z.string().min(1)
@@ -235,7 +240,11 @@ type NotebookLocalRpcCapability = {
     request: ExecuteNotebookControlRequest,
     signal?: AbortSignal
   ): Promise<unknown>
-  executeControl(request: ExecuteNotebookControlRequest, signal?: AbortSignal): Promise<unknown>
+  executeControl(
+    request: ExecuteNotebookControlRequest,
+    signal?: AbortSignal,
+    onExecutionSettled?: (error?: unknown) => void
+  ): Promise<unknown>
   executeShell(request: ExecuteShellRequest, signal?: AbortSignal): Promise<unknown>
   executeShellBackground(request: ExecuteShellRequest, signal?: AbortSignal): Promise<unknown>
   requestNetworkAccess(
@@ -282,7 +291,8 @@ const NOTEBOOK_LOCAL_RPC_METHODS = [
 type NotebookLocalRpcMethod = (typeof NOTEBOOK_LOCAL_RPC_METHODS)[number]
 type NotebookLocalRpcHandler = (
   request: Record<string, unknown>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onExecutionSettled?: (error?: unknown) => void
 ) => Promise<unknown>
 
 const NOTEBOOK_LOCAL_RPC_METHOD_SET = new Set<string>(NOTEBOOK_LOCAL_RPC_METHODS)
@@ -352,11 +362,11 @@ const resolveNotebookLocalRpcHandler = (
           : capability.execute(runtimeRequest, signal)
       }
     case 'executeControl':
-      return (request, signal) => {
+      return (request, signal, onExecutionSettled) => {
         const parsed = parseNotebookLocalRpcRequest('executeControl', request)
         return parsed.background
           ? capability.executeControlBackground(parsed, signal)
-          : capability.executeControl(parsed, signal)
+          : capability.executeControl(parsed, signal, onExecutionSettled)
       }
     case 'getBackgroundRun':
       return (request) =>

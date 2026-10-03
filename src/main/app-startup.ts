@@ -27,10 +27,7 @@ type SystemShutdownRelay = {
 }
 
 const STARTUP_SYSTEM_SHUTDOWN_TIMEOUT_MS = 5_000
-// The startup shell is a small static page that paints in well under a second in production, but the
-// dev-server dependency optimizer can hold renderer module requests for many seconds on a cold start.
-// Keep the bounded-wait generous enough that a slow first paint is not mistaken for a hung renderer.
-const STARTUP_SHELL_TIMEOUT_MS = 30_000
+const STARTUP_SHELL_TIMEOUT_MS = 15_000
 
 type StartupWindowSurface = {
   focus: () => void
@@ -184,7 +181,11 @@ export const prepareVisibleStartupRuntime = async <Shell, Modules, Runtime>(
     const [modules] = await Promise.all([applicationModules, databaseVerification])
     return await deps.composeRuntime(shell, modules)
   } catch (error) {
-    await deps.rollbackShell?.(shell, error)
+    try {
+      await deps.rollbackShell?.(shell, error)
+    } catch {
+      // Keep the original startup failure authoritative even when shell rollback also fails.
+    }
     throw error
   }
 }
@@ -201,10 +202,7 @@ export const waitForStartupShell = (
 ): Promise<void> =>
   new Promise((resolve) => {
     let settled = false
-    // Capture the webContents reference up front: after window.destroy() the `window.webContents`
-    // getter itself throws 'Object has been destroyed', but listeners can still be removed from the
-    // captured reference. destroy() (from a main-frame load failure or the timeout) synchronously
-    // emits 'closed', so cleanup runs on an already-destroyed window and must not touch the getter.
+    // BrowserWindow.webContents cannot be accessed after destroy(), including in `closed`.
     const webContents = window.webContents
 
     const cleanup = (): void => {

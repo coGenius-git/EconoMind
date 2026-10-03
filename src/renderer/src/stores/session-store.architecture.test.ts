@@ -46,7 +46,7 @@ import { describe, expect, it } from 'vitest'
 
 const rendererRoot = resolve(__dirname, '..')
 const facadePath = resolve(__dirname, 'session-store.ts')
-const moduleImpactPath = resolve(__dirname, '../../../../scripts/ci/module-impact.json')
+
 const readSource = (path: string): string => readFileSync(path, 'utf8')
 const normalizePathSeparators = (path: string): string => path.replace(/\\/g, '/')
 const modulePath = (path: string): string =>
@@ -108,6 +108,7 @@ const publicValueExports = [
   'createSessionStore',
   'findMostRecentSessionId',
   'getExternallyHydratedSessionAuthority',
+  'hydrateSession',
   'isArtifactFinalizationError',
   'isRetryableArtifactFinalizationError',
   'isExternallyHydratedSession',
@@ -952,6 +953,7 @@ describe('Session Store architecture', () => {
       'branchInNewSession',
       'clearPendingContextReplay',
       'openContextResetRuntimeSegment',
+      'prepareInterruptedTurnContinuation',
       'removeMessage',
       'reviseSessionFromElicitation',
       'setElicitationHistoryReplayRequest',
@@ -977,7 +979,6 @@ describe('Session Store architecture', () => {
       'interruptRun',
       'invalidateActivePlanProjection',
       'markResumed',
-      'prepareInterruptedTurnContinuation',
       'recordArtifactError',
       'replaceMessageArtifacts',
       'replaceMessagePdfContext',
@@ -1009,56 +1010,6 @@ describe('Session Store architecture', () => {
       'hooks/useLifecycleSync.ts:window.api.sessions.onDeleted',
       'hooks/useLifecycleSync.ts:window.api.sessions.onUpdated'
     ])
-  })
-
-  it('keeps the architecture suite in the Session renderer impact set', () => {
-    const manifest = JSON.parse(readSource(moduleImpactPath)) as {
-      modules: Record<
-        string,
-        { ownerPaths: string[]; interfacePaths: string[]; testFiles: { owner: string[] } }
-      >
-    }
-    expect(manifest.modules.session_renderer).toMatchObject({
-      ownerPaths: [
-        'src/renderer/src/stores/session-store.ts',
-        'src/renderer/src/stores/session-store-interaction-state.ts',
-        'src/renderer/src/stores/session-store-persistence-merge.ts',
-        'src/renderer/src/stores/session-store-persistence-owner.ts',
-        'src/renderer/src/stores/session-store-message-graph-owner.ts',
-        'src/renderer/src/stores/session-store-message-graph-helpers.ts',
-        'src/renderer/src/stores/session-store-run-projection-owner.ts',
-        'src/renderer/src/stores/session-store-run-output-helpers.ts',
-        'src/renderer/src/stores/session-store-run-activity-helpers.ts',
-        'src/renderer/src/stores/session-store-run-terminal-helpers.ts',
-        'src/renderer/src/stores/session-job-store.ts'
-      ],
-      interfacePaths: [
-        'src/renderer/src/stores/session-store.ts',
-        'src/renderer/src/stores/session-job-store.ts'
-      ],
-      consumerModules: [
-        'workspace_runtime',
-        'project_files_view',
-        'compute_service',
-        'workspace_page'
-      ],
-      testFiles: {
-        owner: [
-          'src/renderer/src/stores/session-store.test.ts',
-          'src/renderer/src/stores/session-store.archive-order.test.ts',
-          'src/renderer/src/stores/session-store.architecture.test.ts',
-          'src/renderer/src/stores/session-job-store.test.ts'
-        ],
-        contract: ['src/shared/session-persistence.test.ts'],
-        consumer: [
-          'src/renderer/src/lib/acp/useWorkspaceAgentRuntime.test.ts',
-          'src/renderer/src/pages/workspace/WorkspaceElicitationCard.interaction.test.tsx',
-          'src/renderer/src/pages/workspace/ConversationPanel.interaction.test.tsx'
-        ]
-      },
-      capabilityOverlays: ['renderer_state'],
-      fallbackCapability: 'renderer_view'
-    })
   })
 })
 

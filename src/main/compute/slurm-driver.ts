@@ -1,5 +1,9 @@
 import type { ComputeJob } from '../../shared/compute'
-import { classifyConnectionFailure, type ComputeConnectionLease } from './connection-broker'
+import {
+  isConnectionStdoutTruncated,
+  classifyConnectionFailure,
+  type ComputeConnectionLease
+} from './connection-broker'
 import { quoteRemotePath, shellSingleQuote } from './remote-path-security'
 import { toBase64, type SlurmRemoteHandle } from './remote-job-contract'
 import { applyComputeEnvironment } from './compute-environment'
@@ -25,7 +29,8 @@ export class SlurmDriverError extends Error {
   }
 }
 
-const jobName = (jobId: string): string => `openscience-${jobId}`
+const jobName = (jobId: string, workdir?: string): string =>
+  `${workdir?.includes('/.openscience/jobs/') ? 'openscience' : 'open-science'}-${jobId}`
 
 const normalizeState = (state: string): string =>
   state
@@ -140,12 +145,11 @@ export const buildSlurmScript = (
   job: Pick<ComputeJob, 'job_id' | 'command' | 'timeout_seconds'> & { environment?: string },
   workdir: string
 ): string => {
-  void workdir
   const timeout = job.timeout_seconds ?? 86_400
   const parsedDirectives = commandDirectives(applyComputeEnvironment(job.command, job.environment))
   return [
     '#!/usr/bin/env bash',
-    `#SBATCH --job-name=${jobName(job.job_id)}`,
+    `#SBATCH --job-name=${jobName(job.job_id, workdir)}`,
     '#SBATCH --output=stdout',
     '#SBATCH --error=stderr',
     ...(parsedDirectives.hasTime ? [] : [`#SBATCH --time=${Math.max(1, Math.ceil(timeout / 60))}`]),
@@ -179,7 +183,7 @@ const readSubmissionError = async (
     if (
       classifyConnectionFailure(result, false) ||
       result.exitCode !== 0 ||
-      result.truncated ||
+      isConnectionStdoutTruncated(result) ||
       !/^[A-Za-z0-9+/=\r\n]*$/.test(result.stdout)
     ) {
       return undefined
@@ -210,7 +214,7 @@ export const dispatchSlurmJob = async (
         `printf '%s' ${JSON.stringify(toBase64(script))} | base64 -d > job.sbatch`,
         `rm -f ${SUBMISSION_ERROR_FILE} ${SUBMISSION_ERROR_FILE}.tmp ${SUBMISSION_ERROR_FILE}.stderr.tmp`,
         'set +e',
-        `SLURM_JOB_ID=$(sbatch --parsable --job-name=${jobName(job.job_id)} --output=stdout --error=stderr --chdir="$PWD" job.sbatch 2>${SUBMISSION_ERROR_FILE}.stderr.tmp)`,
+        `SLURM_JOB_ID=$(sbatch --parsable --job-name=${jobName(job.job_id, workdir)} --output=stdout --error=stderr --chdir="$PWD" job.sbatch 2>${SUBMISSION_ERROR_FILE}.stderr.tmp)`,
         'SBATCH_EXIT=$?',
         'set -e',
         'if [ "$SBATCH_EXIT" -ne 0 ]; then',
@@ -279,7 +283,7 @@ export const recoverSlurmJob = async (
 ): Promise<SlurmRemoteHandle | undefined> => {
   const workdir = job.remote_workdir
   if (!workdir) return undefined
-  const name = jobName(job.job_id)
+  const name = jobName(job.job_id, workdir)
   const receiptPath = quoteRemotePath(`${workdir}/scheduler_job_id`)
   const scriptPath = quoteRemotePath(`${workdir}/job.sbatch`)
   const quotedWorkdir = quoteRemotePath(workdir)
@@ -412,9 +416,9 @@ export const pollSlurmJobs = async (
       )
       const failure = classifyConnectionFailure(result, false)
       if (failure) throw failure
-      if (result.exitCode !== 0 || result.truncated) {
+      if (result.exitCode !== 0 || isConnectionStdoutTruncated(result)) {
         throw new Error(
-          result.truncated
+          isConnectionStdoutTruncated(result)
             ? 'Slurm output tail exceeded the polling protocol limit.'
             : result.stderr.trim() || 'Slurm output tail could not be read.'
         )

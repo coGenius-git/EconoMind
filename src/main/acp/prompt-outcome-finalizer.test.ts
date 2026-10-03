@@ -2,6 +2,7 @@ import type { PromptResponse } from '@agentclientprotocol/sdk'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { AcpRuntimeEvent } from '../../shared/acp'
+import { NotebookExecutionStopError } from '../../shared/notebook-execution-error'
 import type { ContextWindowTurnHandle } from './context-usage-tracker'
 import {
   AcpPromptOutcomeFinalizer,
@@ -122,6 +123,30 @@ const stopped = (
 })
 
 describe('AcpPromptOutcomeFinalizer', () => {
+  it.each([true, false])(
+    'retains failed Notebook stop severity after cleanup (fatal: %s)',
+    async (fatal) => {
+      const harness = createHarness()
+      const error = fatal ? new NotebookExecutionStopError() : new Error('Artifact cleanup failed')
+      harness.handles.disposeArtifact = vi.fn(async () => {
+        throw error
+      })
+      expect(harness.interactions.captureTerminal(harness.interaction, 'cancelled')).toBe(true)
+      const result = new AcpPromptOutcomeFinalizer().finalize(
+        harness.handles,
+        stopped({ stopReason: 'cancelled' })
+      )
+      if (fatal) await expect(result).rejects.toBe(error)
+      else await expect(result).resolves.toMatchObject({ stopReason: 'cancelled' })
+      expect(harness.interactions.current('s1')).toBeUndefined()
+      expect(harness.handles.permission.clearCorrelationsForSession).toHaveBeenCalledOnce()
+      expect(harness.handles.beforeInteractionRelease).toHaveBeenCalledOnce()
+      expect(harness.handles.afterInteractionRelease).toHaveBeenCalledOnce()
+      expect(harness.handles.onPromptEnded).toHaveBeenCalledOnce()
+      expect(harness.handles.skill.close).toHaveBeenCalledWith(fatal ? 'failed' : 'cancelled')
+    }
+  )
+
   it('sequences provider facts, context, Artifact, stop publication, and cleanup', async () => {
     const harness = createHarness({ now: () => 1234 })
     expect(harness.interactions.captureTerminal(harness.interaction, 'stop')).toBe(true)
@@ -148,6 +173,7 @@ describe('AcpPromptOutcomeFinalizer', () => {
             inputTokens: 3,
             cacheTokens: 1,
             outputTokens: 1,
+            contextUsedTokens: 4,
             contextWindowSize: 128_000
           },
           {
@@ -157,6 +183,7 @@ describe('AcpPromptOutcomeFinalizer', () => {
             inputTokens: 2,
             cacheTokens: 0,
             outputTokens: 1,
+            contextUsedTokens: 2,
             contextWindowSize: 128_000
           },
           {
@@ -166,6 +193,7 @@ describe('AcpPromptOutcomeFinalizer', () => {
             inputTokens: 3,
             cacheTokens: 1,
             outputTokens: 0,
+            contextUsedTokens: 4,
             contextWindowSize: 128_000
           },
           {
@@ -175,6 +203,7 @@ describe('AcpPromptOutcomeFinalizer', () => {
             inputTokens: 2,
             cacheTokens: 0,
             outputTokens: 1,
+            contextUsedTokens: 2,
             contextWindowSize: 128_000
           }
         ],
@@ -332,6 +361,27 @@ describe('AcpPromptOutcomeFinalizer', () => {
     )
   })
 
+  it('keeps a Main-owned stop successful when the Artifact retry commits', async () => {
+    const harness = createHarness()
+    harness.handles.commitTerminal = vi.fn(async (event) => {
+      harness.events.push(event)
+      harness.journal.push(`event:${event.kind}`)
+    })
+    harness.handles.emitArtifact = vi
+      .fn<(onPublished: () => void) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('temporary Artifact failure'))
+      .mockImplementationOnce(async (onPublished) => {
+        harness.journal.push('event:artifact')
+        onPublished()
+      })
+    expect(harness.interactions.captureTerminal(harness.interaction, 'stop')).toBe(true)
+
+    await expect(
+      new AcpPromptOutcomeFinalizer().finalize(harness.handles, stopped())
+    ).resolves.toEqual(expect.objectContaining({ stopReason: 'end_turn' }))
+    expect(harness.events.map(({ kind }) => kind)).toEqual(['stop'])
+  })
+
   it('does not replay an Artifact appended before its callback failed', async () => {
     const harness = createHarness()
     const callbackError = new Error('artifact callback failed')
@@ -387,6 +437,54 @@ describe('AcpPromptOutcomeFinalizer', () => {
         data: { errorKind: 'request_too_large' }
       }),
       recoverable: 'context-overflow',
+      providerError: false
+    },
+    {
+      name: 'OpenCode typed overflow without provider wording',
+      error: Object.assign(
+        new Error(
+          'Session too large to compact - context exceeds model limit even after stripping media'
+        ),
+        {
+          code: -32603,
+          data: { service: 'session', errorName: 'ContextOverflowError' },
+          name: 'RequestError'
+        }
+      ),
+      recoverable: 'context-overflow',
+      providerError: false
+    },
+    {
+      name: 'OpenCode session service failure',
+      error: Object.assign(new Error('Internal error: OpenCode service failure'), {
+        code: -32603,
+        data: { service: 'session' },
+        name: 'RequestError'
+      }),
+      recoverable: 'session-lost',
+      providerError: false
+    },
+    {
+      name: 'OpenCode session read stream EOF',
+      error: Object.assign(
+        new Error('Internal error: {"message":"unexpected EOF","type":"read_stream_err"}'),
+        {
+          code: -32603,
+          data: { service: 'session', errorName: 'UnknownError' },
+          name: 'RequestError'
+        }
+      ),
+      recoverable: 'session-lost',
+      providerError: false
+    },
+    {
+      name: 'non-session OpenCode service failure',
+      error: Object.assign(new Error('Internal error: OpenCode service failure'), {
+        code: -32603,
+        data: { service: 'provider' },
+        name: 'RequestError'
+      }),
+      recoverable: undefined,
       providerError: false
     },
     {

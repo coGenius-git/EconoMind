@@ -14,11 +14,26 @@ import {
   type SessionUsageProjection
 } from '../../shared/session-persistence'
 
+// Session projection writes contend with upload publication and other metadata writes on the
+// shared single-connection SQLite client. Keep transaction admission bounded, but allow the
+// Windows disk contention seen during large upload batches to drain before failing the save.
+// Execution deadlines and rollback behavior remain Prisma defaults.
+const runProjectionTransaction = <Result>(
+  client: Pick<PrismaClient, '$transaction'>,
+  operation: (transaction: Prisma.TransactionClient) => Promise<Result>
+): Promise<Result> => client.$transaction(operation, { maxWait: 30_000 })
+
 const PROJECTION_STATE_ID = 'session-projection'
-const PROJECTION_VERSION = 4
+const PROJECTION_VERSION = 5
 const SESSION_NUMBER_SEQUENCE_ID = 'global'
 const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER)
 const MAX_SQLITE_INT = 2_147_483_647
+
+// An in-process allocation receipt, never part of Session JSON or the database schema.
+export type PreparedSessionSave = {
+  session: PersistedChatSession
+  created: boolean
+}
 const PERSISTED_SESSION_STATUSES: ReadonlySet<string> = new Set([
   'idle',
   'running',
@@ -293,6 +308,7 @@ export const buildSessionProjection = (session: PersistedChatSession): SessionPr
   )
   const details = session.sessionDetailsGeneration
   if (
+    !session.packageOrigin &&
     details &&
     'completedAt' in details &&
     'frameworkId' in details &&
@@ -591,11 +607,11 @@ export class SessionProjectionRepository {
     return client.session.findMany({ select: { id: true, number: true } })
   }
 
-  async prepareSave(session: PersistedChatSession): Promise<PersistedChatSession> {
+  async prepareSave(session: PersistedChatSession): Promise<PreparedSessionSave> {
     const client = await this.client()
     const projection = buildSessionProjection(session)
     assertProjectionStorageShape(projection)
-    const number = await client.$transaction(async (tx) => {
+    const allocation = await runProjectionTransaction(client, async (tx) => {
       const project = await tx.project.findFirst({
         where: { id: session.projectId, deletedAt: null },
         select: { id: true }
@@ -612,7 +628,7 @@ export class SessionProjectionRepository {
         create: { sessionId: session.id, projectId: session.projectId, operation: 'save' },
         update: { projectId: session.projectId, operation: 'save', markedAt: new Date() }
       })
-      if (existing) return existing.number
+      if (existing) return { number: existing.number, created: false }
       const preferredNumber = session.number
       let number: number
       if (preferredNumber !== undefined) {
@@ -640,9 +656,52 @@ export class SessionProjectionRepository {
         number = sequence.nextNumber - 1
       }
       const created = await tx.session.create({ data: sessionData(projection, number) })
-      return created.number
+      return { number: created.number, created: true }
     })
-    return session.number === number ? session : { ...session, number }
+    return {
+      session:
+        session.number === allocation.number ? session : { ...session, number: allocation.number },
+      created: allocation.created
+    }
+  }
+
+  // The Repository must first prove that this failed first publication left no JSON authority,
+  // including recoverable temporary files. Never reuse its number or remove an existing tombstone.
+  async abortUnpublishedSave({ session, created }: PreparedSessionSave): Promise<void> {
+    if (!created) return
+    const client = await this.client()
+    await runProjectionTransaction(client, async (tx) => {
+      const pending = await tx.pendingSessionReconciliation.findUnique({
+        where: { sessionId: session.id }
+      })
+      if (pending?.projectId !== session.projectId || pending.operation !== 'save') {
+        throw new Error('Cannot discard a Session allocation whose pending operation has changed.')
+      }
+      // Auxiliary usage has no Session foreign key; preserve its owner in the same transaction.
+      const auxiliaryUsage = await tx.sessionAuxiliaryTurnUsage.findFirst({
+        where: { sessionId: session.id },
+        select: { eventId: true }
+      })
+      if (auxiliaryUsage) {
+        throw new Error('Cannot discard a Session allocation that has changed.')
+      }
+      const removed = await tx.session.deleteMany({
+        where: {
+          id: session.id,
+          projectId: session.projectId,
+          number: session.number,
+          revision: BigInt(session.revision ?? 0),
+          deletedAtMs: null,
+          turnUsage: { none: {} },
+          runs: { none: {} },
+          artifactRefs: { none: {} }
+        }
+      })
+      if (removed.count !== 1) {
+        throw new Error('Cannot discard a Session allocation that has changed.')
+      }
+      await tx.pendingSessionReconciliation.deleteMany({ where: { sessionId: session.id } })
+    })
   }
 
   async commitSave(session: PersistedChatSession): Promise<void> {
@@ -651,7 +710,7 @@ export class SessionProjectionRepository {
     const projection = buildSessionProjection(session)
     assertProjectionStorageShape(projection)
     const client = await this.client()
-    await client.$transaction(async (tx) => {
+    await runProjectionTransaction(client, async (tx) => {
       const project = await tx.project.findFirst({
         where: { id: session.projectId, deletedAt: null },
         select: { id: true }
@@ -680,7 +739,7 @@ export class SessionProjectionRepository {
     const projection = buildSessionProjection(session)
     assertProjectionStorageShape(projection)
     const client = await this.client()
-    await client.$transaction(async (tx) => {
+    await runProjectionTransaction(client, async (tx) => {
       const existing = await tx.session.findUnique({ where: { id: session.id } })
       if (!existing) throw new Error('Pending Session projection identity is missing.')
       if (existing.deletedAtMs !== null) {
@@ -702,7 +761,7 @@ export class SessionProjectionRepository {
     operation: 'save' | 'delete' = 'save'
   ): Promise<void> {
     const client = await this.client()
-    await client.$transaction(async (tx) => {
+    await runProjectionTransaction(client, async (tx) => {
       if (operation === 'delete') {
         const existing = await tx.session.findUnique({
           where: { id: sessionId },
@@ -722,13 +781,19 @@ export class SessionProjectionRepository {
 
   async commitDelete(projectId: string, sessionId: string): Promise<void> {
     const client = await this.client()
-    await client.$transaction(async (tx) => {
+    await runProjectionTransaction(client, async (tx) => {
       const existing = await tx.session.findUnique({
         where: { id: sessionId },
         select: { projectId: true }
       })
       if (existing && existing.projectId !== projectId) {
         throw new Error('Cannot delete a Session owned by another Project.')
+      }
+      // Only a durable explicit delete intent authorizes private-data cleanup. Projection
+      // repair can also call commitDelete for absent JSON after a pending save.
+      const pending = await tx.pendingSessionReconciliation.findUnique({ where: { sessionId } })
+      if (pending?.projectId === projectId && pending.operation === 'delete') {
+        await tx.bookmark.deleteMany({ where: { projectId, sessionId } })
       }
       if (!existing) {
         await tx.pendingSessionReconciliation.deleteMany({ where: { projectId, sessionId } })
@@ -797,6 +862,17 @@ export class SessionProjectionRepository {
         }
       })
     ]
+    // Source-side title generation is historical evidence, never local model usage.
+    for (const chunk of chunksOf(
+      projected.filter(({ session }) => session.packageOrigin),
+      200
+    )) {
+      writes.push(
+        client.sessionAuxiliaryTurnUsage.deleteMany({
+          where: { sessionId: { in: chunk.map(({ session }) => session.id) } }
+        })
+      )
+    }
     for (const chunk of chunksOf(projected, 40)) {
       writes.push(
         client.session.createMany({
@@ -857,23 +933,33 @@ export class SessionProjectionRepository {
 
   async usage(): Promise<SessionUsageProjection> {
     const client = await this.client()
-    const [projects, sessions, usage, auxiliaryUsage, runs, artifacts] = await client.$transaction([
-      client.project.findMany({ select: { createdAt: true } }),
-      client.session.findMany({
-        where: { deletedAtMs: null },
-        select: { id: true, createdAtMs: true }
-      }),
-      client.sessionTurnUsage.findMany({ where: { session: { deletedAtMs: null } } }),
-      client.sessionAuxiliaryTurnUsage.findMany(),
-      client.sessionRun.findMany({
-        where: { session: { deletedAtMs: null } },
-        select: { createdAtMs: true }
-      }),
-      client.sessionArtifactRef.findMany({
-        where: { session: { deletedAtMs: null } },
-        select: { artifactId: true, artifactCreatedAtMs: true }
-      })
-    ])
+    const [projects, sessions, usage, auxiliaryUsage, runs, artifacts, classificationUsage] =
+      await client.$transaction([
+        client.project.findMany({ select: { createdAt: true } }),
+        client.session.findMany({
+          where: { deletedAtMs: null },
+          select: { id: true, createdAtMs: true }
+        }),
+        client.sessionTurnUsage.findMany({ where: { session: { deletedAtMs: null } } }),
+        client.sessionAuxiliaryTurnUsage.findMany(),
+        client.sessionRun.findMany({
+          where: { session: { deletedAtMs: null } },
+          select: { createdAtMs: true }
+        }),
+        client.sessionArtifactRef.findMany({
+          where: { session: { deletedAtMs: null } },
+          select: { artifactId: true, artifactCreatedAtMs: true }
+        }),
+        client.classificationUsage.findMany({
+          select: {
+            scenario: true,
+            occurredAt: true,
+            inputTokens: true,
+            outputTokens: true,
+            usageIncomplete: true
+          }
+        })
+      ])
     const liveSessionIds = new Set(sessions.map(({ id }) => id))
     const artifactCreatedAt = new Map<string, number | undefined>()
     for (const artifact of artifacts) {
@@ -902,6 +988,9 @@ export class SessionProjectionRepository {
           liveSessionIds.has(event.sessionId)
             ? [
                 {
+                  ...(event.source === 'classification'
+                    ? { source: 'classification' as const }
+                    : {}),
                   timestamp: Number(event.completedAtMs),
                   inputTokens: Number(event.inputTokens),
                   cacheTokens: Number(event.cacheTokens),
@@ -909,7 +998,18 @@ export class SessionProjectionRepository {
                 }
               ]
             : []
-        )
+        ),
+        ...classificationUsage.map((event) => ({
+          source: event.scenario.startsWith('literature-')
+            ? ('literature-classification' as const)
+            : ('classification' as const),
+          scenario: event.scenario,
+          timestamp: event.occurredAt.getTime(),
+          inputTokens: Number(event.inputTokens ?? 0n),
+          cacheTokens: 0,
+          outputTokens: Number(event.outputTokens ?? 0n),
+          usageIncomplete: event.usageIncomplete
+        }))
       ],
       totalArtifacts: artifactCreatedAt.size
     }

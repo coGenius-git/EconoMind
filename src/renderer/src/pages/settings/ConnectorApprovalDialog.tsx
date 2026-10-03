@@ -1,4 +1,6 @@
-import { AlertTriangle, ShieldAlert } from 'lucide-react'
+import { PermissionScopeButton } from '@/pages/workspace/PermissionScopeButton'
+import { ErrorNotice } from '@/components/error-notice'
+import { ShieldAlert, X } from 'lucide-react'
 import * as Dialog from '@/components/ui/dialog'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -6,6 +8,7 @@ import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import {
   dialogBodyClassName,
+  dialogCloseButtonClassName,
   dialogDescriptionClassName,
   dialogFooterClassName,
   dialogHeaderClassName,
@@ -27,7 +30,7 @@ type PendingBroadScope = Readonly<{
 
 // A modal approval card for an un-trusted connector call. A connector tool sends data to an external
 // service, so a call that isn't pre-allowed or skip-approved is held until the user decides here.
-// Requests are answered one at a time (oldest first); the card can't be dismissed without a decision.
+// Closing releases the UI immediately and denies idle requests through the store.
 export function ConnectorApprovalDialog({
   active = true,
   blockedSessionIds
@@ -38,14 +41,16 @@ export function ConnectorApprovalDialog({
   const { t } = useTranslation()
   const request = useSettingsStore((state) =>
     state.pendingApprovals.find(
-      (candidate) => !candidate.sessionId || !blockedSessionIds?.has(candidate.sessionId)
+      (candidate) =>
+        !candidate.closed && (!candidate.sessionId || !blockedSessionIds?.has(candidate.sessionId))
     )
   )
   const connectors = useSettingsStore((state) => state.connectors)
   const customServers = useSettingsStore((state) => state.customServers)
   const respondApproval = useSettingsStore((state) => state.respondApproval)
+  const close = useSettingsStore((state) => state.closeApproval)
   const [pendingBroadScope, setPendingBroadScope] = useState<PendingBroadScope>()
-  const [responding, setResponding] = useState(false)
+  const [respondingRequestId, setRespondingRequestId] = useState<string>()
   const [responseErrorRequestId, setResponseErrorRequestId] = useState<string>()
   const [expandedArgsRequestId, setExpandedArgsRequestId] = useState<string>()
 
@@ -67,14 +72,18 @@ export function ConnectorApprovalDialog({
           : undefined
   const argsExpanded = expandedArgsRequestId === request.id
 
+  const responding = request.responding || respondingRequestId === request.id
+
   const submitResponse = (decision: 'once' | 'session' | 'project' | 'global' | 'deny'): void => {
     if (responding) return
     const requestId = request.id
-    setResponding(true)
+    setRespondingRequestId(requestId)
     setResponseErrorRequestId(undefined)
     void respondApproval(requestId, decision)
       .catch(() => setResponseErrorRequestId(requestId))
-      .finally(() => setResponding(false))
+      .finally(() =>
+        setRespondingRequestId((current) => (current === requestId ? undefined : current))
+      )
   }
   const allow = (scope: 'once' | 'session' | 'project' | 'global'): void => {
     if (scope === 'project' || scope === 'global') {
@@ -93,20 +102,27 @@ export function ConnectorApprovalDialog({
   const deny = (): void => submitResponse('deny')
 
   return (
-    <Dialog.Root open={active}>
+    <Dialog.Root
+      open={active}
+      onOpenChange={(open) => {
+        if (!open) close(request.id)
+      }}
+    >
       <Dialog.Portal>
         <Dialog.Overlay className={cn(dialogOverlayClassName, 'z-[60]')} />
         <Dialog.Content
           aria-busy={responding}
           onInteractOutside={(event) => event.preventDefault()}
-          onEscapeKeyDown={(event) => event.preventDefault()}
           className={dialogPanelClassName(
-            'z-[60] w-[min(440px,calc(100vw-2rem))] overscroll-contain p-0'
+            'z-[60] max-h-[calc(100dvh-2rem)] w-[min(440px,calc(100vw-2rem))] overflow-y-auto overscroll-contain p-0'
           )}
         >
           <div className={cn(dialogHeaderClassName, 'items-start justify-start')}>
-            <ShieldAlert className="mt-0.5 size-5 shrink-0 text-amber-500" aria-hidden="true" />
-            <div className="min-w-0">
+            <ShieldAlert
+              className="mt-0.5 size-5 shrink-0 text-status-warning-foreground dark:text-status-warning-dark-foreground"
+              aria-hidden="true"
+            />
+            <div className="min-w-0 flex-1">
               <Dialog.Title className={dialogTitleClassName}>
                 {t('Allow external request?')}
               </Dialog.Title>
@@ -118,13 +134,25 @@ export function ConnectorApprovalDialog({
                 )}
               </Dialog.Description>
             </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t('Close')}
+              className={cn(dialogCloseButtonClassName, 'shrink-0')}
+              onClick={() => close(request.id)}
+            >
+              <X className="size-4" aria-hidden="true" />
+            </Button>
           </div>
 
           <div className={dialogBodyClassName}>
             <div className="space-y-1.5 rounded-lg border border-border bg-muted/40 p-3 text-xs">
               <div className="flex gap-2">
                 <span className="w-16 shrink-0 text-muted-foreground">{t('Connector')}</span>
-                <span className="min-w-0 truncate font-medium text-foreground">{displayName}</span>
+                <span className="min-w-0 break-words font-medium text-foreground [overflow-wrap:anywhere]">
+                  {displayName}
+                </span>
               </div>
               {request.connectorName ? (
                 <div className="flex gap-2">
@@ -158,7 +186,9 @@ export function ConnectorApprovalDialog({
               ) : null}
               <div className="flex gap-2">
                 <span className="w-16 shrink-0 text-muted-foreground">{t('Tool')}</span>
-                <span className="min-w-0 truncate font-mono text-foreground">{request.method}</span>
+                <span className="min-w-0 break-all font-mono text-foreground">
+                  {request.method}
+                </span>
               </div>
               <div className="flex gap-2">
                 <span className="w-16 shrink-0 text-muted-foreground">{t('Args')}</span>
@@ -189,14 +219,14 @@ export function ConnectorApprovalDialog({
                 </Button>
               ) : null}
             </div>
-            {responseErrorRequestId === request.id ? (
-              <div
+            {request.responseFailed || responseErrorRequestId === request.id ? (
+              <ErrorNotice
+                inline
                 role="alert"
-                className="mt-3 flex items-start gap-2 rounded-lg border border-danger-000/30 bg-danger-000/10 px-3 py-2 text-xs text-danger-000"
-              >
-                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-                <span>{t('Could not submit this approval. Try again.')}</span>
-              </div>
+                tone="amber"
+                className="mt-3"
+                description={t('Could not submit this approval. Try again.')}
+              />
             ) : null}
           </div>
 
@@ -204,39 +234,12 @@ export function ConnectorApprovalDialog({
             <Button type="button" variant="destructive" disabled={responding} onClick={deny}>
               {t('Deny')}
             </Button>
-            {availableScopes.includes('session') ? (
-              <Button
-                type="button"
-                variant="outline"
-                disabled={responding}
-                onClick={() => allow('session')}
-              >
-                {t('This session')}
-              </Button>
-            ) : null}
-            {availableScopes.includes('project') ? (
-              <Button
-                type="button"
-                variant="outline"
-                disabled={responding}
-                onClick={() => allow('project')}
-              >
-                {t('This project')}
-              </Button>
-            ) : null}
-            {availableScopes.includes('global') ? (
-              <Button
-                type="button"
-                variant="outline"
-                disabled={responding}
-                onClick={() => allow('global')}
-              >
-                {t('Global')}
-              </Button>
-            ) : null}
-            <Button type="button" disabled={responding} onClick={() => allow('once')}>
-              {t('Allow once')}
-            </Button>
+            <PermissionScopeButton
+              key={request.id}
+              available={availableScopes}
+              disabled={responding}
+              onAllow={allow}
+            />
           </div>
         </Dialog.Content>
       </Dialog.Portal>

@@ -43,10 +43,10 @@ describe('broadcastToRenderers', () => {
     const sink = vi.fn()
     const remove = addRendererBroadcastSink(sink)
 
-    broadcastToRenderers('remote-access:changed', {})
-    expect(live.webContents.send).toHaveBeenCalledWith('remote-access:changed', {})
+    broadcastToRenderers('skills:catalog-changed', undefined)
+    expect(live.webContents.send).toHaveBeenCalledWith('skills:catalog-changed', undefined)
     expect(dead.webContents.send).not.toHaveBeenCalled()
-    expect(sink).toHaveBeenCalledWith('remote-access:changed', {})
+    expect(sink).toHaveBeenCalledWith('skills:catalog-changed', undefined)
 
     remove()
     broadcastToRenderers('specialist:catalog-changed', undefined)
@@ -91,4 +91,28 @@ describe('broadcastToRenderers', () => {
     expect(sink).toHaveBeenCalledOnce()
     removeSecond()
   })
+})
+
+it('continues broadcasting when one live window fails during send', () => {
+  const failure = new Error('Object has been destroyed')
+  const failed = {
+    destroyed: false,
+    isDestroyed: () => false,
+    webContents: {
+      send: vi.fn(() => {
+        throw failure
+      })
+    }
+  }
+  const healthy = { destroyed: false, isDestroyed: () => false, webContents: { send: vi.fn() } }
+  windows.push(failed, healthy)
+  const hub = new ApplicationEventHub()
+  const uninstall = installRendererBroadcastEventHub(hub)
+  try {
+    hub.publish('runtime:policy-changed', undefined)
+    expect(healthy.webContents.send).toHaveBeenCalledWith('runtime:policy-changed', undefined)
+  } finally {
+    uninstall()
+    hub.dispose()
+  }
 })

@@ -716,6 +716,12 @@ describe('AgentBackendResolver configured and explicit targets', () => {
 
     expect(harness.ensureCodexSubscriptionHome).toHaveBeenCalledWith('https')
     expect(backend.codexSubscriptionTransport).toBe('https')
+    expect(backend.sessionOptions).toMatchObject({
+      [OPEN_SCIENCE_SKILL_RUNTIME_SESSION_OPTION]: {
+        root: join('/storage', 'codex-subscription'),
+        skillsDirectory: join('/storage', 'codex-subscription', 'skills')
+      }
+    })
   })
 
   it.each(['https', 'websocket'] as const)(
@@ -1671,6 +1677,17 @@ describe('AgentBackendResolver runtime delegation', () => {
     expect(harness.runtime.reserveOpenCodeUsagePort).toHaveBeenCalledTimes(
       testCase.frameworkId === 'opencode' ? 1 : 0
     )
+    if (testCase.frameworkId === 'opencode') {
+      const files = harness.runtime.materializeAgentConfigFiles.mock.calls[0][0]!
+      expect(backend.opencodeConfigFiles).toEqual(files)
+      expect(backend.opencodeConfigFiles).not.toBe(files)
+      const snapshot = backend.opencodeConfigFiles![0].content
+      files[0].content = 'a later materialization must not change the admitted snapshot'
+      expect(backend.opencodeConfigFiles![0].content).toBe(snapshot)
+      expect(backend.opencodeConfigFiles!.some((file) => file.path.includes('plugins'))).toBe(true)
+    } else {
+      expect(backend.opencodeConfigFiles).toBeUndefined()
+    }
     expect(harness.runtime.probeCodexNativeVersion).toHaveBeenCalledTimes(
       testCase.frameworkId === 'codex' ? 1 : 0
     )
@@ -1946,6 +1963,14 @@ describe('AgentBackendResolver bridge predicates', () => {
       expect(developerInstructions).toContain('Never guess a connector server or method name')
       expect(developerInstructions).not.toContain('search_articles')
       expect(backend.persistentSystemPrompt).toBe(developerInstructions)
+      expect(backend.sessionOptions).toMatchObject({
+        [OPEN_SCIENCE_SKILL_RUNTIME_SESSION_OPTION]: {
+          root: join('/storage', 'codex'),
+          skillsDirectory: join('/storage', 'codex', 'skills'),
+          command: process.execPath,
+          entryPath: '/app/main.js'
+        }
+      })
       expect(backend.systemPromptAppends).toBeUndefined()
       await backend.responsesBridgeLease?.release()
     }

@@ -1,5 +1,6 @@
 // @ts-expect-error The published ESM entry uses a sibling index.d.ts.
 import { OpenScienceClient } from '../../../packages/open-science/index.mjs'
+
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { request as httpRequest, IncomingMessage, ServerResponse } from 'node:http'
 import { connect } from 'node:net'
@@ -19,7 +20,7 @@ vi.mock('electron', () => ({
 
 import { WEB_INVOKE_CHANNELS } from '../../shared/web-api-map.generated'
 import { ApplicationCommandError } from '../../shared/application-command-contract'
-import { TASK_EVENT_STREAM_PROTOCOL_VERSION } from '../../shared/task-api'
+
 import {
   isWebRpcChannel,
   WEB_EVENT_STREAM_PROTOCOL_VERSION,
@@ -34,7 +35,6 @@ import {
   REMOTE_LOCAL_ONLY_RPC_CHANNELS,
   startWebHttpServer,
   TaskIdempotencyRegistry,
-  type ExternalWebAccessAuthorization,
   type RunningWebServer
 } from './http-server'
 import { HeadlessTaskApi, TaskApiError } from './task-api'
@@ -89,25 +89,10 @@ const startTestWebHttpServer = (
     applicationEvents
   })
 }
-const authorizedExternalAccess = (
-  principalId = 'trusted-browser'
-): ExternalWebAccessAuthorization => ({
-  kind: 'authorized-pairing-manager' as const,
-  principalId,
-  isCurrent: () => true
-})
-const accessOnlyExternalAccess = (
-  principalId = 'one-time-session'
-): ExternalWebAccessAuthorization => ({
-  kind: 'authorized' as const,
-  principalId,
-  isCurrent: () => true
-})
+
 const startBudgetTestServer = async (
   requestBodyBudgets: NonNullable<Parameters<typeof startWebHttpServer>[0]['requestBodyBudgets']>,
-  onExternalAuthorization?: () => void,
-  invoke: TestWebServerOptions['rpc']['invoke'] = vi.fn().mockResolvedValue([]),
-  principalIdForRequest: (request: IncomingMessage) => string = () => 'one-time-session'
+  invoke: TestWebServerOptions['rpc']['invoke'] = vi.fn().mockResolvedValue([])
 ): ReturnType<typeof startWebHttpServer> => {
   const staticRoot = await mkdtemp(join(tmpdir(), 'open-science-web-static-'))
   roots.push(staticRoot)
@@ -124,13 +109,7 @@ const startBudgetTestServer = async (
       releaseClient: vi.fn(),
       dispose: vi.fn()
     },
-    externalAccess: {
-      authorizeHttp: async (request) => {
-        onExternalAuthorization?.()
-        return accessOnlyExternalAccess(principalIdForRequest(request))
-      },
-      authorizeWebSocket: async () => undefined
-    },
+
     bootstrap: {
       appName: 'EconoMind',
       appVersion: '0.0.0',
@@ -163,7 +142,7 @@ it('does not expose unexpected RPC body stream errors', async () => {
     })
     const response = await fetch(`http://127.0.0.1:${server.port}/rpc/projects%3Alist`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { authorization: 'Bearer test-token', 'content-type': 'application/json' },
       body: '{}'
     })
     expect(response.status).toBe(400)
@@ -229,203 +208,6 @@ describe('startWebHttpServer', () => {
     await vi.waitFor(() => expect(permissionApprovalPresence.isAvailable()).toBe(false))
 
     liveness.close()
-  })
-
-  it('closes stale external event sockets before an application event can leak', async () => {
-    let authorizationCurrent = true
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'test-token',
-      staticRoot: '/unused',
-      rpc: { channels: () => [], invoke: vi.fn() },
-      externalAccess: {
-        authorizeHttp: vi.fn().mockResolvedValue('denied'),
-        authorizeWebSocket: vi.fn().mockResolvedValue({
-          principalId: 'remote-principal-1',
-          isCurrent: () => authorizationCurrent
-        })
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-    const socket = new WebSocket(`ws://127.0.0.1:${server.port}/events`)
-    await new Promise<void>((resolve) => socket.once('open', resolve))
-    authorizationCurrent = false
-
-    const outcome = new Promise<'closed' | 'leaked'>((resolve) => {
-      socket.once('close', () => resolve('closed'))
-      socket.once('message', () => resolve('leaked'))
-    })
-    applicationEvents.publish('project:created', {
-      id: 'private-project',
-      name: 'Private project',
-      description: '',
-      isExample: false,
-      createdAt: 1,
-      updatedAt: 1
-    })
-
-    await expect(
-      Promise.race([
-        outcome,
-        new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 250))
-      ])
-    ).resolves.toBe('closed')
-  })
-
-  it('closes stale idle external sockets before heartbeat traffic is sent', async () => {
-    let authorizationCurrent = true
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'test-token',
-      staticRoot: '/unused',
-      eventHeartbeatIntervalMs: 10,
-      rpc: { channels: () => [], invoke: vi.fn() },
-      externalAccess: {
-        authorizeHttp: vi.fn().mockResolvedValue('denied'),
-        authorizeWebSocket: vi.fn().mockResolvedValue({
-          principalId: 'remote-principal-1',
-          isCurrent: () => authorizationCurrent
-        })
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-    const socket = new WebSocket(`ws://127.0.0.1:${server.port}/events?liveness=1`)
-    await new Promise<void>((resolve) => socket.once('open', resolve))
-    authorizationCurrent = false
-
-    const outcome = new Promise<'closed' | 'heartbeat'>((resolve) => {
-      socket.once('close', () => resolve('closed'))
-      socket.once('message', () => resolve('heartbeat'))
-    })
-    await expect(
-      Promise.race([
-        outcome,
-        new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 250))
-      ])
-    ).resolves.toBe('closed')
-  })
-
-  it('rejects stale external sockets before replay frames are sent', async () => {
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'test-token',
-      staticRoot: '/unused',
-      rpc: { channels: () => [], invoke: vi.fn() },
-      externalAccess: {
-        authorizeHttp: vi.fn().mockResolvedValue('denied'),
-        authorizeWebSocket: vi.fn().mockResolvedValue({
-          principalId: 'remote-principal-1',
-          isCurrent: () => false
-        })
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-    const url = new URL(`ws://127.0.0.1:${server.port}/events`)
-    url.searchParams.set('eventProtocol', String(WEB_EVENT_STREAM_PROTOCOL_VERSION))
-    url.searchParams.set('stream', 'stale-stream')
-    url.searchParams.set('after', '0')
-    const socket = new WebSocket(url)
-    const outcome = new Promise<'rejected' | 'replayed'>((resolve) => {
-      socket.once('unexpected-response', (_request, response) => {
-        response.resume()
-        resolve('rejected')
-      })
-      socket.once('error', () => resolve('rejected'))
-      socket.once('message', () => resolve('replayed'))
-    })
-
-    await expect(
-      Promise.race([
-        outcome,
-        new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 250))
-      ])
-    ).resolves.toBe('rejected')
-  })
-
-  it('closes stale external sockets before Task progress is sent', async () => {
-    let authorizationCurrent = true
-    let publishProgress:
-      ((event: import('../../shared/task-api').TaskRunProgressEvent) => void) | undefined
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'test-token',
-      staticRoot: '/unused',
-      rpc: { channels: () => [], invoke: vi.fn() },
-      tasks: {
-        subscribeProgress: (
-          listener: (event: import('../../shared/task-api').TaskRunProgressEvent) => void
-        ) => {
-          publishProgress = listener
-          return () => {
-            publishProgress = undefined
-          }
-        }
-      } as never,
-      externalAccess: {
-        authorizeHttp: vi.fn().mockResolvedValue('denied'),
-        authorizeWebSocket: vi.fn().mockResolvedValue({
-          principalId: 'remote-principal-1',
-          isCurrent: () => authorizationCurrent
-        })
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-    const socket = new WebSocket(`ws://127.0.0.1:${server.port}/api/v1/events`)
-    await new Promise<void>((resolve) => socket.once('open', resolve))
-    authorizationCurrent = false
-
-    const outcome = new Promise<'closed' | 'leaked'>((resolve) => {
-      socket.once('close', () => resolve('closed'))
-      socket.once('message', () => resolve('leaked'))
-    })
-    publishProgress?.({
-      runId: 'run-1',
-      sessionId: 'session-1',
-      projectId: 'project-1',
-      phase: 'provider-accepted',
-      timestamp: 250,
-      elapsedMs: 249,
-      heartbeat: false
-    })
-
-    await expect(
-      Promise.race([
-        outcome,
-        new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 250))
-      ])
-    ).resolves.toBe('closed')
   })
 
   it('rejects malformed URL encoding at the public HTTP boundary', async () => {
@@ -500,7 +282,6 @@ describe('startWebHttpServer', () => {
         perClientInFlightBytes: bodyBytes,
         serverInFlightBytes: bodyBytes
       },
-      undefined,
       invoke
     )
 
@@ -528,6 +309,7 @@ describe('startWebHttpServer', () => {
       const response = await fetch(`http://127.0.0.1:${server.port}/rpc/projects%3Alist`, {
         method: 'POST',
         headers: {
+          authorization: 'Bearer test-token',
           'content-type': 'application/json',
           'x-open-science-client': 'second-client'
         },
@@ -561,30 +343,14 @@ describe('startWebHttpServer', () => {
         perClientInFlightBytes: 64,
         serverInFlightBytes: 128
       },
-      firstClientId: 'first-connection',
-      secondClientId: 'second-connection',
+      firstClientId: 'same-client',
+      secondClientId: 'same-client',
       expectedStatus: 429
     }
   ])(
     'rejects a declared body before reading when concurrent requests exhaust the $dimension byte budget',
-    async ({ dimension, budgets, firstClientId, secondClientId, expectedStatus }) => {
-      let authorizeCount = 0
-      let markFirstAuthorized: () => void = () => undefined
-      const firstAuthorized = new Promise<void>((resolve) => {
-        markFirstAuthorized = resolve
-      })
-      const server = await startBudgetTestServer(
-        budgets,
-        () => {
-          authorizeCount += 1
-          if (authorizeCount === 1) markFirstAuthorized()
-        },
-        undefined,
-        ({ headers }) =>
-          dimension === 'server'
-            ? `principal:${String(headers['x-open-science-client'])}`
-            : 'shared-principal'
-      )
+    async ({ budgets, firstClientId, secondClientId, expectedStatus }) => {
+      const server = await startBudgetTestServer(budgets)
 
       const firstRequest = httpRequest({
         host: '127.0.0.1',
@@ -592,6 +358,7 @@ describe('startWebHttpServer', () => {
         path: '/rpc/projects%3Alist',
         method: 'POST',
         headers: {
+          authorization: 'Bearer test-token',
           'content-type': 'application/json',
           'content-length': '64',
           'x-open-science-client': firstClientId
@@ -599,23 +366,23 @@ describe('startWebHttpServer', () => {
       })
       firstRequest.on('error', () => undefined)
       firstRequest.write('{')
-      await firstAuthorized
       await new Promise<void>((resolve) => setImmediate(resolve))
 
       try {
-        const response = await fetch(`http://127.0.0.1:${server.port}/rpc/projects%3Alist`, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-open-science-client': secondClientId
-          },
-          body: JSON.stringify({ protocolVersion: WEB_RPC_PROTOCOL_VERSION, args: [] })
-        })
-
-        expect(response.status).toBe(expectedStatus)
-        expect(await response.json()).toMatchObject({
-          error: { code: 'handler_error' }
-        })
+        await expect
+          .poll(async () => {
+            const response = await fetch(`http://127.0.0.1:${server.port}/rpc/projects%3Alist`, {
+              method: 'POST',
+              headers: {
+                authorization: 'Bearer test-token',
+                'content-type': 'application/json',
+                'x-open-science-client': secondClientId
+              },
+              body: JSON.stringify({ protocolVersion: WEB_RPC_PROTOCOL_VERSION, args: [] })
+            })
+            return response.status
+          })
+          .toBe(expectedStatus)
       } finally {
         const firstClosed = new Promise<void>((resolve) => firstRequest.once('close', resolve))
         firstRequest.destroy()
@@ -626,6 +393,7 @@ describe('startWebHttpServer', () => {
       const retry = await fetch(`http://127.0.0.1:${server.port}/rpc/projects%3Alist`, {
         method: 'POST',
         headers: {
+          authorization: 'Bearer test-token',
           'content-type': 'application/json',
           'x-open-science-client': secondClientId
         },
@@ -772,6 +540,23 @@ describe('startWebHttpServer', () => {
       expect(response.status).toBe(200)
       expect(response.headers.get('content-security-policy')).toContain("default-src 'self'")
       expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'")
+      const directives = new Map(
+        response.headers
+          .get('content-security-policy')!
+          .split(';')
+          .map((directive) => {
+            const [name, ...sources] = directive.trim().split(/\s+/)
+            return [name, sources]
+          })
+      )
+      // The shared PDF loader creates a Blob module worker, including in Remote Web.
+      const workerSources =
+        directives.get('worker-src') ??
+        directives.get('child-src') ??
+        directives.get('script-src') ??
+        directives.get('default-src')
+      expect(workerSources).toContain('blob:')
+      expect(directives.get('script-src')).toEqual(["'self'"])
       expect(response.headers.get('x-frame-options')).toBe('DENY')
       expect(response.headers.get('referrer-policy')).toBe('no-referrer')
     }
@@ -1190,7 +975,8 @@ describe('startWebHttpServer', () => {
       configRoot: '/fake/root',
       rpcProtocolVersion: WEB_RPC_PROTOCOL_VERSION,
       rpcCapabilities: WEB_RPC_CAPABILITIES,
-      rpcChannels: ['projects:list']
+      rpcChannels: ['projects:list'],
+      taskCapabilities: ['permission-prompts-none']
     })
 
     const compressedStatic = await fetch(`${base}/app.js`, {
@@ -1662,231 +1448,6 @@ describe('startWebHttpServer', () => {
     publicSocket.close()
   })
 
-  it('does not replay event frames that predate a remote principal authorization', async () => {
-    const authorizationFor = (request: IncomingMessage): ExternalWebAccessAuthorization =>
-      accessOnlyExternalAccess(String(request.headers['x-test-principal']))
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'local-token',
-      staticRoot: '/unused',
-      rpc: { channels: () => [], invoke: vi.fn() },
-      tasks: {
-        subscribeProgress: () => () => undefined,
-        resolveActiveRun: (sessionId: string) =>
-          sessionId === 'task-session'
-            ? { runId: 'run-1', sessionId, projectId: 'project-1' }
-            : undefined
-      } as never,
-      externalAccess: {
-        authorizeHttp: async (request) => authorizationFor(request),
-        authorizeWebSocket: async (request) => authorizationFor(request)
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-    const base = `http://127.0.0.1:${server.port}`
-    const bootstrapFor = async (
-      principalId: string
-    ): Promise<{ eventStream: { streamId: string; latestSequence: number } }> =>
-      (await (
-        await fetch(`${base}/api/bootstrap`, {
-          headers: { 'x-test-principal': principalId }
-        })
-      ).json()) as { eventStream: { streamId: string; latestSequence: number } }
-    const eventSocket = (
-      pathname: '/events' | '/api/v1/events',
-      principalId: string,
-      streamId: string,
-      after: number
-    ): WebSocket => {
-      const url = new URL(`${base.replace('http:', 'ws:')}${pathname}`)
-      url.searchParams.set(
-        'eventProtocol',
-        String(
-          pathname === '/events'
-            ? WEB_EVENT_STREAM_PROTOCOL_VERSION
-            : TASK_EVENT_STREAM_PROTOCOL_VERSION
-        )
-      )
-      url.searchParams.set('stream', streamId)
-      url.searchParams.set('after', String(after))
-      return new WebSocket(url, { headers: { 'x-test-principal': principalId } })
-    }
-    const nextMessage = (socket: WebSocket): Promise<Record<string, unknown>> =>
-      new Promise((resolve, reject) => {
-        const timeout = setTimeout(
-          () => reject(new Error(`Timed out waiting for event frame from ${socket.url}.`)),
-          500
-        )
-        socket.once('message', (data) => {
-          clearTimeout(timeout)
-          resolve(JSON.parse(data.toString()))
-        })
-      })
-
-    const firstPrincipal = await bootstrapFor('principal-before-event')
-    expect(firstPrincipal.eventStream.latestSequence).toBe(0)
-
-    applicationEvents.publish('acp:event', [
-      {
-        id: 'event-before-second-principal',
-        timestamp: 1,
-        level: 'info',
-        sessionId: 'task-session',
-        kind: 'message',
-        role: 'assistant',
-        text: 'Authorized-principal-only history'
-      }
-    ])
-
-    const firstInternalSocket = eventSocket(
-      '/events',
-      'principal-before-event',
-      firstPrincipal.eventStream.streamId,
-      0
-    )
-    await expect(nextMessage(firstInternalSocket)).resolves.toMatchObject({
-      kind: 'event',
-      sequence: 1,
-      channel: 'acp:event'
-    })
-    firstInternalSocket.close()
-
-    const secondPrincipal = await bootstrapFor('principal-after-event')
-    expect(secondPrincipal.eventStream.latestSequence).toBe(1)
-    const secondInternalSocket = eventSocket(
-      '/events',
-      'principal-after-event',
-      secondPrincipal.eventStream.streamId,
-      0
-    )
-    const secondInternalMessage = await nextMessage(secondInternalSocket)
-    secondInternalSocket.close()
-
-    const publicReadyUrl = new URL(`${base.replace('http:', 'ws:')}/api/v1/events`)
-    publicReadyUrl.searchParams.set('eventProtocol', String(TASK_EVENT_STREAM_PROTOCOL_VERSION))
-    const publicReadySocket = new WebSocket(publicReadyUrl, {
-      headers: { 'x-test-principal': 'principal-after-event' }
-    })
-    const publicReady = await nextMessage(publicReadySocket)
-    expect(publicReady).toMatchObject({
-      type: 'stream.ready',
-      data: { latestSequence: 1, streamId: expect.any(String) }
-    })
-    publicReadySocket.close()
-
-    const publicStreamId = (publicReady.data as { streamId: string }).streamId
-    const secondPublicSocket = eventSocket(
-      '/api/v1/events',
-      'principal-after-event',
-      publicStreamId,
-      0
-    )
-    const secondPublicMessage = await nextMessage(secondPublicSocket)
-    secondPublicSocket.close()
-
-    expect([secondInternalMessage, secondPublicMessage]).toMatchObject([
-      {
-        kind: 'resync-required',
-        reason: 'cursor-expired',
-        latestSequence: 1
-      },
-      {
-        type: 'stream.resync-required',
-        data: { reason: 'cursor-expired', latestSequence: 1 }
-      }
-    ])
-  })
-
-  it('invalidates remote replay floors for one principal or the current authorization generation', async () => {
-    const authorizationFor = (request: IncomingMessage): ExternalWebAccessAuthorization =>
-      accessOnlyExternalAccess(String(request.headers['x-test-principal']))
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'local-token',
-      staticRoot: '/unused',
-      rpc: { channels: () => [], invoke: vi.fn() },
-      externalAccess: {
-        authorizeHttp: async (request) => authorizationFor(request),
-        authorizeWebSocket: async (request) => authorizationFor(request)
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-    const base = `http://127.0.0.1:${server.port}`
-    const bootstrapFor = async (
-      principalId: string
-    ): Promise<{ eventStream: { streamId: string; latestSequence: number } }> =>
-      (await (
-        await fetch(`${base}/api/bootstrap`, {
-          headers: { 'x-test-principal': principalId }
-        })
-      ).json()) as { eventStream: { streamId: string; latestSequence: number } }
-    const resumeFor = (
-      principalId: string,
-      streamId: string,
-      after: number
-    ): Promise<Record<string, unknown>> => {
-      const url = new URL(`${base.replace('http:', 'ws:')}/events`)
-      url.searchParams.set('eventProtocol', String(WEB_EVENT_STREAM_PROTOCOL_VERSION))
-      url.searchParams.set('stream', streamId)
-      url.searchParams.set('after', String(after))
-      const socket = new WebSocket(url, { headers: { 'x-test-principal': principalId } })
-      return new Promise((resolve) =>
-        socket.once('message', (data) => {
-          socket.close()
-          resolve(JSON.parse(data.toString()))
-        })
-      )
-    }
-    const publishProject = (id: string): void =>
-      applicationEvents.publish('project:created', {
-        id,
-        name: id,
-        description: '',
-        isExample: false,
-        createdAt: 1,
-        updatedAt: 1
-      })
-
-    const firstPrincipal = await bootstrapFor('principal-one')
-    publishProject('project-1')
-    const secondPrincipal = await bootstrapFor('principal-two')
-    publishProject('project-2')
-
-    server.closeExternalConnections('principal-one')
-    await bootstrapFor('principal-one')
-
-    await expect(
-      resumeFor('principal-one', firstPrincipal.eventStream.streamId, 0)
-    ).resolves.toMatchObject({ kind: 'resync-required', reason: 'cursor-expired' })
-    await expect(
-      resumeFor('principal-two', secondPrincipal.eventStream.streamId, 1)
-    ).resolves.toMatchObject({ kind: 'event', sequence: 2 })
-
-    server.closeExternalConnections()
-    publishProject('project-3')
-    await bootstrapFor('principal-two')
-
-    await expect(
-      resumeFor('principal-two', secondPrincipal.eventStream.streamId, 1)
-    ).resolves.toMatchObject({ kind: 'resync-required', reason: 'cursor-expired' })
-  })
-
   it('replays owned public Task events from the requested sequence', async () => {
     const server = await startTestWebHttpServer({
       host: '127.0.0.1',
@@ -2282,63 +1843,6 @@ describe('startWebHttpServer', () => {
     expect(directSignals[0]?.aborted).toBe(true)
   })
 
-  it('bounds retained caller leases when one principal rotates HTTP client nonces', async () => {
-    const callerSignals: AbortSignal[] = []
-    const remoteInvoke = vi.fn(async (_channel, invocation) => {
-      callerSignals.push(invocation.callerLease.signal)
-      return []
-    })
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'local-token',
-      staticRoot: '/unused',
-      rpc: {
-        channels: () => ['projects:list'],
-        invoke: vi.fn(),
-        dispose: vi.fn()
-      },
-      applicationCommands: {
-        localWeb: { commandNames: () => [], invoke: vi.fn() },
-        remoteWeb: {
-          commandNames: () => ['projects:list'],
-          rejectedCommandNames: () => [],
-          invoke: remoteInvoke
-        }
-      },
-      externalAccess: {
-        authorizeHttp: vi.fn().mockResolvedValue(accessOnlyExternalAccess('shared-principal')),
-        authorizeWebSocket: vi.fn().mockResolvedValue(undefined)
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-
-    const responses: Response[] = []
-    for (let index = 0; index < 65; index += 1) {
-      responses.push(
-        await fetch(`http://127.0.0.1:${server.port}/rpc/projects%3Alist`, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-open-science-client': `rotated-client-${index}`
-          },
-          body: JSON.stringify({ protocolVersion: WEB_RPC_PROTOCOL_VERSION, args: [] })
-        })
-      )
-    }
-
-    expect(responses.every((response) => response.status === 200)).toBe(true)
-    expect(callerSignals).toHaveLength(65)
-    expect(callerSignals.some((signal) => signal.aborted)).toBe(true)
-  })
-
   it('rejects malformed or repeated HTTP client nonces before invoking a command', async () => {
     const invoke = vi.fn().mockResolvedValue([])
     const server = await startTestWebHttpServer({
@@ -2423,52 +1927,6 @@ describe('startWebHttpServer', () => {
         resolve()
       })
     })
-  })
-
-  it('does not retain external socket metadata after client capacity rejects an upgrade', async () => {
-    const close = vi.spyOn(WebSocket.prototype, 'close')
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'local-token',
-      staticRoot: '/unused',
-      webClientRetention: { maxClientsPerPrincipal: 1 },
-      rpc: { channels: () => [], invoke: vi.fn() },
-      externalAccess: {
-        authorizeHttp: vi.fn().mockResolvedValue('denied'),
-        authorizeWebSocket: vi.fn().mockResolvedValue({
-          principalId: 'shared-principal',
-          isCurrent: () => true
-        })
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-    const retained = new WebSocket(`ws://127.0.0.1:${server.port}/events?client=retained-client`)
-    await new Promise<void>((resolve) => retained.once('open', resolve))
-    const rejected = new WebSocket(`ws://127.0.0.1:${server.port}/events?client=rejected-client`)
-
-    await new Promise<void>((resolve) => {
-      rejected.once('close', (code) => {
-        expect(code).toBe(1013)
-        resolve()
-      })
-    })
-    const retainedClosed = new Promise<void>((resolve) => retained.once('close', () => resolve()))
-    server.closeExternalConnections('shared-principal')
-    await retainedClosed
-
-    expect(
-      close.mock.calls.filter(
-        ([code, reason]) => code === 1008 && reason === 'Remote access revoked'
-      )
-    ).toHaveLength(1)
   })
 
   it.each([false, true])(
@@ -2666,462 +2124,6 @@ describe('startWebHttpServer', () => {
     expect(callerSignal?.aborted).toBe(true)
   })
 
-  it('passes pairing authority only for trusted-browser Web RPC calls', async () => {
-    const staticRoot = await mkdtemp(join(tmpdir(), 'open-science-web-static-'))
-    roots.push(staticRoot)
-    await writeFile(join(staticRoot, 'index.html'), '<!doctype html>')
-    const rpc = {
-      channels: () => ['remote-access:get-snapshot'],
-      invoke: vi.fn(async () => ({ canManagePairing: true })),
-      releaseClient: vi.fn(),
-      dispose: vi.fn()
-    }
-    const authorizeHttp = vi.fn().mockResolvedValue(authorizedExternalAccess())
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'local-token',
-      staticRoot,
-      rpc,
-      externalAccess: {
-        authorizeHttp,
-        authorizeWebSocket: vi.fn().mockResolvedValue({
-          principalId: 'trusted-browser',
-          isCurrent: () => true
-        })
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-
-    const response = await fetch(
-      `http://127.0.0.1:${server.port}/rpc/remote-access%3Aget-snapshot`,
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-open-science-client': 'trusted-phone'
-        },
-        body: JSON.stringify({ protocolVersion: WEB_RPC_PROTOCOL_VERSION, args: [] })
-      }
-    )
-
-    expect(response.status).toBe(200)
-    expect(rpc.invoke).toHaveBeenCalledWith(
-      'remote-access:get-snapshot',
-      expect.objectContaining({
-        clientId: 'trusted-browser:trusted-phone',
-        location: 'remote',
-        authorities: ['manage-remote-pairing']
-      }),
-      []
-    )
-
-    authorizeHttp.mockResolvedValueOnce(accessOnlyExternalAccess())
-    const oneTimeResponse = await fetch(
-      `http://127.0.0.1:${server.port}/rpc/remote-access%3Aget-snapshot`,
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-open-science-client': 'one-time-phone'
-        },
-        body: JSON.stringify({ protocolVersion: WEB_RPC_PROTOCOL_VERSION, args: [] })
-      }
-    )
-
-    expect(oneTimeResponse.status).toBe(200)
-    expect(rpc.invoke).toHaveBeenLastCalledWith(
-      'remote-access:get-snapshot',
-      expect.objectContaining({
-        clientId: 'one-time-session:one-time-phone',
-        location: 'remote',
-        authorities: []
-      }),
-      []
-    )
-  })
-
-  it('rejects a remote HTTP request when authorization expires while authorization is pending', async () => {
-    const staticRoot = await mkdtemp(join(tmpdir(), 'open-science-web-static-'))
-    roots.push(staticRoot)
-    await writeFile(join(staticRoot, 'index.html'), '<!doctype html>')
-    let markAuthorizationStarted: () => void = () => undefined
-    const authorizationStarted = new Promise<void>((resolve) => {
-      markAuthorizationStarted = resolve
-    })
-    let resolveAuthorization: (authorization: ExternalWebAccessAuthorization) => void = () =>
-      undefined
-    const authorization = new Promise<ExternalWebAccessAuthorization>((resolve) => {
-      resolveAuthorization = resolve
-    })
-    let current = true
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'local-token',
-      staticRoot,
-      rpc: {
-        channels: () => [],
-        invoke: vi.fn(),
-        releaseClient: vi.fn(),
-        dispose: vi.fn()
-      },
-      externalAccess: {
-        authorizeHttp: vi.fn(() => {
-          markAuthorizationStarted()
-          return authorization
-        }),
-        authorizeWebSocket: vi.fn().mockResolvedValue(undefined)
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-
-    const response = fetch(`http://127.0.0.1:${server.port}/api/bootstrap`)
-    await authorizationStarted
-    current = false
-    resolveAuthorization({
-      kind: 'authorized-pairing-manager',
-      principalId: 'trusted-browser',
-      isCurrent: () => current
-    })
-
-    expect((await response).status).toBe(401)
-  })
-
-  it('does not execute remote RPC or Task API requests after their authorization expires', async () => {
-    const staticRoot = await mkdtemp(join(tmpdir(), 'open-science-web-static-'))
-    roots.push(staticRoot)
-    await writeFile(join(staticRoot, 'index.html'), '<!doctype html>')
-    let authorizationGeneration = 0
-    const authorizeHttp = vi.fn(async () => {
-      const authorizedGeneration = authorizationGeneration
-      return {
-        kind: 'authorized-pairing-manager' as const,
-        principalId: 'trusted-browser',
-        isCurrent: () => authorizedGeneration === authorizationGeneration
-      }
-    })
-    const rpc = {
-      channels: () => ['acp:get-state'],
-      invoke: vi.fn(async () => ({ ok: true })),
-      releaseClient: vi.fn(),
-      dispose: vi.fn()
-    }
-    const taskContexts: CallerContext[] = []
-    const runWithCapturedCallerContext = <Result>(
-      context: CallerContext,
-      operation: () => Result
-    ): Result => {
-      taskContexts.push(context)
-      return operation()
-    }
-    const tasks = {
-      runWithCallerContext: runWithCapturedCallerContext,
-      subscribeProgress: () => () => undefined,
-      listProjects: vi.fn(),
-      createProject: vi.fn(),
-      updateProject: vi.fn(),
-      listSessions: vi.fn(),
-      getSession: vi.fn(),
-      startRun: vi.fn(async () => ({
-        id: 'run-1',
-        sessionId: 'session-1',
-        projectId: 'project-1',
-        cwd: '/workspace/research',
-        status: 'running' as const,
-        startedAt: 1,
-        artifacts: [],
-        preferredComputeHostIds: []
-      })),
-      getRun: vi.fn(),
-      cancelRun: vi.fn(),
-      listArtifacts: vi.fn(),
-      acquireArtifact: vi.fn(),
-      releaseArtifact: vi.fn()
-    }
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'local-token',
-      staticRoot,
-      rpc,
-      tasks,
-      externalAccess: {
-        authorizeHttp,
-        authorizeWebSocket: vi.fn().mockResolvedValue({
-          principalId: 'trusted-browser',
-          isCurrent: () => true
-        })
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-
-    const postAfterExpiringAuthorization = async (
-      pathname: string,
-      body: unknown,
-      expectedAuthorizationCalls: number
-    ): Promise<number> => {
-      const request = httpRequest({
-        host: '127.0.0.1',
-        port: server.port,
-        path: pathname,
-        method: 'POST',
-        headers: {
-          host: 'remote.example.test',
-          origin: 'https://remote.example.test',
-          'content-type': 'application/json'
-        }
-      })
-      const response = new Promise<number>((resolve, reject) => {
-        request.once('response', (incoming) => {
-          incoming.resume()
-          incoming.once('end', () => resolve(incoming.statusCode ?? 0))
-        })
-        request.once('error', reject)
-      })
-      request.flushHeaders()
-      await vi.waitFor(() =>
-        expect(authorizeHttp).toHaveBeenCalledTimes(expectedAuthorizationCalls)
-      )
-      authorizationGeneration += 1
-      request.end(JSON.stringify(body))
-      return response
-    }
-
-    expect(
-      await postAfterExpiringAuthorization(
-        '/rpc/acp%3Aget-state',
-        { protocolVersion: WEB_RPC_PROTOCOL_VERSION, args: [] },
-        1
-      )
-    ).toBe(401)
-    expect(rpc.invoke).not.toHaveBeenCalled()
-
-    expect(
-      await postAfterExpiringAuthorization(
-        '/api/v1/runs',
-        { project: 'project-1', prompt: 'Research this.' },
-        2
-      )
-    ).toBe(401)
-    expect(tasks.startRun).not.toHaveBeenCalled()
-    expect(await postAfterExpiringAuthorization('/api/v1/runs/run-1/cancel', {}, 3)).toBe(401)
-    expect(tasks.cancelRun).not.toHaveBeenCalled()
-    const taskContext = taskContexts[0]
-    expect(taskContext).toMatchObject({
-      surface: 'task',
-      location: 'remote',
-      principalKind: 'automation',
-      actionOrigin: 'automation'
-    })
-    expect(taskContext?.isAuthorizationCurrent()).toBe(false)
-  })
-
-  it.each(['success', 'error'] as const)(
-    'TB-05 suppresses a delayed remote %s after revocation',
-    async (outcome) => {
-      let current = true
-      let started!: () => void
-      const entered = new Promise<void>((resolve) => {
-        started = resolve
-      })
-      let finish!: () => void
-      const pending = new Promise<void>((resolve) => {
-        finish = resolve
-      })
-      const invoke = vi.fn(async () => {
-        started()
-        await pending
-        if (outcome === 'error')
-          throw new ApplicationCommandError('command-failed', 'private-result-marker')
-        return { content: 'private-result-marker' }
-      })
-      const server = await startTestWebHttpServer({
-        host: '127.0.0.1',
-        port: 0,
-        token: 'local-token',
-        staticRoot: '/unused',
-        rpc: { channels: () => ['projects:list'], invoke },
-        externalAccess: {
-          authorizeHttp: async () => ({
-            kind: 'authorized',
-            principalId: 'paired-browser',
-            isCurrent: () => current
-          }),
-          authorizeWebSocket: async () => undefined
-        },
-        bootstrap: {
-          appName: 'EconoMind',
-          appVersion: '0.0.0',
-          configRoot: '/fake/root',
-          platform: 'test',
-          versions: { electron: '1', chrome: '1', node: '1' }
-        }
-      })
-      servers.push(server)
-      const responsePromise = fetch(`http://127.0.0.1:${server.port}/rpc/projects%3Alist`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ protocolVersion: WEB_RPC_PROTOCOL_VERSION, args: [] })
-      })
-      await entered
-      current = false
-      finish()
-      const response = await responsePromise
-      expect.soft(response.status).toBe(401)
-      expect(await response.text()).not.toContain('private-result-marker')
-      expect(invoke).toHaveBeenCalledOnce()
-    }
-  )
-
-  it('keeps host-management RPC local while preserving the local Web client', async () => {
-    const staticRoot = await mkdtemp(join(tmpdir(), 'open-science-web-static-'))
-    roots.push(staticRoot)
-    await writeFile(join(staticRoot, 'index.html'), '<!doctype html>')
-    const localOnlyChannels = [...REMOTE_LOCAL_ONLY_RPC_CHANNELS]
-    const remotelyAvailableChannel = 'projects:list'
-    const rpcChannels = [...localOnlyChannels, remotelyAvailableChannel]
-    const localInvoke = vi.fn(async () => ({ installed: true }))
-    const remoteInvoke = vi.fn(async () => ({ projects: [] }))
-    const rpc = {
-      channels: () => rpcChannels,
-      invoke: vi.fn(),
-      releaseClient: vi.fn(),
-      dispose: vi.fn()
-    }
-    const authorizeHttp = vi.fn().mockResolvedValue(authorizedExternalAccess())
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'local-token',
-      staticRoot,
-      rpc,
-      applicationCommands: {
-        localWeb: { commandNames: () => rpcChannels, invoke: localInvoke },
-        remoteWeb: {
-          commandNames: () => [remotelyAvailableChannel],
-          rejectedCommandNames: () => localOnlyChannels,
-          invoke: remoteInvoke
-        }
-      },
-      externalAccess: {
-        authorizeHttp,
-        authorizeWebSocket: vi.fn().mockResolvedValue({
-          principalId: 'trusted-browser',
-          isCurrent: () => true
-        })
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-    const rpcUrl = (channel: string): string =>
-      `http://127.0.0.1:${server.port}/rpc/${encodeURIComponent(channel)}`
-    const bootstrapUrl = `http://127.0.0.1:${server.port}/api/bootstrap`
-
-    for (const channel of [
-      'settings:login-isolated-claude',
-      'settings:login-isolated-claude-browser',
-      'settings:logout-isolated-claude',
-      'settings:login-isolated-codex',
-      'settings:logout-isolated-codex',
-      'settings:login-shared-claude',
-      'settings:logout-shared-claude',
-      'storage:inspect-data-root',
-      'storage:validate-data-root',
-      'local-fs:get-roots',
-      'local-fs:list-dir',
-      'local-fs:open-path',
-      'local-fs:read-preview',
-      'local-fs:reveal',
-      'uploads:stage-local-path'
-    ]) {
-      expect(REMOTE_LOCAL_ONLY_RPC_CHANNELS, channel).toContain(channel)
-    }
-    const remoteBootstrap = await fetch(bootstrapUrl)
-    expect(remoteBootstrap.status).toBe(200)
-    const remoteBootstrapBody = await remoteBootstrap.json()
-    expect(remoteBootstrapBody).toMatchObject({
-      rpcChannels: [remotelyAvailableChannel],
-      restrictedRpcChannels: localOnlyChannels
-    })
-    expect(remoteBootstrapBody).not.toHaveProperty('configRoot')
-
-    const localBootstrap = await fetch(bootstrapUrl, {
-      headers: { authorization: 'Bearer local-token' }
-    })
-    expect(localBootstrap.status).toBe(200)
-    expect(await localBootstrap.json()).toMatchObject({
-      configRoot: '/fake/root',
-      rpcChannels,
-      restrictedRpcChannels: []
-    })
-
-    authorizeHttp.mockRejectedValueOnce(
-      new Error('EACCES: /Users/private/.open-science/remote-access.json')
-    )
-    const failedBootstrap = await fetch(bootstrapUrl)
-    expect(failedBootstrap.status).toBe(500)
-    expect(await failedBootstrap.json()).toEqual({ error: 'Internal server error' })
-
-    for (const channel of localOnlyChannels) {
-      const remoteResponse = await fetch(rpcUrl(channel), {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ protocolVersion: WEB_RPC_PROTOCOL_VERSION, args: [] })
-      })
-      expect(remoteResponse.status, channel).toBe(403)
-      expect(await remoteResponse.json(), channel).toEqual({
-        protocolVersion: WEB_RPC_PROTOCOL_VERSION,
-        ok: false,
-        error: {
-          code: 'method_not_found',
-          message: `Channel only available from the local app: ${channel}`
-        }
-      })
-    }
-    expect(remoteInvoke).not.toHaveBeenCalled()
-    expect(rpc.invoke).not.toHaveBeenCalled()
-
-    const localResponse = await fetch(rpcUrl('cli:install'), {
-      method: 'POST',
-      headers: {
-        authorization: 'Bearer local-token',
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({ protocolVersion: WEB_RPC_PROTOCOL_VERSION, args: [] })
-    })
-    expect(localResponse.status).toBe(200)
-    expect(localInvoke).toHaveBeenCalledOnce()
-    expect(rpc.invoke).not.toHaveBeenCalled()
-  })
-
   it('pins the remote Web Notebook capability matrix', () => {
     const channelsFor = (prefix: string): string[] =>
       Object.entries(WEB_INVOKE_CHANNELS)
@@ -3154,6 +2156,7 @@ describe('startWebHttpServer', () => {
       'notebook:read-input-preview',
       'notebook:restart',
       'notebook:run-cell',
+      'notebook:run-index',
       'notebook:shutdown',
       'notebook:state'
     ])
@@ -3184,327 +2187,6 @@ describe('startWebHttpServer', () => {
       'runtime:list-package-counts',
       'runtime:list-packages'
     ])
-  })
-
-  it.each([
-    ['one-time', accessOnlyExternalAccess],
-    ['trusted', authorizedExternalAccess]
-  ])('pins the %s remote capability matrix', async (_authority, createAuthorization) => {
-    const staticRoot = await mkdtemp(join(tmpdir(), 'open-science-web-static-'))
-    roots.push(staticRoot)
-    await writeFile(join(staticRoot, 'index.html'), '<!doctype html>')
-    const acpChannels = Object.entries(WEB_INVOKE_CHANNELS)
-      .filter(([path]) => path.startsWith('acp.'))
-      .map(([, channel]) => channel)
-      .sort()
-    expect(acpChannels).toHaveLength(20)
-    const permissionChannels = [
-      'permissions:extend-undo',
-      'permissions:list',
-      'permissions:restore',
-      'permissions:revoke'
-    ]
-    const computeChannels = [
-      'compute:bookmarks:get',
-      'compute:bookmarks:set',
-      'compute:concurrency:set',
-      'compute:create',
-      'compute:delete',
-      'compute:details:get',
-      'compute:details:save',
-      'compute:download',
-      'compute:enabled-hosts:get',
-      'compute:enabled-hosts:set',
-      'compute:get',
-      'compute:jobs:list',
-      'compute:jobs:mark-consumed',
-      'compute:jobs:pending-notification',
-      'compute:list',
-      'compute:list-dir',
-      'compute:probe',
-      'compute:approval-respond',
-      'compute:reveal-in-folder',
-      'compute:scratch:set',
-      'compute:ssh-config-aliases'
-    ]
-    const specialistChannels = [
-      'specialist:list',
-      'specialist:update',
-      'specialist:set-enabled',
-      'specialist:package-upload-begin',
-      'specialist:package-upload-preview',
-      'specialist:package-upload-abort',
-      'specialist:package-install',
-      'specialist:package-cancel'
-    ]
-    const remoteDeniedComputeChannels = ['compute:download', 'compute:reveal-in-folder']
-    const remoteAllowedChannels = [
-      ...specialistChannels,
-      ...acpChannels,
-      ...permissionChannels,
-      ...computeChannels.filter((channel) => !remoteDeniedComputeChannels.includes(channel))
-    ]
-    const rpcChannels = [
-      'specialist:package-select',
-      ...specialistChannels,
-      ...acpChannels,
-      ...permissionChannels,
-      ...computeChannels
-    ]
-    const rpc = {
-      channels: () => rpcChannels,
-      invoke: vi.fn(async (channel: string) => ({ channel })),
-      releaseClient: vi.fn(),
-      dispose: vi.fn()
-    }
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'local-token',
-      staticRoot,
-      rpc,
-      externalAccess: {
-        authorizeHttp: vi.fn().mockResolvedValue(createAuthorization()),
-        authorizeWebSocket: vi.fn().mockResolvedValue({
-          principalId: 'trusted-browser',
-          isCurrent: () => true
-        })
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-    const base = `http://127.0.0.1:${server.port}`
-    const invoke = (channel: string, local = false): Promise<Response> =>
-      fetch(`${base}/rpc/${encodeURIComponent(channel)}`, {
-        method: 'POST',
-        headers: {
-          ...(local ? { authorization: 'Bearer local-token' } : {}),
-          'content-type': 'application/json'
-        },
-        body: JSON.stringify({ protocolVersion: WEB_RPC_PROTOCOL_VERSION, args: [] })
-      })
-
-    const remoteBootstrap = await fetch(`${base}/api/bootstrap`)
-    const remoteBootstrapBody = (await remoteBootstrap.json()) as {
-      rpcChannels: string[]
-      restrictedRpcChannels: string[]
-      webCallerLocation: string
-    }
-    expect(remoteBootstrapBody.webCallerLocation).toBe('remote')
-    expect(remoteBootstrapBody.rpcChannels).toEqual(remoteAllowedChannels)
-    expect(remoteBootstrapBody.restrictedRpcChannels).toEqual(remoteDeniedComputeChannels)
-
-    for (const channel of remoteAllowedChannels) {
-      const response = await invoke(channel)
-      expect(response.status, channel).toBe(200)
-    }
-    for (const channel of remoteDeniedComputeChannels) {
-      const remoteResponse = await invoke(channel)
-      expect(remoteResponse.status, channel).toBe(403)
-
-      const localResponse = await invoke(channel, true)
-      expect(localResponse.status, channel).toBe(200)
-    }
-
-    const localBootstrap = await fetch(`${base}/api/bootstrap`, {
-      headers: { authorization: 'Bearer local-token' }
-    })
-    const localBootstrapBody = (await localBootstrap.json()) as {
-      rpcChannels: string[]
-      restrictedRpcChannels: string[]
-      webCallerLocation: string
-    }
-    expect(localBootstrapBody.webCallerLocation).toBe('local')
-    expect(localBootstrapBody.rpcChannels).toEqual([
-      ...specialistChannels,
-      ...acpChannels,
-      ...permissionChannels,
-      ...computeChannels
-    ])
-    expect(localBootstrapBody.restrictedRpcChannels).toEqual([])
-
-    expect((await invoke('specialist:package-select')).status).toBe(404)
-    expect((await invoke('specialist:package-select', true)).status).toBe(404)
-    expect(rpc.invoke.mock.calls.map(([channel]) => channel)).toEqual([
-      ...remoteAllowedChannels,
-      ...remoteDeniedComputeChannels
-    ])
-  })
-
-  it('closes targeted or all external WebSockets without disturbing local clients', async () => {
-    const staticRoot = await mkdtemp(join(tmpdir(), 'open-science-web-static-'))
-    roots.push(staticRoot)
-    await writeFile(join(staticRoot, 'index.html'), '<!doctype html>')
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'local-token',
-      staticRoot,
-      rpc: {
-        channels: () => [],
-        invoke: vi.fn(),
-        releaseClient: vi.fn(),
-        dispose: vi.fn()
-      },
-      externalAccess: {
-        authorizeHttp: vi.fn().mockResolvedValue(authorizedExternalAccess()),
-        authorizeWebSocket: vi.fn().mockResolvedValue({
-          principalId: 'trusted-browser',
-          isCurrent: () => true
-        })
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-    const socket = new WebSocket(`ws://127.0.0.1:${server.port}/events`, {
-      headers: { origin: `http://127.0.0.1:${server.port}` }
-    })
-    const localSocket = new WebSocket(`ws://127.0.0.1:${server.port}/events?token=local-token`)
-    await Promise.all([
-      new Promise<void>((resolve) => socket.once('open', resolve)),
-      new Promise<void>((resolve) => localSocket.once('open', resolve))
-    ])
-    const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()))
-
-    server.closeExternalConnections('trusted-browser')
-
-    await closed
-    expect(socket.readyState).toBe(WebSocket.CLOSED)
-    expect(localSocket.readyState).toBe(WebSocket.OPEN)
-
-    const nextRemoteSocket = new WebSocket(`ws://127.0.0.1:${server.port}/events`, {
-      headers: { origin: `http://127.0.0.1:${server.port}` }
-    })
-    await new Promise<void>((resolve) => nextRemoteSocket.once('open', resolve))
-    const nextRemoteClosed = new Promise<void>((resolve) =>
-      nextRemoteSocket.once('close', () => resolve())
-    )
-
-    server.closeExternalConnections()
-
-    await nextRemoteClosed
-    expect(localSocket.readyState).toBe(WebSocket.OPEN)
-    localSocket.close()
-  })
-
-  it('rejects an external WebSocket when authorization expires while the upgrade waits', async () => {
-    const staticRoot = await mkdtemp(join(tmpdir(), 'open-science-web-static-'))
-    roots.push(staticRoot)
-    await writeFile(join(staticRoot, 'index.html'), '<!doctype html>')
-    let authorizationCurrent = true
-    let resolveAuthorization:
-      ((authorization: { principalId: string; isCurrent: () => boolean }) => void) | undefined
-    let markAuthorizationStarted: (() => void) | undefined
-    const authorizationStarted = new Promise<void>((resolve) => {
-      markAuthorizationStarted = resolve
-    })
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'local-token',
-      staticRoot,
-      rpc: {
-        channels: () => [],
-        invoke: vi.fn(),
-        releaseClient: vi.fn(),
-        dispose: vi.fn()
-      },
-      externalAccess: {
-        authorizeHttp: vi.fn().mockResolvedValue(authorizedExternalAccess()),
-        authorizeWebSocket: vi.fn(
-          () =>
-            new Promise<{ principalId: string; isCurrent: () => boolean }>((resolve) => {
-              resolveAuthorization = resolve
-              markAuthorizationStarted?.()
-            })
-        )
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-    const socket = new WebSocket(`ws://127.0.0.1:${server.port}/events`, {
-      headers: { origin: `http://127.0.0.1:${server.port}` }
-    })
-    const outcome = new Promise<'opened' | 'rejected'>((resolve) => {
-      socket.once('open', () => resolve('opened'))
-      socket.once('unexpected-response', (_request, response) => {
-        response.resume()
-        resolve('rejected')
-      })
-      socket.once('error', () => resolve('rejected'))
-    })
-
-    await authorizationStarted
-    authorizationCurrent = false
-    resolveAuthorization?.({
-      principalId: 'temporary-browser',
-      isCurrent: () => authorizationCurrent
-    })
-
-    await expect(outcome).resolves.toBe('rejected')
-    socket.terminate()
-  })
-
-  it('closes an expired external WebSocket before replaying retained task events', async () => {
-    const staticRoot = await mkdtemp(join(tmpdir(), 'open-science-web-static-'))
-    roots.push(staticRoot)
-    await writeFile(join(staticRoot, 'index.html'), '<!doctype html>')
-    const isCurrent = vi.fn().mockReturnValueOnce(true).mockReturnValue(false)
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'local-token',
-      staticRoot,
-      rpc: {
-        channels: () => [],
-        invoke: vi.fn(),
-        releaseClient: vi.fn(),
-        dispose: vi.fn()
-      },
-      externalAccess: {
-        authorizeHttp: vi.fn().mockResolvedValue(authorizedExternalAccess()),
-        authorizeWebSocket: vi.fn().mockResolvedValue({
-          principalId: 'temporary-browser',
-          isCurrent
-        })
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-    const socket = new WebSocket(`ws://127.0.0.1:${server.port}/api/v1/events?eventProtocol=1`, {
-      headers: { origin: `http://127.0.0.1:${server.port}` }
-    })
-    const outcome = new Promise<'closed' | 'event-leaked'>((resolve) => {
-      socket.once('close', () => resolve('closed'))
-      socket.once('message', () => resolve('event-leaked'))
-    })
-
-    await expect(outcome).resolves.toBe('closed')
-    expect(isCurrent).toHaveBeenCalledTimes(2)
   })
 
   it('authenticates shutdown requests before invoking the callback', async () => {
@@ -3602,275 +2284,128 @@ describe('startWebHttpServer', () => {
     servers.splice(servers.indexOf(server), 1)
   })
 
-  it('keeps shutdown local even when remote Browser access is authorized', async () => {
-    const staticRoot = await mkdtemp(join(tmpdir(), 'open-science-web-static-'))
-    roots.push(staticRoot)
-    await writeFile(join(staticRoot, 'index.html'), '<!doctype html>')
-    const onShutdownRequest = vi.fn()
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'local-token',
-      staticRoot,
-      rpc: {
-        channels: () => [],
-        invoke: vi.fn(),
-        releaseClient: vi.fn(),
-        dispose: vi.fn()
-      },
-      externalAccess: {
-        authorizeHttp: vi.fn().mockResolvedValue(authorizedExternalAccess()),
-        authorizeWebSocket: vi.fn().mockResolvedValue({
-          principalId: 'trusted-browser',
-          isCurrent: () => true
+  it.each([false, true])(
+    'replays project and run POST responses after response loss=%s',
+    async (loseResponse) => {
+      const createProject = vi.fn().mockResolvedValue({ id: 'project-1', name: 'Created' })
+      let releaseStartRun: (() => void) | undefined
+      const startRunGate = new Promise<void>((resolve) => {
+        releaseStartRun = resolve
+      })
+      const startRun = vi.fn(async () => {
+        await startRunGate
+        return {
+          id: 'run-1',
+          sessionId: 'session-1',
+          projectId: 'project-1',
+          cwd: '/workspace/research',
+          status: 'running' as const,
+          startedAt: 1,
+          artifacts: [],
+          preferredComputeHostIds: []
+        }
+      })
+      const server = await startTestWebHttpServer({
+        host: '127.0.0.1',
+        port: 0,
+        token: 'test-token',
+        staticRoot: '/unused',
+        rpc: { channels: () => [], invoke: vi.fn() },
+        tasks: {
+          runWithCallerContext,
+          subscribeProgress: vi.fn(() => vi.fn()),
+          listProjects: vi.fn(),
+          createProject,
+          updateProject: vi.fn(),
+          listSessions: vi.fn(),
+          getSession: vi.fn(),
+          startRun,
+          getRun: vi.fn(),
+          cancelRun: vi.fn(),
+          listArtifacts: vi.fn(),
+          acquireArtifact: vi.fn(),
+          releaseArtifact: vi.fn()
+        },
+        bootstrap: {
+          appName: 'EconoMind',
+          appVersion: '0.0.0',
+          configRoot: '/fake/root',
+          platform: 'test',
+          versions: { electron: '1', chrome: '1', node: '1' }
+        }
+      })
+      servers.push(server)
+      const base = `http://127.0.0.1:${server.port}`
+      const post = async (
+        path: string,
+        key: string,
+        body: unknown,
+        signal?: AbortSignal
+      ): Promise<unknown> => {
+        const response = await fetch(`${base}${path}`, {
+          method: 'POST',
+          signal,
+          headers: {
+            authorization: 'Bearer test-token',
+            'content-type': 'application/json',
+            'idempotency-key': key
+          },
+          body: JSON.stringify(body)
         })
-      },
-      onShutdownRequest,
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
+        return response.json()
       }
-    })
-    servers.push(server)
-
-    const response = await fetch(`http://127.0.0.1:${server.port}/api/shutdown`, {
-      method: 'POST'
-    })
-
-    expect(response.status).toBe(403)
-    expect(onShutdownRequest).not.toHaveBeenCalled()
-  })
-
-  it('replays project and run POST responses for repeated idempotency keys', async () => {
-    const createProject = vi.fn().mockResolvedValue({ id: 'project-1', name: 'Created' })
-    let releaseStartRun: (() => void) | undefined
-    const startRunGate = new Promise<void>((resolve) => {
-      releaseStartRun = resolve
-    })
-    const startRun = vi.fn(async () => {
-      await startRunGate
-      return {
-        id: 'run-1',
-        sessionId: 'session-1',
-        projectId: 'project-1',
-        cwd: '/workspace/research',
-        status: 'running' as const,
-        startedAt: 1,
-        artifacts: [],
-        preferredComputeHostIds: []
+      const postTwice = async (path: string, key: string, body: unknown): Promise<unknown[]> => {
+        const responses: unknown[] = []
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          responses.push(await post(path, key, body))
+        }
+        return responses
       }
-    })
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'test-token',
-      staticRoot: '/unused',
-      rpc: { channels: () => [], invoke: vi.fn() },
-      tasks: {
-        runWithCallerContext,
-        subscribeProgress: vi.fn(() => vi.fn()),
-        listProjects: vi.fn(),
-        createProject,
-        updateProject: vi.fn(),
-        listSessions: vi.fn(),
-        getSession: vi.fn(),
-        startRun,
-        getRun: vi.fn(),
-        cancelRun: vi.fn(),
-        listArtifacts: vi.fn(),
-        acquireArtifact: vi.fn(),
-        releaseArtifact: vi.fn()
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-    const base = `http://127.0.0.1:${server.port}`
-    const post = async (path: string, key: string, body: unknown): Promise<unknown> => {
-      const response = await fetch(`${base}${path}`, {
+
+      const projectResponses = await postTwice('/api/v1/projects', 'create-project-1', {
+        name: 'Created'
+      })
+      const conflictingProject = await fetch(`${base}/api/v1/projects`, {
         method: 'POST',
         headers: {
           authorization: 'Bearer test-token',
           'content-type': 'application/json',
-          'idempotency-key': key
+          'idempotency-key': 'create-project-1'
         },
-        body: JSON.stringify(body)
+        body: JSON.stringify({ name: 'Different project' })
       })
-      return response.json()
-    }
-    const postTwice = async (path: string, key: string, body: unknown): Promise<unknown[]> => {
-      const responses: unknown[] = []
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        responses.push(await post(path, key, body))
+      const runBody = {
+        project: 'project-1',
+        prompt: 'Research this.'
       }
-      return responses
-    }
+      const lostResponse = new AbortController()
+      const firstRunResponse = post(
+        '/api/v1/runs',
+        'start-run-1',
+        runBody,
+        lostResponse.signal
+      ).catch((error: unknown) => error)
+      await vi.waitFor(() => expect(startRun).toHaveBeenCalledOnce())
+      if (loseResponse) lostResponse.abort()
+      const secondRunResponse = post('/api/v1/runs', 'start-run-1', runBody)
+      releaseStartRun?.()
+      const runResponses = await Promise.all([firstRunResponse, secondRunResponse])
 
-    const projectResponses = await postTwice('/api/v1/projects', 'create-project-1', {
-      name: 'Created'
-    })
-    const conflictingProject = await fetch(`${base}/api/v1/projects`, {
-      method: 'POST',
-      headers: {
-        authorization: 'Bearer test-token',
-        'content-type': 'application/json',
-        'idempotency-key': 'create-project-1'
-      },
-      body: JSON.stringify({ name: 'Different project' })
-    })
-    const runBody = {
-      project: 'project-1',
-      prompt: 'Research this.'
-    }
-    const firstRunResponse = post('/api/v1/runs', 'start-run-1', runBody)
-    await vi.waitFor(() => expect(startRun).toHaveBeenCalledOnce())
-    const secondRunResponse = post('/api/v1/runs', 'start-run-1', runBody)
-    releaseStartRun?.()
-    const runResponses = await Promise.all([firstRunResponse, secondRunResponse])
-
-    expect(projectResponses[1]).toEqual(projectResponses[0])
-    expect(conflictingProject.status).toBe(409)
-    expect(await conflictingProject.json()).toEqual({
-      error: {
-        code: 'idempotency_conflict',
-        message: 'Idempotency-Key was already used with a different request body.'
-      }
-    })
-    expect(runResponses[1]).toEqual(runResponses[0])
-    expect([createProject.mock.calls.length, startRun.mock.calls.length]).toEqual([1, 1])
-  })
-
-  it('keeps remote browser idempotency keys in separate authorized caller scopes', async () => {
-    const createProject = vi
-      .fn()
-      .mockImplementation(async (request: { name: string }) => ({ id: request.name }))
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'local-token',
-      staticRoot: '/unused',
-      rpc: { channels: () => [], invoke: vi.fn() },
-      tasks: {
-        runWithCallerContext,
-        subscribeProgress: vi.fn(() => vi.fn()),
-        listProjects: vi.fn(),
-        createProject,
-        updateProject: vi.fn(),
-        listSessions: vi.fn(),
-        getSession: vi.fn(),
-        startRun: vi.fn(),
-        getRun: vi.fn(),
-        cancelRun: vi.fn(),
-        listArtifacts: vi.fn(),
-        acquireArtifact: vi.fn(),
-        releaseArtifact: vi.fn()
-      },
-      externalAccess: {
-        authorizeHttp: vi.fn().mockResolvedValue(accessOnlyExternalAccess()),
-        authorizeWebSocket: vi.fn().mockResolvedValue({
-          principalId: 'trusted-browser',
-          isCurrent: () => true
-        })
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-
-    const createFromBrowser = (clientId: string, name: string): Promise<Response> =>
-      fetch(`http://127.0.0.1:${server.port}/api/v1/projects`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'idempotency-key': 'create-project',
-          'x-open-science-client': clientId
-        },
-        body: JSON.stringify({ name })
+      expect(projectResponses[1]).toEqual(projectResponses[0])
+      expect(conflictingProject.status).toBe(409)
+      expect(await conflictingProject.json()).toEqual({
+        error: {
+          code: 'idempotency_conflict',
+          message: 'Idempotency-Key was already used with a different request body.'
+        }
       })
-
-    const first = await createFromBrowser('browser-a', 'First project')
-    const second = await createFromBrowser('browser-b', 'Second project')
-
-    expect([first.status, second.status]).toEqual([201, 201])
-    expect(createProject).toHaveBeenCalledTimes(2)
-  })
-
-  it('applies idempotency capacity to the authorized principal across rotated clients', async () => {
-    const createProject = vi
-      .fn()
-      .mockImplementation(async (request: { name: string }) => ({ id: request.name }))
-    const server = await startTestWebHttpServer({
-      host: '127.0.0.1',
-      port: 0,
-      token: 'local-token',
-      staticRoot: '/unused',
-      rpc: { channels: () => [], invoke: vi.fn() },
-      tasks: {
-        runWithCallerContext,
-        subscribeProgress: vi.fn(() => vi.fn()),
-        listProjects: vi.fn(),
-        createProject,
-        updateProject: vi.fn(),
-        listSessions: vi.fn(),
-        getSession: vi.fn(),
-        startRun: vi.fn(),
-        getRun: vi.fn(),
-        cancelRun: vi.fn(),
-        listArtifacts: vi.fn(),
-        acquireArtifact: vi.fn(),
-        releaseArtifact: vi.fn()
-      },
-      externalAccess: {
-        authorizeHttp: vi.fn(async (request: IncomingMessage) =>
-          accessOnlyExternalAccess(String(request.headers['x-test-principal']))
-        ),
-        authorizeWebSocket: vi.fn().mockResolvedValue(undefined)
-      },
-      bootstrap: {
-        appName: 'EconoMind',
-        appVersion: '0.0.0',
-        configRoot: '/fake/root',
-        platform: 'test',
-        versions: { electron: '1', chrome: '1', node: '1' }
-      }
-    })
-    servers.push(server)
-
-    const create = (principal: string, client: string, index: number): Promise<Response> =>
-      fetch(`http://127.0.0.1:${server.port}/api/v1/projects`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'idempotency-key': `create-project-${index}`,
-          'x-open-science-client': client,
-          'x-test-principal': principal
-        },
-        body: JSON.stringify({ name: `${principal}-${index}` })
-      })
-
-    for (let index = 0; index < 128; index += 1) {
-      expect((await create('principal-a', `rotated-${index}`, index)).status).toBe(201)
+      if (loseResponse) {
+        expect(runResponses[0]).toMatchObject({ name: 'AbortError' })
+        expect(runResponses[1]).toMatchObject({ data: { id: 'run-1' } })
+      } else expect(runResponses[1]).toEqual(runResponses[0])
+      expect([createProject.mock.calls.length, startRun.mock.calls.length]).toEqual([1, 1])
     }
-    const limited = await create('principal-a', 'rotated-128', 128)
-    const otherPrincipal = await create('principal-b', 'client-1', 1)
-
-    expect(limited.status).toBe(503)
-    expect(await limited.json()).toMatchObject({ error: { code: 'idempotency_unavailable' } })
-    expect(otherPrincipal.status).toBe(201)
-  })
+  )
 
   it('keeps bootstrap available while Task API requests wait for journal restoration', async () => {
     let releaseTasks: (() => void) | undefined
@@ -3955,6 +2490,20 @@ describe('startWebHttpServer', () => {
       ((event: import('../../shared/task-api').TaskRunProgressEvent) => void) | undefined
     const tasks = {
       runWithCallerContext: runWithCapturedCallerContext,
+      bootstrap: vi.fn().mockResolvedValue({ ok: true }),
+      installCli: vi
+        .fn()
+        .mockResolvedValue({ installed: true, onPath: true, target: '/fixture/bin/open-science' }),
+      doctor: vi.fn().mockResolvedValue({
+        ready: false,
+        checks: {
+          daemon: { status: 'ready' },
+          runtime: { status: 'missing', framework: 'codex' },
+          provider: { status: 'ready' },
+          skills: { status: 'ready', enabled: ['literature-review'] }
+        },
+        next: [{ code: 'runtime_missing' }]
+      }),
       subscribeProgress: vi.fn((listener) => {
         publishProgress = listener
         return () => {
@@ -4064,6 +2613,32 @@ describe('startWebHttpServer', () => {
     servers.push(server)
     const base = `http://127.0.0.1:${server.port}`
     const headers = { authorization: 'Bearer test-token' }
+
+    const sdk = new OpenScienceClient({ baseUrl: base, token: 'test-token' })
+    expect(await sdk.bootstrap({ action: 'runtime' })).toEqual({ ok: true })
+    expect(tasks.bootstrap).toHaveBeenCalledWith({ action: 'runtime' })
+    expect(await sdk.installCli()).toMatchObject({ installed: true })
+    const unauthorizedBootstrap = await fetch(`${base}/api/v1/bootstrap`, {
+      method: 'POST',
+      body: '{}'
+    })
+    expect(unauthorizedBootstrap.status).toBe(401)
+    expect(tasks.bootstrap).toHaveBeenCalledOnce()
+
+    const doctor = await fetch(`${base}/api/v1/doctor`, { headers })
+    expect(doctor.status).toBe(200)
+    expect(await doctor.json()).toEqual({
+      data: {
+        ready: false,
+        checks: {
+          daemon: { status: 'ready' },
+          runtime: { status: 'missing', framework: 'codex' },
+          provider: { status: 'ready' },
+          skills: { status: 'ready', enabled: ['literature-review'] }
+        },
+        next: [{ code: 'runtime_missing' }]
+      }
+    })
 
     const progressSocket = new WebSocket(
       `${base.replace('http:', 'ws:')}/api/v1/events?token=test-token`
@@ -4688,6 +3263,79 @@ describe('Connector Task HTTP routes', () => {
         callerContext: expect.objectContaining({ surface: 'task', location: 'local' })
       })
     )
+    await tasks.dispose()
+  })
+})
+
+describe('Agent runtime Task HTTP routes', () => {
+  it('serves the runtime list locally without exposing executable paths', async () => {
+    const settings = {
+      claude: { resolvedPath: '/private/claude', version: '2.1.0' },
+      opencode: {},
+      codebuddy: {},
+      codex: {},
+      claudeManaged: true,
+      opencodeManaged: false,
+      codebuddyManaged: false,
+      codexManaged: false,
+      providers: [],
+      agentFrameworkId: 'claude-code',
+      agentFrameworks: [
+        { id: 'claude-code', displayName: 'Claude Code' },
+        { id: 'opencode', displayName: 'OpenCode' },
+        { id: 'codex', displayName: 'Codex' },
+        { id: 'codebuddy', displayName: 'CodeBuddy' }
+      ]
+    }
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === 'settings:get-preflight') {
+        return {
+          claudeReady: true,
+          opencodeReady: false,
+          codebuddyReady: false,
+          codexReady: false,
+          agentFrameworkId: 'claude-code',
+          agentReady: true,
+          activeProviderReady: true,
+          runtimeReadiness: { status: 'ready' },
+          providerReadiness: { status: 'ready' }
+        }
+      }
+      if (channel === 'settings:get-settings') return settings
+      throw new Error(`Unexpected command: ${channel}`)
+    })
+    const tasks = new HeadlessTaskApi({
+      commands: { commandNames: () => [], invoke },
+      agent: {} as never
+    })
+    const serverOptions = {
+      host: '127.0.0.1',
+      port: 0,
+      token: 'test-token',
+      staticRoot: '/unused',
+      tasks,
+      rpc: { channels: () => [], invoke: vi.fn() },
+      bootstrap: {
+        appName: 'EconoMind',
+        appVersion: 'test',
+        configRoot: '/fake/root',
+        platform: 'test',
+        versions: { electron: '1', chrome: '1', node: '1' }
+      }
+    }
+    const localServer = await startTestWebHttpServer(serverOptions)
+    servers.push(localServer)
+    const client = new OpenScienceClient({
+      baseUrl: `http://127.0.0.1:${localServer.port}`,
+      token: 'test-token'
+    })
+
+    await expect(client.listRuntimes()).resolves.toEqual([
+      { framework: 'claude-code', status: 'ready', version: '2.1.0', source: 'managed' },
+      { framework: 'opencode', status: 'missing' },
+      { framework: 'codex', status: 'missing' },
+      { framework: 'codebuddy', status: 'missing' }
+    ])
     await tasks.dispose()
   })
 })

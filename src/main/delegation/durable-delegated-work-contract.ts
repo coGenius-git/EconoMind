@@ -1,5 +1,9 @@
 import type { ArtifactFile } from '../../shared/artifacts'
-import type { AcpAgentRuntimeUpdate, AcpPermissionScope } from '../../shared/acp'
+import type {
+  AcpAgentRuntimeUpdate,
+  AcpPermissionScope,
+  AcpPermissionRequest
+} from '../../shared/acp'
 import type { PermissionProfileId } from '../../shared/permission-profiles'
 import type { ReviewWithChecks } from '../../shared/reviewer'
 import type { SpecialistView } from '../../shared/specialist'
@@ -52,6 +56,7 @@ type ParentMessageDelivery = Readonly<{
   text: string
   kind: 'info' | 'question'
   startDispatch(): Promise<'started' | 'terminal' | 'blocked'>
+  onRootAdmissionQueued?(): void
 }>
 
 type SessionSubagentSummary = Readonly<{
@@ -70,6 +75,9 @@ type RootDelegatePermissionRequest = Readonly<{
   attemptId: string
   childTitle: string
   action: string
+  providerToolName?: string
+  isMcp?: boolean
+  toolKind?: AcpPermissionRequest['toolKind']
   riskScope: string
   options: readonly Readonly<{
     optionId: string
@@ -250,7 +258,11 @@ type DurableDelegatedWork = Readonly<{
     caller: AuthenticatedDelegateCaller,
     frameIds: readonly string[]
   ): Promise<readonly StopOutcome[]>
-  cancelTurn(session: SessionKey, initiatingTurnMessageId: string): Promise<readonly StopOutcome[]>
+  cancelTurn(
+    session: SessionKey,
+    initiatingTurnMessageId: string,
+    executionId?: string
+  ): Promise<readonly StopOutcome[]>
   stopActiveBranch(session: SessionKey): Promise<readonly StopOutcome[]>
   stopSession(session: SessionKey): Promise<readonly StopOutcome[]>
   recoverInterrupted(): Promise<RecoveryOutcome>
@@ -299,7 +311,11 @@ type CreateDurableDelegatedWorkOptions = Readonly<{
   createId?: (kind: 'frame' | 'attempt' | 'message' | 'runtime' | 'question') => string
   collectPollIntervalMs?: number
   collectMonotonicNow?: () => number
-  assertTurnOpen?: (session: SessionKey, initiatingTurnMessageId: string) => Promise<void> | void
+  assertTurnOpen?: (
+    session: SessionKey,
+    initiatingTurnMessageId: string,
+    executionId?: string
+  ) => Promise<void> | void
 }>
 
 export type {

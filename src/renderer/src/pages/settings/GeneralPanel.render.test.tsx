@@ -245,7 +245,7 @@ describe('GeneralPanel command line tool', () => {
     const alert = container.querySelector('[role="alert"]')
     expect(alert?.textContent).toBe('无法更新命令行工具。')
     expect(alert?.textContent).not.toContain('/private/bin/open-science')
-    const details = container.querySelector('details')
+    const details = alert?.closest('section')?.querySelector('details')
     expect(details?.open).toBe(false)
     expect(details?.textContent).toContain('/private/bin/open-science')
   })
@@ -257,6 +257,10 @@ describe('GeneralPanel About', () => {
       root.render(<GeneralPanel />)
     })
     await flush()
+
+    // The dialog header bar is the single panel title; the panel itself starts with sections.
+    expect(container.querySelector('[data-slot="settings-panel-header"]')).toBeNull()
+    expect(container.querySelector('h2')).toBeNull()
 
     const sections = Array.from(container.querySelectorAll('[data-slot="settings-section"]'))
     expect(sections.at(0)?.querySelector('h3')?.textContent).toBe('About')
@@ -310,6 +314,27 @@ describe('GeneralPanel notifications', () => {
 
     expect(notificationsApi.sendTest).toHaveBeenCalledOnce()
     expect(container.textContent).toContain('Test notification shown.')
+  })
+
+  it('reserves the test-notification feedback slot so a result causes no layout shift', async () => {
+    await act(async () => {
+      root.render(<GeneralPanel />)
+    })
+    await flush()
+
+    const button = findButton(/Send test notification/)
+    const status = button?.parentElement?.querySelector<HTMLElement>('[role="status"]')
+    expect(status).not.toBeNull()
+    expect(status?.className).toContain('invisible')
+    expect(status?.parentElement?.className).toContain('min-h-[30px]')
+
+    await act(async () => {
+      button?.click()
+    })
+    await flush()
+
+    expect(status?.className).not.toContain('invisible')
+    expect(status?.textContent).toContain('Test notification shown.')
   })
 })
 
@@ -397,6 +422,16 @@ describe('GeneralPanel close behavior', () => {
 })
 
 describe('GeneralPanel diagnostics', () => {
+  it('keeps the log file path focusable for keyboard scrolling', async () => {
+    await act(async () => root.render(<GeneralPanel />))
+    await flush()
+
+    const logPath = container.querySelector<HTMLElement>('[aria-label="Log file path"]')!
+    expect(logPath.tabIndex).toBe(0)
+    logPath.focus()
+    expect(document.activeElement).toBe(logPath)
+  })
+
   it('D04 distinguishes a missing file with a known path from a failed status request', async () => {
     vi.mocked(window.api.logs.getStatus).mockResolvedValueOnce({
       configured: true,
@@ -539,5 +574,23 @@ describe('GeneralPanel app icon', () => {
     await flush()
     expect(document.body.querySelector('[role="radiogroup"][aria-label="App icon"]')).toBeNull()
     expect(settingsApi.listAppIcons).not.toHaveBeenCalled()
+  })
+})
+
+describe('GeneralPanel appearance scale', () => {
+  it('renders the interface scale control in Appearance', async () => {
+    await act(async () => {
+      root.render(<GeneralPanel />)
+    })
+    await flush()
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[data-slot="select-trigger"][aria-label="Interface scale"]'
+    )
+    expect(trigger).toBeDefined()
+    expect(trigger?.textContent).toContain('100%')
+    expect(container.textContent).toContain(
+      'Adjust the size of text and controls across the app. Changes apply immediately.'
+    )
   })
 })

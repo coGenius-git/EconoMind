@@ -1,3 +1,5 @@
+import { connectorDescription, connectorToolDescription } from './connector-copy'
+import { ErrorNotice } from '@/components/error-notice'
 import { ArrowUpRight, ChevronRight } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -14,10 +16,11 @@ import { ConnectorGlyph } from './connector-icons'
 import { SettingsLoadNotice, SettingsToggle } from './SettingsLayout'
 import { ToolPermissionControl } from './ToolPermissionControl'
 import { ResourceAvailability } from './ResourceAvailability'
-import { specialistsUsingConnector } from './specialist-resource-scope'
+import type { SpecialistUsage } from './specialist-resource-scope'
 
 type ConnectorDetailViewProps = {
   id: string
+  onOpenSpecialist?: (usage: SpecialistUsage) => void
   onManagePermissions?: () => void
   onManageCredentials?: () => void
 }
@@ -41,6 +44,7 @@ const DetailRow = ({
 // breadcrumb and back control live in the settings header, not here.
 const ConnectorDetailView = ({
   id,
+  onOpenSpecialist,
   onManagePermissions,
   onManageCredentials
 }: ConnectorDetailViewProps): React.JSX.Element => {
@@ -53,7 +57,6 @@ const ConnectorDetailView = ({
   // enabled/autoAllow from the store (falling back to the initial detail) keeps the two header
   // switches live after a toggle, mirroring how SkillDetailView derives enabled from the store.
   const storeConnector = useSettingsStore((state) => state.connectors.find((c) => c.id === id))
-  const specialistItems = useSpecialistStore((state) => state.items)
   const loadSpecialists = useSpecialistStore((state) => state.load)
   const permissionGrants = usePermissionGrantsStore((state) => state.grants)
   const loadPermissionGrants = usePermissionGrantsStore((state) => state.load)
@@ -161,7 +164,6 @@ const ConnectorDetailView = ({
 
   const enabled = storeConnector?.enabled ?? detail.enabled
   const autoAllow = storeConnector?.autoAllow ?? detail.autoAllow
-  const usages = specialistsUsingConnector(specialistItems, storeConnector ?? detail)
 
   return (
     <div className="p-5">
@@ -182,7 +184,7 @@ const ConnectorDetailView = ({
 
       {detail.description ? (
         <p className="mt-2 text-sm text-muted-foreground [text-wrap:pretty]">
-          {detail.description}
+          {connectorDescription(detail, t)}
         </p>
       ) : null}
 
@@ -199,23 +201,26 @@ const ConnectorDetailView = ({
       ) : null}
 
       {operationError ? (
-        <p
+        <ErrorNotice
+          inline
           role="alert"
-          className="mt-4 rounded-lg border border-danger-000/30 bg-danger-000/10 px-3 py-2 text-xs text-danger-000"
-        >
-          {operationError}
-        </p>
+          tone="amber"
+          className="mt-4"
+          description={operationError}
+        />
       ) : null}
 
       <ResourceAvailability
-        mainEnabled={enabled}
-        mainToggleLabel={t('Toggle {{name}}', { name: detail.displayName })}
-        usages={usages}
-        onToggleMain={() =>
-          void savePolicy(async () => {
-            await setConnectorEnabled(id, !enabled)
-          })
-        }
+        onOpenSpecialist={onOpenSpecialist}
+        resource={{
+          id,
+          name: detail.name,
+          displayName: detail.displayName,
+          kind: 'connector',
+          group: storeConnector?.group ?? 'featured',
+          mainEnabled: enabled
+        }}
+        onSetMain={(value) => setConnectorEnabled(id, value)}
       />
 
       {/* Skip approvals: allow every tool without a per-call approval card. */}
@@ -284,7 +289,8 @@ const ConnectorDetailView = ({
                   {isExpanded ? (
                     <div className="space-y-2 pb-3 pl-6 pr-2 text-xs text-muted-foreground">
                       <p className="whitespace-pre-wrap [text-wrap:pretty]">
-                        {tool.description || t('No description provided for this tool.')}
+                        {connectorToolDescription(tool.id, tool.description, t) ||
+                          t('No description provided for this tool.')}
                       </p>
                       {tool.permission === 'ask' ? (
                         <p>{t('Ask when no Session, Project, or Global permission applies.')}</p>

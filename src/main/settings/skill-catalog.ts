@@ -1,5 +1,6 @@
 import { lstat, readdir, realpath } from 'node:fs/promises'
 import { homedir } from 'node:os'
+
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type {
@@ -113,6 +114,7 @@ type SkillCatalogModuleOptions = {
   userSkills?: UserSkillRepository
   withUserSkillRecoveryBarrier?: <T>(operation: () => Promise<T>) => Promise<T>
   githubFetch?: FetchLike
+
   authorizeRegisteredHelper?: (
     skillId: string,
     scope: RegisteredHelperScope | undefined
@@ -196,7 +198,8 @@ class SkillCatalogModule {
   private async validatePromotedRegisteredHelpers(user: readonly BundledSkill[]): Promise<void> {
     const featured = await this.skillRegistry.list()
     await validateRegisteredSkillPackages(
-      await this.registeredHelperPackagesFromCatalog(this.mergeCatalog(featured, user))
+      await this.registeredHelperPackagesFromCatalog(this.mergeCatalog(featured, user)),
+      this.options.storageRoot
     )
   }
 
@@ -374,6 +377,9 @@ class SkillCatalogModule {
       ...this.toSkillView(skill, disabled),
       available,
       catalogEntryKey,
+      ...(skill.source === 'imported' || skill.source === 'personal'
+        ? { directoryName: skill.name }
+        : {}),
       ...(available ? {} : { availability: 'identity-conflict' as const })
     }))
   }
@@ -474,9 +480,18 @@ class SkillCatalogModule {
     return this.projectedSkillCatalog(join(runtimeRoot, '.claude', 'skills'), additionalEntries)
   }
 
+  async delegatedSkillCatalog(
+    skillsRoot: string,
+    forcedSkillIds: ReadonlySet<string>,
+    additionalEntries: AdditionalSkillCatalogEntries = []
+  ): Promise<SkillCatalogEntry[]> {
+    return this.projectedSkillCatalog(skillsRoot, additionalEntries, forcedSkillIds)
+  }
+
   private async projectedSkillCatalog(
     skillsRoot: string,
-    additionalEntries: AdditionalSkillCatalogEntries
+    additionalEntries: AdditionalSkillCatalogEntries,
+    delegatedSkillIds?: ReadonlySet<string>
   ): Promise<SkillCatalogEntry[]> {
     const realRoot = await realpath(skillsRoot).catch(() => undefined)
     if (!realRoot) return []
@@ -489,12 +504,14 @@ class SkillCatalogModule {
       typeof additionalEntries === 'function'
         ? await additionalEntries(settings)
         : additionalEntries
-    const disabled = new Set(settings.disabledSkillIds ?? [])
+    const disabled = new Set(
+      (settings.disabledSkillIds ?? []).filter((id) => !delegatedSkillIds?.has(id))
+    )
     const enabled: AdditionalSkillCatalogEntry[] = [
       ...skills
         .filter((skill) => isSkillEffectivelyEnabled(skill, disabled))
         .map((skill) => ({
-          directory: `${OS_SKILL_PREFIX}${skill.id}`,
+          directory: delegatedSkillIds ? skill.name : `${OS_SKILL_PREFIX}${skill.id}`,
           name: skill.name,
           description: skill.description
         })),
@@ -565,7 +582,9 @@ class SkillCatalogModule {
     if ((await this.skillRegistry.list()).some((entry) => entry.id === id)) {
       throw new Error('Built-in Skills cannot be exported.')
     }
-    const archive = await this.userSkills.withSkillReadLock(id, buildSkillExportArchive)
+    const archive = await this.userSkills.withSkillReadLock(id, (skill) =>
+      buildSkillExportArchive(skill, this.options.storageRoot)
+    )
     if (!archive) throw new Error(`Unknown skill: ${id}`)
     return archive
   }
@@ -632,12 +651,26 @@ class SkillCatalogModule {
 
   async deleteSkill(
     request: DeleteSkillRequest,
-    guard?: (skillId: string) => Promise<void>
+    guard?: (request: DeleteSkillRequest) => Promise<void>
   ): Promise<SkillView[]> {
-    await this.userSkills.delete(request.id, guard)
-    await this.options.repository.setSkillEnabled(request.id, true)
+    if (
+      !request.source &&
+      (await this.skillRegistry.list()).some((skill) => skill.id === request.id)
+    ) {
+      throw new Error('Built-in Skills cannot be deleted.')
+    }
+    await this.userSkills.delete(
+      request.id,
+      request.source,
+      request.directoryName,
+      guard ? () => guard(request) : undefined
+    )
     await this.refreshRegisteredHelpers()
-    return this.listSkills()
+    const skills = await this.listSkills()
+    if (!skills.some((skill) => skill.id === request.id)) {
+      await this.options.repository.setSkillEnabled(request.id, true)
+    }
+    return skills
   }
 
   async importSkill(request: ImportSkillRequest, signal?: AbortSignal): Promise<ImportSkillResult> {
@@ -925,9 +958,15 @@ class SkillCatalogModule {
           ? '~/.claude/skills'
           : '~/.codex/skills'
     const sourceLabel = `${sourceRoot}/${canonical.slug}`
+    const discovered = await this.discoverAgentHomeSkills(availableSources)
+    const pathKey = process.platform === 'win32' ? sourcePath.toLowerCase() : sourcePath
+    const aliases = discovered.find(
+      (item) =>
+        (process.platform === 'win32' ? item.realPath.toLowerCase() : item.realPath) === pathKey
+    )?.aliases ?? [request]
     try {
       return {
-        ...(await this.userSkills.previewAgentHomeSkill(sourcePath)),
+        ...(await this.userSkills.previewAgentHomeSkill(sourcePath, canonical, aliases)),
         sourceLabel
       }
     } catch (error) {

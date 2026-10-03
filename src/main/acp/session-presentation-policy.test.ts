@@ -4,6 +4,7 @@ import { claudeCodeFramework } from '../agent-framework/claude-code'
 import { codexFramework } from '../agent-framework/codex'
 import { opencodeFramework } from '../agent-framework/opencode'
 import { NOTEBOOK_SYSTEM_PROMPT_APPEND } from '../notebook/mcp-server'
+import { shellRuntimeAgentContract } from '../notebook/shell-runtime'
 import { SKILL_IMPORT_SYSTEM_PROMPT_APPEND } from '../skills/mcp-server'
 import { AcpSessionPresentationPolicy } from './session-presentation-policy'
 
@@ -84,6 +85,43 @@ const specialistSkillScope = (names: readonly string[]): string =>
 
 describe('ACP Session presentation policy', () => {
   const policy = new AcpSessionPresentationPolicy()
+  it('keeps the Codex loader limited to the current primary Skill scope', () => {
+    const input = {
+      framework: codexFramework,
+      tooling: { artifacts: false, notebook: false, skillImport: false },
+      sessionOptions: {
+        openScienceSkillRuntime: {
+          command: '/node',
+          entryPath: '/main.js',
+          root: '/codex',
+          skillsDirectory: '/codex/skills'
+        }
+      }
+    }
+    expect(policy.buildSessionSetup(input).mcpServers).toHaveLength(1)
+    expect(policy.buildSessionSetup({ ...input, role: 'reviewer' }).mcpServers).toBeUndefined()
+    const scoped = (names: string[]): ReturnType<typeof policy.buildSessionSetup> =>
+      policy.buildSessionSetup({
+        ...input,
+        specialistSkills: {
+          kind: 'specialist',
+          skillIds: [],
+          frameworkNames: names,
+          missingSkillIds: []
+        }
+      })
+    expect(scoped(['mcp-genomes']).mcpServers?.[0]).toMatchObject({
+      env: expect.arrayContaining([
+        { name: 'OPEN_SCIENCE_SKILL_RUNTIME_ALLOWED_NAMES', value: '["mcp-genomes"]' }
+      ])
+    })
+    expect(scoped([]).mcpServers).toBeUndefined()
+    expect(scoped(['mcp-regulation']).mcpServers?.[0]).toMatchObject({
+      env: expect.arrayContaining([
+        { name: 'OPEN_SCIENCE_SKILL_RUNTIME_ALLOWED_NAMES', value: '["mcp-regulation"]' }
+      ])
+    })
+  })
 
   it('returns the exact application appends in stable order when every tool is available', () => {
     const appends = policy.applicationSystemPromptAppends({
@@ -347,6 +385,63 @@ describe('ACP Session presentation policy', () => {
       promptPrefix: 'One-off Session guidance.',
       persistentSystemPrompt: 'Baked Codex developer instructions.'
     })
+  })
+
+  it('keeps the captured WSL2 shell contract session-specific after persistent setup', () => {
+    const presentation = policy.buildSessionSetup({
+      framework: codexFramework,
+      tooling: { artifacts: false, notebook: true, skillImport: false },
+      role: 'primary',
+      shellRuntimeAgentContract: shellRuntimeAgentContract({
+        kind: 'wsl2-bash',
+        profileId: 'private-profile',
+        distro: 'Ubuntu-22.04',
+        user: 'researcher'
+      }),
+      persistentSystemPrompt: 'Baked Codex developer instructions.'
+    })
+
+    expect(presentation.promptPrefix).toContain(
+      'Generate POSIX Bash commands even though the host and workspace path are Windows'
+    )
+    expect(presentation.promptPrefix).toContain('never emit PowerShell syntax')
+    expect(presentation.promptPrefix).not.toMatch(/private-profile|Ubuntu-22\.04|researcher/)
+    expect(presentation.persistentSystemPrompt).toBe('Baked Codex developer instructions.')
+  })
+
+  it('omits the shell contract outside primary Notebook Sessions', () => {
+    const buildSessionSetup = vi.fn(() => ({}))
+    const framework = { id: 'codex' as const, buildSessionSetup }
+    const shellContract = shellRuntimeAgentContract({
+      kind: 'wsl2-bash' as const,
+      profileId: 'profile-1',
+      distro: 'Ubuntu-22.04',
+      user: 'researcher'
+    })
+
+    policy.buildSessionSetup({
+      framework,
+      tooling: { artifacts: false, notebook: true, skillImport: false },
+      role: 'reviewer',
+      shellRuntimeAgentContract: shellContract
+    })
+    expect(buildSessionSetup).toHaveBeenLastCalledWith(
+      expect.objectContaining({ systemPromptAppends: [] })
+    )
+
+    policy.buildSessionSetup({
+      framework,
+      tooling: { artifacts: false, notebook: false, skillImport: false },
+      role: 'primary',
+      shellRuntimeAgentContract: shellContract
+    })
+    expect(buildSessionSetup).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        systemPromptAppends: expect.not.arrayContaining([
+          expect.stringContaining('<open_science_shell_runtime>')
+        ])
+      })
+    )
   })
 
   it('orders the OpenCode Specialist identity before exact per-turn Skill guidance', () => {

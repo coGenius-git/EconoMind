@@ -15,6 +15,7 @@ import {
 
 type TestSettingsWorkflowEffects = Partial<
   SettingsWorkflowEffects['runtime'] &
+    SettingsWorkflowEffects['localShell'] &
     SettingsWorkflowEffects['skills'] &
     SettingsWorkflowEffects['connectors'] &
     SettingsWorkflowEffects['appearance']
@@ -26,6 +27,9 @@ const testEffects = (effects: TestSettingsWorkflowEffects = {}): SettingsWorkflo
   runtime: {
     requestProviderReconnect: effects.requestProviderReconnect ?? (() => undefined),
     requestAgentFrameworkSwitch: effects.requestAgentFrameworkSwitch ?? (() => undefined)
+  },
+  localShell: {
+    requestShellRuntimeRefresh: effects.requestShellRuntimeRefresh ?? (async () => undefined)
   },
   skills: {
     requestSkillsReload: effects.requestSkillsReload ?? (() => undefined),
@@ -76,6 +80,11 @@ const fakeStore = () => {
     uninstallCodeBuddy: vi.fn(),
     uninstallCodex: vi.fn(),
     upsertProvider: vi.fn().mockResolvedValue(snapshot()),
+    saveValidatedProvider: vi.fn().mockResolvedValue({
+      validation: { ok: true, category: 'ok' },
+      providerId: 'active',
+      snapshot: snapshot()
+    }),
     deleteProvider: vi.fn().mockResolvedValue(snapshot()),
     setActiveProvider: vi.fn().mockResolvedValue(snapshot()),
     setAgentFramework: vi.fn().mockResolvedValue(snapshot()),
@@ -93,6 +102,24 @@ const fakeStore = () => {
     logoutIsolatedCodex: vi.fn().mockResolvedValue({ ok: true, category: 'ok' }),
     waitXaiOAuthLogin: vi.fn().mockResolvedValue({ ok: true }),
     logoutXaiOAuth: vi.fn().mockResolvedValue(snapshot()),
+    switchLocalShellToPowerShell: vi.fn().mockResolvedValue({
+      result: {
+        runtimeBinding: { kind: 'powershell', version: '7.6' },
+        appliesTo: 'subsequent-executions',
+        wslProfilePreserved: true
+      },
+      mutation: { revision: 1, runtime: 'powershell', previous: undefined }
+    }),
+    getLocalShellRuntimePreference: vi.fn().mockResolvedValue(undefined),
+    restoreLocalShellRuntimePreference: vi.fn().mockResolvedValue(true),
+    useWsl2Bash: vi.fn().mockResolvedValue({
+      result: {
+        runtime: 'wsl2-bash',
+        selection: { distro: 'Ubuntu-24.04', user: 'scientist' },
+        appliesTo: 'subsequent-executions'
+      },
+      mutation: { revision: 2, runtime: 'wsl2-bash', previous: 'powershell' }
+    }),
     setSkillEnabled: vi.fn().mockResolvedValue([]),
     setSkillsEnabled: vi.fn().mockResolvedValue([]),
     createSkill: vi.fn().mockResolvedValue([]),
@@ -100,6 +127,7 @@ const fakeStore = () => {
     deleteSkill: vi.fn().mockResolvedValue([]),
     importSkill: vi.fn().mockResolvedValue({ skills: [] }),
     importSkillZip: vi.fn().mockResolvedValue({ skills: [] }),
+
     importSkillZipBatch: vi.fn().mockResolvedValue({ results: [], skills: [] }),
     importAgentHomeSkills: vi.fn().mockResolvedValue({ results: [], skills: [] }),
     setConnectorEnabled: vi.fn().mockResolvedValue({ connectors: [] }),
@@ -226,6 +254,27 @@ describe('SettingsWorkflows runtime effects', () => {
     await workflows.deleteProvider('active')
 
     expect(calls).toEqual(['read', 'upsert', 'reconnect', 'select', 'read', 'delete', 'reconnect'])
+  })
+
+  it('preserves the committed validated save when requesting runtime reconnect fails', async () => {
+    const { store, capability } = fakeStore()
+    const committed = {
+      validation: { ok: true, category: 'ok' as const },
+      providerId: 'active',
+      snapshot: snapshot()
+    }
+    store.saveValidatedProvider.mockResolvedValue(committed)
+    const workflows = createSettingsWorkflows(
+      capability,
+      testEffects({
+        requestProviderReconnect: () => {
+          throw new Error('Reconnect unavailable')
+        }
+      })
+    ).runtime
+    await expect(
+      workflows.saveValidatedProvider({ id: 'active', type: 'custom' })
+    ).resolves.toEqual({ ...committed, runtimeReconnectFailed: true })
   })
 
   it('persists the default model without mutating live Sessions', async () => {
@@ -428,6 +477,30 @@ describe('SettingsWorkflows catalog and appearance effects', () => {
     await workflows.importAgentHomeSkills(request)
 
     expect(notifySkillCatalogChanged).toHaveBeenCalledOnce()
+  })
+
+  it('keeps surviving same-id catalog relationships after a user Skill deletion', async () => {
+    const { store, capability } = fakeStore()
+    const removeTagsForSkill = vi.fn().mockResolvedValue(undefined)
+    store.deleteSkill.mockResolvedValue([
+      {
+        id: 'shared-id',
+        source: 'featured',
+        name: 'Built-in',
+        displayName: 'Built-in',
+        description: '',
+        updatedAt: '',
+        enabled: true
+      }
+    ])
+    const workflows = createSettingsWorkflows(
+      capability,
+      testEffects({ removeTagsForSkill })
+    ).skills
+
+    await workflows.deleteSkill({ id: 'shared-id', source: 'personal' })
+
+    expect(removeTagsForSkill).not.toHaveBeenCalled()
   })
 
   it('invalidates permissions before a fire-and-forget Connector refresh and reloads on settle', async () => {

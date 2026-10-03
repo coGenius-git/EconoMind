@@ -80,7 +80,9 @@ const {
   const sendAppContinuation = vi.fn().mockResolvedValue(undefined)
   const sendPrompt = vi.fn().mockResolvedValue(undefined)
   const AcpRuntimeMock = vi.fn().mockImplementation(function (options: AcpRuntimeOptions) {
+    let turnSequence = 0
     return {
+      connect: vi.fn().mockResolvedValue({}),
       createSession,
       cancelPrompt,
       compactSession,
@@ -102,6 +104,13 @@ const {
       sendPrompt: (request: AcpPromptRequest, promptAttemptId?: string) => {
         const prompting = sendPrompt(request, promptAttemptId)
         return Promise.resolve(prompting).then((result) => {
+          // The production runtime publishes the exact prompt start once the Session turn is
+          // admitted; interactive admission acknowledges nothing before that point.
+          options.callbacks?.onPromptStarted?.(
+            request.sessionId,
+            `turn-${++turnSequence}`,
+            promptAttemptId
+          )
           options.callbacks?.onProviderPromptAccepted?.(request.sessionId, promptAttemptId)
           return result
         })
@@ -213,6 +222,8 @@ const registerWithFakes = (overrides?: {
   customMcpServers?: Array<{ id: string; name: string }>
   memory?: AcpTestOptions['memory']
   delegatedNotebookConnection?: AcpTestOptions['delegatedNotebookConnection']
+  delegatedRuntimeHome?: AcpTestOptions['delegatedRuntimeHome']
+  fixedBackend?: AcpTestOptions['fixedBackend']
   archiveAvailability?: Parameters<typeof createAcpHandlerWorkflows>[3]
   interruptedTurnSessions?: Parameters<typeof createAcpHandlerWorkflows>[4]
   resolveMemoryEnabled?: Parameters<typeof installAcpIpcHandlers>[3]
@@ -225,6 +236,7 @@ const registerWithFakes = (overrides?: {
     })
 
   const options = {
+    appVersion: '0.0.0-test',
     mcpEntryPath: '/app/out/main/index.js',
     repository: {} as never,
     runRegistry: {} as never,
@@ -254,7 +266,9 @@ const registerWithFakes = (overrides?: {
     initializationBarrier: overrides?.initializationBarrier,
     specialistService: overrides?.specialistService as never,
     memory: overrides?.memory,
-    delegatedNotebookConnection: overrides?.delegatedNotebookConnection
+    delegatedNotebookConnection: overrides?.delegatedNotebookConnection,
+    delegatedRuntimeHome: overrides?.delegatedRuntimeHome,
+    fixedBackend: overrides?.fixedBackend
   }
 
   const runtime = createAcpRuntime(options)
@@ -298,6 +312,18 @@ afterEach(() => {
   fallbackBegin.mockClear()
   fallbackEnd.mockClear()
   AcpRuntimeMock.mockClear()
+})
+
+it('protects each delegated attempt runtime home from native file reads', () => {
+  const delegatedRuntimeHome = '/tmp/data/delegation/project-1/session-1/runtime/attempt-1'
+  registerWithFakes({
+    delegatedNotebookConnection: {} as never,
+    delegatedRuntimeHome,
+    fixedBackend: { framework: { id: 'codex' } } as never
+  })
+
+  const options = AcpRuntimeMock.mock.calls.at(-1)?.[0] as AcpRuntimeOptions
+  expect(options.additionalProtectedReadRoots).toContain(delegatedRuntimeHome)
 })
 
 it('rejects direct ACP policy mutations before runtime work when Session admission is closed', async () => {
@@ -1509,6 +1535,7 @@ describe('installAcpIpcHandlers — acp:send-prompt notification tracking', () =
         {
           sessionId: 'session-1',
           text: 'Plot the curve',
+          permissionPrompts: 'none',
           suppressUserMessage: true,
           continuation: {
             kind: 'specialist-handoff',
@@ -1524,6 +1551,7 @@ describe('installAcpIpcHandlers — acp:send-prompt notification tracking', () =
     expect(trackPrompt).toHaveBeenCalledWith({
       sessionId: 'session-1',
       text: 'Plot the curve',
+      permissionPrompts: undefined,
       continuation: undefined,
       suppressUserMessage: undefined,
       turnIntent: undefined,
@@ -1533,6 +1561,7 @@ describe('installAcpIpcHandlers — acp:send-prompt notification tracking', () =
       expect.objectContaining({
         sessionId: 'session-1',
         text: 'Plot the curve',
+        permissionPrompts: undefined,
         continuation: undefined,
         suppressUserMessage: undefined
       }),

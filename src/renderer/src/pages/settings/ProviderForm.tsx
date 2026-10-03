@@ -1,3 +1,4 @@
+import { fieldErrorClassName } from '@/components/ui/notice-chrome'
 import { useFileCredentialNotice } from './use-file-credential-notice'
 import type { TFunction } from 'i18next'
 import { ChevronDown, Eye, EyeOff } from 'lucide-react'
@@ -31,14 +32,23 @@ import {
 import { getApiKeySecurityCopyKeys } from './provider-key-security'
 import { ProviderKindIcon } from './provider-icons'
 import {
+  LOCAL_MODEL_PRESETS,
   PROVIDER_KIND_GROUPS,
   PROVIDER_KINDS,
+  localModelPresetPatch,
+  providerFormApiEndpoints,
   providerKindPatch,
   selectedKindKey,
   type ProviderFormErrors,
   type ProviderFormValue,
   type ProviderKind
 } from './provider-form-value'
+import { customProviderRequiresKey } from '../../../../shared/provider-base-url'
+import {
+  ENDPOINT_PATHS,
+  isProviderUsableByFramework,
+  type AgentFrameworkView
+} from '../../../../shared/settings'
 
 type ProviderFormProps = {
   value: ProviderFormValue
@@ -67,10 +77,13 @@ type ProviderFormProps = {
   showClaudeIsolated?: boolean
   // Preferred protocol for a newly selected Custom Gateway, derived from the active framework.
   defaultCustomApiEndpoint?: ProviderFormValue['apiEndpoint']
+  // Active agent framework context. When supplied and the draft's API format cannot drive the
+  // framework, the custom-gateway form explains the pairing (still savable) instead of staying
+  // silent until the post-save validation reports it.
+  framework?: AgentFrameworkView
 }
 
 const fieldLabelClassName = 'text-xs font-medium text-muted-foreground'
-const fieldErrorClassName = 'text-xs text-destructive'
 const CUSTOM_PROVIDER_CONTEXT_WINDOW_PRESETS = [
   32_000, 64_000, 128_000, 200_000, 256_000, 1_000_000
 ] as const
@@ -109,24 +122,28 @@ const RequiredMark = (): React.JSX.Element => (
   </span>
 )
 
-type AdvancedSettingsDisclosureProps = {
+type SettingsDisclosureProps = {
   expanded: boolean
   label: string
   onToggle: () => void
   children: React.ReactNode
+  contentClassName?: string
+  contentId?: string
 }
 
-const AdvancedSettingsDisclosure = ({
+const SettingsDisclosure = ({
   expanded,
   label,
   onToggle,
-  children
-}: AdvancedSettingsDisclosureProps): React.JSX.Element => (
+  children,
+  contentClassName = 'mt-3 flex min-w-0 flex-col gap-4 pl-6',
+  contentId = 'provider-advanced-settings'
+}: SettingsDisclosureProps): React.JSX.Element => (
   <div>
     <button
       type="button"
       aria-expanded={expanded}
-      aria-controls="provider-advanced-settings"
+      aria-controls={contentId}
       onClick={onToggle}
       className="flex min-h-8 w-full items-center gap-2 rounded-lg py-1.5 text-left text-sm font-medium whitespace-nowrap text-foreground transition-colors duration-150 outline-none motion-reduce:transition-none hover:text-primary focus-visible:ring-3 focus-visible:ring-ring/50"
     >
@@ -140,7 +157,7 @@ const AdvancedSettingsDisclosure = ({
     </button>
 
     {expanded ? (
-      <div id="provider-advanced-settings" className="mt-3 flex min-w-0 flex-col gap-4 pl-6">
+      <div id={contentId} className={contentClassName}>
         {children}
       </div>
     ) : null}
@@ -182,7 +199,7 @@ const TokenLimitField = ({
       <label id={`${id}-label`} className={fieldLabelClassName} htmlFor={id}>
         {label}
       </label>
-      <FieldHelp content={help} />
+      <FieldHelp label={label} content={help} />
     </div>
     <Input
       id={id}
@@ -242,7 +259,8 @@ const ProviderForm = ({
   encryptionAvailable = true,
   showCodexSubscriptions = false,
   showClaudeIsolated = false,
-  defaultCustomApiEndpoint = 'anthropic'
+  defaultCustomApiEndpoint = 'anthropic',
+  framework
 }: ProviderFormProps): React.JSX.Element => {
   const { t } = useTranslation()
   const fileCredentialNotice = useFileCredentialNotice()
@@ -252,14 +270,19 @@ const ProviderForm = ({
   const isClaudeSubscription = value.type === 'claude-shared' || value.type === 'claude-isolated'
   const isXaiSubscription = value.type === 'xai-subscription'
   const vendor = isOfficial && value.vendorId ? getOfficialVendor(value.vendorId) : undefined
+  // A loopback custom gateway starts with the local-server presets visible, but the user can still
+  // collapse them after that automatic reveal.
+  const loopbackCustomGateway = isCustom && !customProviderRequiresKey(value.baseUrl)
   const [advancedOpen, setAdvancedOpen] = useState(
     () =>
       value.codexTransport !== 'auto' ||
       value.supportsImageInput ||
       value.reasoningEffortPreset !== 'unsupported' ||
+      Boolean(value.contextWindow.trim()) ||
       Boolean(value.maxInputTokens.trim()) ||
       Boolean(value.maxOutputTokens.trim())
   )
+  const [localModelOpen, setLocalModelOpen] = useState(loopbackCustomGateway)
   const selectedKey = selectedKindKey(value)
   // Scope reveal state to the exact provider kind and draft value. Input events advance that scope
   // only while already revealed, so an externally replaced provider record starts masked.
@@ -268,10 +291,25 @@ const ProviderForm = ({
     key: string
   }>()
   const keyVisible = revealedKeyDraft?.kind === selectedKey && revealedKeyDraft.key === value.key
-  const keyRequired = needsKey || !hasStoredKey
+  // A loopback custom gateway (local model server) serves without a key, so the key field reads as
+  // optional and the required-field guard below stays quiet for it.
+  const keyRequired = !loopbackCustomGateway && (needsKey || !hasStoredKey)
+  // Whether the active framework can drive this draft as configured. Undefined while the caller
+  // supplies no framework context, or before the framework list has loaded (compatibility
+  // feedback stays hidden then).
+  const frameworkCanDriveDraft =
+    framework?.supportedApiTypes === undefined
+      ? undefined
+      : isProviderUsableByFramework(
+          { apiEndpoints: providerFormApiEndpoints(value), type: value.type },
+          { id: framework.id, supportedApiTypes: framework.supportedApiTypes }
+        )
 
   const advancedVisible =
-    advancedOpen || Boolean(errors.maxInputTokens) || Boolean(errors.maxOutputTokens)
+    advancedOpen ||
+    Boolean(errors.contextWindow) ||
+    Boolean(errors.maxInputTokens) ||
+    Boolean(errors.maxOutputTokens)
 
   const selectedKind = PROVIDER_KINDS.find((kind) => kind.key === selectedKey)
   // Where to get a key for an official vendor (region-specific console); custom providers have none.
@@ -285,15 +323,25 @@ const ProviderForm = ({
         <div className="flex items-center gap-1">
           <label className={fieldLabelClassName} htmlFor="provider-key">
             {t('API key')}
-            <RequiredMark />
+            {loopbackCustomGateway ? (
+              <span className="ml-0.5 font-normal text-muted-foreground">{t('(optional)')}</span>
+            ) : (
+              <RequiredMark />
+            )}
           </label>
           <FieldHelp
+            label={t('API key')}
             content={
               <>
                 <span className="block font-medium">{t(securityCopyKeys.title)}</span>
                 <span className="block text-bg-000/80">
                   {fileCredentialNotice ?? t(securityCopyKeys.description)}
                 </span>
+                {loopbackCustomGateway ? (
+                  <span className="block text-bg-000/80">
+                    {t('Local model servers do not require an API key.')}
+                  </span>
+                ) : null}
               </>
             }
           />
@@ -319,7 +367,9 @@ const ProviderForm = ({
               ? t('{{masked}} — leave blank to keep', {
                   masked: maskedKey ?? t('stored key')
                 })
-              : t('Paste API key')
+              : loopbackCustomGateway
+                ? t('Leave blank for a local server')
+                : t('Paste API key')
           }
           className="pe-9"
           onChange={(event) => {
@@ -367,7 +417,9 @@ const ProviderForm = ({
       <div className="space-y-1.5">
         <div className="flex items-center gap-1">
           <span className={fieldLabelClassName}>{t('Provider type')}</span>
-          {selectedKind ? <FieldHelp content={t(selectedKind.descriptionKey)} /> : null}
+          {selectedKind ? (
+            <FieldHelp label={t('Provider type')} content={t(selectedKind.descriptionKey)} />
+          ) : null}
         </div>
         <Select
           value={selectedKey}
@@ -438,7 +490,9 @@ const ProviderForm = ({
               'Save this provider, then sign in from its card with a device code. EconoMind securely refreshes the login and exposes Messages, Chat Completions, and Responses locally.'
             )}
           </p>
-          <code className="font-mono text-xs text-muted-foreground">{t('grok-4.6 · 500K')}</code>
+          <code className="font-mono text-xs text-muted-foreground">
+            {t('Default model: grok-4.7 · 500K')}
+          </code>
         </div>
       ) : isCodexSubscription ? (
         <>
@@ -475,7 +529,7 @@ const ProviderForm = ({
                   )}
             </p>
           </div>
-          <AdvancedSettingsDisclosure
+          <SettingsDisclosure
             expanded={advancedVisible}
             label={t('Advanced settings')}
             onToggle={() => setAdvancedOpen((open) => !open)}
@@ -484,6 +538,7 @@ const ProviderForm = ({
               <div className="flex items-center gap-1">
                 <span className={fieldLabelClassName}>{t('Transport')}</span>
                 <FieldHelp
+                  label={t('Transport')}
                   content={t(
                     'Auto uses WebSocket when available and falls back to HTTPS. Use HTTPS for compatibility or WebSocket for lower latency.'
                   )}
@@ -514,7 +569,7 @@ const ProviderForm = ({
                 </SelectContent>
               </Select>
             </div>
-          </AdvancedSettingsDisclosure>
+          </SettingsDisclosure>
         </>
       ) : isClaudeSubscription ? (
         <>
@@ -597,6 +652,45 @@ const ProviderForm = ({
         </>
       ) : isCustom ? (
         <>
+          <SettingsDisclosure
+            expanded={localModelOpen}
+            label={t('Local model server')}
+            onToggle={() => setLocalModelOpen((open) => !open)}
+            contentClassName="mt-2 flex min-w-0 flex-col gap-2 pl-6"
+            contentId="provider-local-model-server"
+          >
+            <div className="flex flex-wrap gap-2" role="group" aria-label={t('Local model server')}>
+              {LOCAL_MODEL_PRESETS.map((preset) => {
+                const active = value.baseUrl.trim() === preset.baseUrl
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    aria-pressed={active}
+                    disabled={disabled}
+                    onClick={() => {
+                      setLocalModelOpen(true)
+                      onChange(localModelPresetPatch(preset, value, defaultCustomApiEndpoint))
+                    }}
+                    className={cn(
+                      'inline-flex min-h-8 items-center rounded-full border px-3 text-xs font-medium transition-colors duration-150 outline-none motion-reduce:transition-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50',
+                      active
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border bg-transparent text-foreground hover:bg-muted/60'
+                    )}
+                  >
+                    {preset.label}
+                  </button>
+                )
+              })}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                'Quick-fills the base URL and the Chat Completions format. Tap again to clear. Everything stays editable.'
+              )}
+            </p>
+          </SettingsDisclosure>
+
           <div className="space-y-1.5">
             <div className="flex items-center gap-1">
               <label className={fieldLabelClassName} htmlFor="provider-base-url">
@@ -604,6 +698,7 @@ const ProviderForm = ({
                 <RequiredMark />
               </label>
               <FieldHelp
+                label={t('Base URL')}
                 content={
                   <Trans
                     t={t}
@@ -622,7 +717,13 @@ const ProviderForm = ({
               value={value.baseUrl}
               disabled={disabled}
               placeholder={t('https://gateway.example')}
-              onChange={(event) => onChange({ baseUrl: event.target.value })}
+              onChange={(event) => {
+                const baseUrl = event.target.value
+                if (!loopbackCustomGateway && !customProviderRequiresKey(baseUrl)) {
+                  setLocalModelOpen(true)
+                }
+                onChange({ baseUrl })
+              }}
             />
             {errors.baseUrl ? (
               <p id="provider-base-url-error" className={fieldErrorClassName} role="alert">
@@ -635,6 +736,7 @@ const ProviderForm = ({
             <div className="flex items-center gap-1">
               <span className={fieldLabelClassName}>{t('API format')}</span>
               <FieldHelp
+                label={t('API format')}
                 content={t(
                   'Choose the protocol documented by the gateway. The model name does not determine the protocol. A provider is only selectable under an agent framework that supports its format.'
                 )}
@@ -659,6 +761,26 @@ const ProviderForm = ({
               </SelectContent>
             </Select>
           </div>
+
+          {frameworkCanDriveDraft === false && framework ? (
+            <p
+              role="status"
+              className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-foreground"
+            >
+              {t(
+                'Not usable with {{framework}}: it needs {{routes}}, but this gateway speaks {{providerRoutes}}. You can still save it — switch the agent framework to use this model.',
+                {
+                  framework: framework.displayName,
+                  routes: (framework.supportedApiTypes ?? [])
+                    .map((endpoint) => ENDPOINT_PATHS[endpoint])
+                    .join(' / '),
+                  providerRoutes: providerFormApiEndpoints(value)
+                    .map((endpoint) => ENDPOINT_PATHS[endpoint])
+                    .join(' / ')
+                }
+              )}
+            </p>
+          ) : null}
 
           {keyField}
 
@@ -685,23 +807,23 @@ const ProviderForm = ({
             ) : null}
           </div>
 
-          <TokenLimitField
-            id="provider-context-window"
-            label={t('Context window')}
-            help={t('Total tokens shared by the request and response.')}
-            value={value.contextWindow}
-            presets={CUSTOM_PROVIDER_CONTEXT_WINDOW_PRESETS}
-            disabled={disabled}
-            error={errors.contextWindow}
-            onValueChange={(contextWindow) => onChange({ contextWindow })}
-            t={t}
-          />
-
-          <AdvancedSettingsDisclosure
+          <SettingsDisclosure
             expanded={advancedVisible}
             label={t('Advanced settings')}
             onToggle={() => setAdvancedOpen((open) => !open)}
           >
+            <TokenLimitField
+              id="provider-context-window"
+              label={t('Context window')}
+              help={t('Total tokens shared by the request and response.')}
+              value={value.contextWindow}
+              presets={CUSTOM_PROVIDER_CONTEXT_WINDOW_PRESETS}
+              disabled={disabled}
+              error={errors.contextWindow}
+              onValueChange={(contextWindow) => onChange({ contextWindow })}
+              t={t}
+            />
+
             <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
               <div className="flex items-start justify-between gap-3">
                 <label className="space-y-0.5" htmlFor="provider-image-input">
@@ -749,6 +871,7 @@ const ProviderForm = ({
                     <div className="flex items-center gap-1">
                       <span className={fieldLabelClassName}>{t('Supported effort levels')}</span>
                       <FieldHelp
+                        label={t('Supported effort levels')}
                         content={
                           <>
                             <span className="block">
@@ -811,6 +934,7 @@ const ProviderForm = ({
                       <div className="flex items-center gap-1">
                         <span className={fieldLabelClassName}>{t('Reasoning request format')}</span>
                         <FieldHelp
+                          label={t('Reasoning request format')}
                           content={t(
                             'The JSON fields sent to a Chat Completions gateway. Follow the gateway documentation; OpenAI-compatible services commonly use {{parameter}}.',
                             { parameter: 'reasoning_effort' }
@@ -877,7 +1001,7 @@ const ProviderForm = ({
                 t={t}
               />
             </div>
-          </AdvancedSettingsDisclosure>
+          </SettingsDisclosure>
         </>
       ) : isOfficial ? (
         <>
@@ -907,9 +1031,28 @@ const ProviderForm = ({
 
           {keyField}
 
+          {value.vendorId === 'deepseek' ? (
+            <div className="space-y-1.5 rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+              <p>
+                {t(
+                  'DeepSeek routes deepseek-v4-flash and deepseek-v4-flash-vision-exp to DeepSeek V4.1 Flash (deepseek-flash), with Flash pricing.'
+                )}
+              </p>
+              <p>
+                {t(
+                  'EconoMind keeps legacy model names after refresh so existing sessions can continue using their original model IDs.'
+                )}
+              </p>
+              <ExternalTextLink href="https://api-docs.deepseek.com/quick_start/pricing/">
+                {t('DeepSeek API model and routing details')}
+              </ExternalTextLink>
+            </div>
+          ) : null}
+
           {(() => {
-            const models =
-              supportedModels ?? (value.vendorId ? getOfficialVendorModelIds(value.vendorId) : [])
+            const models = value.vendorId
+              ? getOfficialVendorModelIds(value.vendorId, value.region, supportedModels)
+              : (supportedModels ?? [])
 
             if (models.length === 0) return null
 
@@ -919,6 +1062,7 @@ const ProviderForm = ({
                   <div className="flex items-center gap-1">
                     <span className={fieldLabelClassName}>{t('Supported models')}</span>
                     <FieldHelp
+                      label={t('Supported models')}
                       content={t(
                         'Bundled with the app. Refresh from the vendor to pull the latest. Choose one from the Active model selector after adding.'
                       )}

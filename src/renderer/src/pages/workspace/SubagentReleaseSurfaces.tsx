@@ -1,5 +1,7 @@
+import { ErrorNotice } from '@/components/error-notice'
+import { openLiteratureScope } from '@/lib/open-literature-scope'
 import { AlertCircle, Bot, ChevronDown, ChevronRight, Loader2, X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { AcpPermissionRequest, DelegatedWorkUnavailableReason } from '../../../../shared/acp'
@@ -23,6 +25,7 @@ import { useWorkspaceSubagentRuntimeSession } from '@/lib/acp/useWorkspaceAgentR
 
 import { WorkspaceMessageEditStateProvider } from './workspace-message-edit-state'
 import { WorkspaceMessageScroller } from './WorkspaceMessageScroller'
+import type { LibraryMentionScopeRequest } from './WorkspaceMessageItem'
 import {
   projectSessionSubagents,
   selectSubagentFrame,
@@ -45,9 +48,9 @@ const SUBAGENT_STATUS_LABELS = {
 
 const statusDotClassName: Record<SubagentRawStatus, string> = {
   running: 'bg-primary',
-  awaiting_user: 'bg-warning-100',
+  awaiting_user: 'bg-status-warning-surface dark:bg-status-warning-dark-surface',
   completed: 'bg-success-000',
-  cancelled: 'bg-warning-100',
+  cancelled: 'bg-status-warning-surface dark:bg-status-warning-dark-surface',
   error: 'bg-danger-000'
 }
 
@@ -167,7 +170,7 @@ const SubagentsBar = ({ session, permissions }: SubagentSurfaceProps): React.JSX
         aria-controls={single ? undefined : `subagents-bar-list-${session.id}`}
         aria-live="polite"
         title={single?.title}
-        className="flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-md px-2 text-[11px] text-text-300 hover:bg-bg-300 hover:text-text-100 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        className="flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-md px-2 text-[11px] text-text-300 hover:bg-bg-300 hover:text-text-100 focus-visible:keyboard-focus"
         onClick={(event) => {
           if (single) {
             openSubagentPreview(session, single, event.currentTarget)
@@ -226,7 +229,7 @@ const SubagentsBar = ({ session, permissions }: SubagentSurfaceProps): React.JSX
                       status: t(SUBAGENT_STATUS_LABELS[child.status])
                     })
               }
-              className="grid min-h-11 w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 border-b border-border-300/15 px-3.5 py-2.5 text-left last:border-b-0 hover:bg-bg-100/60 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-inset focus-visible:ring-ring/50"
+              className="grid min-h-11 w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 border-b border-border-300/15 px-3.5 py-2.5 text-left last:border-b-0 hover:bg-bg-100/60 focus-visible:keyboard-focus focus-visible:-outline-offset-2"
               onClick={() => selectChild(child)}
             >
               <span className="min-w-0">
@@ -243,7 +246,7 @@ const SubagentsBar = ({ session, permissions }: SubagentSurfaceProps): React.JSX
                       {' · '}
                       <span
                         id={`subagent-origin-warning-${session.id}-${child.frameId}`}
-                        className="text-warning-100"
+                        className="text-status-warning-foreground dark:text-status-warning-dark-foreground"
                       >
                         {t('Imported history may be incomplete')}
                       </span>
@@ -297,7 +300,7 @@ const SubagentAvailabilityNotice = ({
       </span>
       <button
         type="button"
-        className="shrink-0 rounded-md border border-border-200 bg-bg-000 px-2 py-1 text-text-100 hover:bg-bg-300 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        className="shrink-0 rounded-md border border-border-200 bg-bg-000 px-2 py-1 text-text-100 hover:bg-bg-300 focus-visible:keyboard-focus"
         onClick={policyDisabled ? onTurnOnDelegation : onOpenSettings}
       >
         {policyDisabled ? t('Turn on Delegation') : t('Open Settings')}
@@ -310,37 +313,126 @@ type SubagentFrameDetail = NonNullable<ReturnType<typeof selectSubagentFrame>>
 
 const SubagentTranscript = ({
   session,
-  detail
+  detail,
+  isActive
 }: {
   session: ChatSession
   detail: SubagentFrameDetail
+  isActive: boolean
 }): React.JSX.Element => {
   const projectedSession = useWorkspaceSubagentRuntimeSession(session, detail)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const scrollPositionRef = useRef<number | undefined>(undefined)
+  const restoringScrollRef = useRef(false)
+  const followIntentRef = useRef(true)
+  const hiddenFollowIntentRef = useRef(true)
+  const [autoScroll, setAutoScroll] = useState(true)
+  const rememberFollowIntent = useCallback((following: boolean): void => {
+    if (restoringScrollRef.current) return
+    followIntentRef.current = following
+    setAutoScroll(following)
+  }, [])
+  const rememberScroll = (event: React.UIEvent<HTMLDivElement>): void => {
+    if (
+      !isActive ||
+      restoringScrollRef.current ||
+      (event.target as HTMLElement).dataset.slot !== 'message-scroller-viewport'
+    )
+      return
+    scrollPositionRef.current = (event.target as HTMLElement).scrollTop
+  }
+  useEffect(() => {
+    if (!isActive) {
+      hiddenFollowIntentRef.current = followIntentRef.current
+      restoringScrollRef.current = true
+      return
+    }
+    if (scrollPositionRef.current === undefined) {
+      restoringScrollRef.current = false
+      return
+    }
+    let cancelled = false
+    queueMicrotask(() => {
+      if (cancelled) return
+      const viewport = containerRef.current?.querySelector<HTMLElement>(
+        '[data-slot="message-scroller-viewport"]'
+      )
+      const position = scrollPositionRef.current
+      if (viewport && position !== undefined)
+        viewport.scrollTop = hiddenFollowIntentRef.current ? viewport.scrollHeight : position
+      restoringScrollRef.current = false
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [isActive])
+  const onOpenLibraryMention = useCallback(
+    (scope: LibraryMentionScopeRequest): void => {
+      const preview = usePreviewWorkbenchStore.getState()
+      if (!session.projectId || preview.activeProjectId !== session.projectId) return
+      openLiteratureScope(session.projectId, scope)
+    },
+    [session.projectId]
+  )
   return (
-    <WorkspaceMessageScroller
-      activeSession={projectedSession}
-      onSendEditedMessage={() => ({ ok: false })}
-    />
+    <div
+      ref={containerRef}
+      className="min-h-0 flex-1"
+      data-slot="subagent-transcript"
+      onScrollCapture={rememberScroll}
+    >
+      <WorkspaceMessageScroller
+        activeSession={projectedSession}
+        autoScroll={autoScroll}
+        onScrollFollowingChange={rememberFollowIntent}
+        scrollIntentActive={isActive}
+        onOpenLibraryMention={onOpenLibraryMention}
+        onSendEditedMessage={() => ({ ok: false })}
+      />
+    </div>
   )
 }
 
 const SubagentPreview = ({
   item,
+  isActive = true,
   returnFocus
 }: {
   item: PreviewToolItem
+  isActive?: boolean
   returnFocus?: HTMLElement
 }): React.JSX.Element => {
   const { t } = useTranslation()
   const session = useSessionStore((state) =>
     state.sessions.find((candidate) => candidate.id === item.sessionId)
   )
-  const summary = useMemo(() => projectSessionSubagents(session, []), [session])
+  // A previously opened tab can outlive the root Session's loaded content. Keep the last
+  // committed transcript visible while the selected Session is read back from persistence.
+  const [lastLoadedSession, setLastLoadedSession] = useState<ChatSession | undefined>(() =>
+    session?.contentLoaded === false ? undefined : session
+  )
+  if (session && session.contentLoaded !== false && lastLoadedSession !== session) {
+    setLastLoadedSession(session)
+  }
+  const displayedSession =
+    session && session.contentLoaded !== false
+      ? session
+      : lastLoadedSession?.id === item.sessionId &&
+          lastLoadedSession.projectId === (session?.projectId ?? item.projectId)
+        ? lastLoadedSession
+        : undefined
+  const summary = useMemo(() => projectSessionSubagents(displayedSession, []), [displayedSession])
   const effectiveFrameId = item.selectedAgentFrameId ?? summary.children[0]?.frameId ?? ''
   const [isRetrying, setIsRetrying] = useState(false)
+  const [readFailed, setReadFailed] = useState(false)
+  const readInFlight = useRef(false)
+  const attemptedAutomaticRead = useRef(false)
+  const [automaticReadFinished, setAutomaticReadFinished] = useState(false)
+  const projectId = session?.projectId ?? item.projectId
+  const needsHydration = !session || session.contentLoaded === false
   const detail = useMemo(
-    () => selectSubagentFrame(session, effectiveFrameId),
-    [effectiveFrameId, session]
+    () => selectSubagentFrame(displayedSession, effectiveFrameId),
+    [displayedSession, effectiveFrameId]
   )
 
   const selectFrame = (frameId: string): void => {
@@ -356,11 +448,12 @@ const SubagentPreview = ({
     target?.focus()
   }
 
-  const retryRead = async (): Promise<void> => {
-    if (isRetrying) return
+  const retryRead = useCallback(async (): Promise<void> => {
+    if (readInFlight.current) return
+    readInFlight.current = true
     setIsRetrying(true)
+    setReadFailed(false)
     try {
-      const projectId = session?.projectId ?? item.projectId
       if (!item.sessionId) return
       // Restored legacy tabs may not carry a Project until their Session is hydrated.
       const durable = projectId
@@ -369,12 +462,28 @@ const SubagentPreview = ({
             (candidate) => candidate.id === item.sessionId
           )
       if (durable) useSessionStore.getState().upsertPersistedSession(durable)
+      else setReadFailed(true)
     } catch {
-      // The alert remains visible and the action remains retryable.
+      setReadFailed(true)
     } finally {
+      readInFlight.current = false
       setIsRetrying(false)
+      setAutomaticReadFinished(true)
     }
-  }
+  }, [item.sessionId, projectId])
+
+  useEffect(() => {
+    // Hidden restored tabs are mounted too. Never hydrate them during startup, and never
+    // use the legacy loadAll fallback automatically: wait for the lightweight Session catalog.
+    if (!needsHydration) attemptedAutomaticRead.current = false
+    if (!isActive || !needsHydration || !projectId || attemptedAutomaticRead.current) return
+    attemptedAutomaticRead.current = true
+    void retryRead()
+  }, [isActive, needsHydration, projectId, retryRead])
+
+  const isLoading =
+    !displayedSession &&
+    (isRetrying || (needsHydration && Boolean(projectId) && !automaticReadFinished))
 
   return (
     <section className="flex size-full min-h-0 flex-col bg-bg-000" aria-label={t('Subagents')}>
@@ -405,7 +514,7 @@ const SubagentPreview = ({
               <button
                 type="button"
                 aria-label={t('Close Subagents preview')}
-                className="grid size-8 shrink-0 place-items-center rounded-md text-text-300 hover:bg-bg-200 hover:text-text-000 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                className="grid size-8 shrink-0 place-items-center rounded-md text-text-300 hover:bg-bg-200 hover:text-text-000 focus-visible:keyboard-focus"
                 onClick={close}
               >
                 <X className="size-4" aria-hidden="true" />
@@ -416,29 +525,54 @@ const SubagentPreview = ({
         </TooltipProvider>
       </header>
 
-      {!detail || !session ? (
-        <div role="alert" className="m-auto max-w-sm p-6 text-center text-[12px] text-text-300">
-          <AlertCircle className="mx-auto mb-2 size-5" aria-hidden="true" />
-          <p>{t('This Subagent conversation could not be read.')}</p>
-          <button
-            type="button"
-            aria-label={t('Retry Subagent preview')}
-            disabled={isRetrying}
-            className="mt-3 rounded-md border border-border-200 px-3 py-1.5 text-text-100 hover:bg-bg-200 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-            onClick={() => void retryRead()}
-          >
-            {isRetrying ? t('Retrying…') : t('Retry')}
-          </button>
+      {isLoading ? (
+        <div role="status" className="m-auto flex items-center gap-2 text-sm text-text-300">
+          <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+          {t('Loading…')}
         </div>
+      ) : !detail || !displayedSession ? (
+        <ErrorNotice
+          role="alert"
+          className="m-auto max-w-sm"
+          description={t('This Subagent conversation could not be read.')}
+          primaryButton={{
+            label: t('Retry Subagent preview'),
+            loading: isRetrying,
+            onClick: () => void retryRead()
+          }}
+        />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col" aria-live="off">
+          {readFailed && needsHydration ? (
+            <ErrorNotice
+              role="alert"
+              className="mx-3 mt-3 shrink-0"
+              description={t('This Subagent conversation could not be read.')}
+              primaryButton={{
+                label: t('Retry Subagent preview'),
+                loading: isRetrying,
+                onClick: () => void retryRead()
+              }}
+            />
+          ) : null}
           <div className="shrink-0 border-b border-border-100 px-4 py-2 text-[11px] text-text-300">
             <span className="font-medium text-text-100">{detail.agentLabel}</span>
             {detail.originUnavailable ? (
-              <span className="text-warning-100">
+              <span className="text-status-warning-foreground dark:text-status-warning-dark-foreground">
                 {' · '}
                 {t('Imported history may be incomplete')}
               </span>
+            ) : null}
+            {detail.status === 'completed' ? (
+              <p className="pt-1">
+                {t(
+                  'Execution completed. Check the Main Agent conversation to confirm it received the result.'
+                )}
+              </p>
+            ) : null}
+            {detail.attempt?.terminalMessageId &&
+            detail.messages.some((message) => message.id === detail.attempt?.terminalMessageId) ? (
+              <p className="pt-1">{t('Saved result available below.')}</p>
             ) : null}
             {detail.attempt?.cancellationReason ? (
               <span> · {detail.attempt.cancellationReason}</span>
@@ -449,9 +583,10 @@ const SubagentPreview = ({
           </div>
           <WorkspaceMessageEditStateProvider canEditMessage={false}>
             <SubagentTranscript
-              key={`${session.id}:${detail.frameId}:${detail.attempt?.id ?? 'no-attempt'}:${detail.attempt?.runtimeSegmentIds.at(-1) ?? 'no-runtime'}`}
-              session={session}
+              key={`${displayedSession.id}:${detail.frameId}:${detail.attempt?.id ?? 'no-attempt'}:${detail.attempt?.runtimeSegmentIds.at(-1) ?? 'no-runtime'}`}
+              session={displayedSession}
               detail={detail}
+              isActive={isActive}
             />
           </WorkspaceMessageEditStateProvider>
         </div>

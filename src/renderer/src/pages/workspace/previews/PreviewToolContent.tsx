@@ -1,5 +1,6 @@
+import { ErrorNotice } from '@/components/error-notice'
 import { LoaderCircle } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -8,7 +9,7 @@ import {
   projectPlanStepStates,
   type ActivePlanProjection
 } from '../../../../../shared/session-plan/contract'
-import { Button } from '@/components/ui/button'
+
 import {
   selectProjectSessionReviewLoadError,
   selectProjectSessionReviewSnapshot,
@@ -26,7 +27,11 @@ import { SessionReviewerPanel } from '../SessionReviewerPanel'
 import { SubagentPreview } from '../SubagentReleaseSurfaces'
 import { respondToSessionPlan } from '../session-plan/respond-to-session-plan'
 import { PlanPreviewSurface, type RestoredPlanResponder } from '../session-plan/SessionPlanSurfaces'
-import { useIsSideChatOpenForSession } from '../use-side-chat-controller'
+
+const LibraryPreview = lazy(() => import('./LibraryPreview'))
+const SessionReplayPreview = lazy(() =>
+  import('../SessionReplayPreview').then((module) => ({ default: module.SessionReplayPreview }))
+)
 
 const isNotebookPreviewItem = (item: PreviewToolItem): item is NotebookPreviewItem =>
   item.toolKind === 'notebook' && Boolean(item.notebook)
@@ -185,18 +190,14 @@ const SessionReviewerContent = ({
     if (loadError) {
       return (
         <div className="flex size-full items-center justify-center px-6 py-8">
-          <div role="alert" className="text-center">
-            <p className="text-[12px] text-danger-000">{t('Could not load review history.')}</p>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="mt-3"
-              onClick={() => void loadReviewsForSession(sessionId, projectId)}
-            >
-              {t('Retry')}
-            </Button>
-          </div>
+          <ErrorNotice
+            role="alert"
+            description={t('Could not load review history.')}
+            primaryButton={{
+              label: t('Retry'),
+              onClick: () => void loadReviewsForSession(sessionId, projectId)
+            }}
+          />
         </div>
       )
     }
@@ -240,7 +241,6 @@ const PlanPreviewToolContent = ({
   item: PreviewToolItem
   restoredPlanResponder?: RestoredPlanResponder
 }): React.JSX.Element | null => {
-  const isSideChatOpen = useIsSideChatOpenForSession(item.sessionId)
   const planSession = useSessionStore((state) =>
     state.sessions.find((session) => session.id === item.sessionId)
   )
@@ -279,8 +279,7 @@ const PlanPreviewToolContent = ({
   const canRespondToPlan =
     visiblePlanProjection !== undefined &&
     planSession?.status === 'waiting-plan-approval' &&
-    hasPlanResponsePath &&
-    !isSideChatOpen
+    hasPlanResponsePath
 
   if (!visiblePlanProjection || !planSession) return null
   const currentPlanArtifactVersionId =
@@ -305,16 +304,50 @@ const PlanPreviewToolContent = ({
 
 export const PreviewToolContent = ({
   item,
+  isActive = true,
   restoredPlanResponder
 }: {
   item: PreviewToolItem
+  isActive?: boolean
   restoredPlanResponder?: RestoredPlanResponder
 }): React.JSX.Element | null => {
   const activeProjectId = useNavigationStore((state) => state.activeProjectId)
+  const { t } = useTranslation()
+
+  if (item.toolKind === 'replay')
+    return (
+      <Suspense
+        fallback={
+          <div role="status" className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
+            <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+            {t('Loading…')}
+          </div>
+        }
+      >
+        <SessionReplayPreview
+          key={`${item.projectId}:${item.sessionId}`}
+          item={item}
+          isActive={isActive}
+        />
+      </Suspense>
+    )
 
   // Remount the Files tool per project so its transient dialog cannot outlive the project it opened.
   if (item.toolKind === 'files') {
     return <ProjectFilesView key={activeProjectId ?? 'no-active-project'} />
+  }
+
+  if (item.toolKind === 'library') {
+    return (
+      <Suspense fallback={null}>
+        <LibraryPreview
+          key={activeProjectId ?? 'no-active-project'}
+          projectId={activeProjectId}
+          isActive={isActive}
+          scopeRequest={item.libraryScopeRequest}
+        />
+      </Suspense>
+    )
   }
 
   if (item.toolKind === 'compute') {
@@ -326,7 +359,7 @@ export const PreviewToolContent = ({
   }
 
   if (item.toolKind === 'subagents') {
-    return <SubagentPreview item={item} />
+    return <SubagentPreview key={item.sessionId} item={item} isActive={isActive} />
   }
 
   if (item.toolKind === 'plan') {

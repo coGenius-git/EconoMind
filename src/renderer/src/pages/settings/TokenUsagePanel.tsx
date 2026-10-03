@@ -1,3 +1,5 @@
+import { InlineNotice } from '@/components/ui/inline-notice'
+import { ErrorNotice } from '@/components/error-notice'
 import { ChartNoAxesCombined, Info, Loader2, RefreshCw } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -313,17 +315,12 @@ function TokenUsagePanel({
   if (canLoadUsageProjection && usageProjectionLoadFailed && usageProjection === undefined) {
     return (
       <div data-slot="token-usage-panel" className="min-w-0 overflow-x-clip">
-        <div role="alert" data-slot="token-usage-load-error" className="px-4 py-6 sm:px-5">
-          <p className="text-sm text-destructive">{t('Could not load token usage.')}</p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="mt-3"
-            onClick={refreshUsageProjection}
-          >
-            {t('Try again')}
-          </Button>
+        <div data-slot="token-usage-load-error" className="px-4 py-6 sm:px-5">
+          <ErrorNotice
+            role="alert"
+            description={t('Could not load token usage.')}
+            primaryButton={{ label: t('Try again'), onClick: refreshUsageProjection }}
+          />
         </div>
       </div>
     )
@@ -396,7 +393,10 @@ function TokenUsagePanel({
   return (
     <TooltipProvider delayDuration={200}>
       <div data-slot="token-usage-panel" className="min-w-0 overflow-x-clip">
-        <section className="flex flex-col gap-5 px-4 pb-5 pt-6 sm:px-5">
+        <section
+          data-settings-anchor="usage.list"
+          className="flex flex-col gap-5 px-4 pb-5 pt-6 sm:px-5"
+        >
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
             <div className="min-w-0 max-w-xl">
               <h1 className="min-w-0 text-xl font-semibold tracking-tight text-foreground [overflow-wrap:anywhere]">
@@ -479,9 +479,9 @@ function TokenUsagePanel({
           ) : null}
 
           {usageProjectionLoadFailed ? (
-            <p role="alert" className="-mt-2 text-xs text-destructive">
+            <InlineNotice level="error" role="alert" className="-mt-2">
               {t('Could not load token usage.')}
-            </p>
+            </InlineNotice>
           ) : null}
 
           <div data-slot="token-usage-summary" className="py-5">
@@ -514,6 +514,33 @@ function TokenUsagePanel({
                 </div>
               ))}
             </div>
+
+            {summary.classificationTokens && (
+              <dl
+                data-slot="classification-usage"
+                className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-xs text-muted-foreground"
+              >
+                <div className="flex gap-2">
+                  <dt>{t('Other classification tokens')}</dt>
+                  <dd className="tabular-nums text-foreground">
+                    {formatNumber(summary.classificationTokens.conversation)}
+                  </dd>
+                </div>
+                <div className="flex gap-2">
+                  <dt>{t('Literature classification tokens')}</dt>
+                  <dd className="tabular-nums text-foreground">
+                    {formatNumber(summary.classificationTokens.literature)}
+                  </dd>
+                </div>
+              </dl>
+            )}
+            {summary.incompleteRequests ? (
+              <p role="status" className="mt-3 text-xs text-status-warning-foreground">
+                {t(
+                  'Some classification requests have no reported token usage. Totals may be incomplete.'
+                )}
+              </p>
+            ) : null}
 
             <div className="mt-5 grid grid-cols-2 gap-x-5 gap-y-5 lg:grid-cols-4">
               {entitySummaryItems.map((item) => (

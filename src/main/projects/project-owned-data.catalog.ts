@@ -92,6 +92,64 @@ const optionalOwner = (name: ProjectOwnerFieldName): ProjectOwnerField => ({
 
 const PROJECT_OWNED_DATA_CATALOG: readonly ProjectOwnedDataCatalogEntry[] = [
   {
+    id: 'pdf-annotations',
+    medium: 'sqlite',
+    resources: ['PdfAnnotation', 'PdfAnnotationImport'],
+    prismaModels: [
+      {
+        name: 'PdfAnnotationImport',
+        ownerFields: [optionalOwner('projectId'), optionalOwner('sessionId')],
+        relationContracts: [
+          { field: 'project', target: 'Project', fromFields: ['projectId'], onDelete: 'Cascade' }
+        ]
+      },
+      {
+        name: 'PdfAnnotation',
+        ownerFields: [
+          optionalOwner('projectId'),
+          optionalOwner('sessionId'),
+          optionalOwner('sourceSessionId')
+        ],
+        relationContracts: [
+          { field: 'project', target: 'Project', fromFields: ['projectId'], onDelete: 'Cascade' }
+        ]
+      }
+    ],
+    policy: {
+      kind: 'coordinator-cleanup',
+      effect: 'hard-delete',
+      path: 'project-metadata-soft-delete',
+      operation: 'ProjectRepository.delete',
+      note: 'Private PDF annotations are removed before the Project metadata row is retained as history.'
+    }
+  },
+  {
+    id: 'bookmarks',
+    medium: 'sqlite',
+    resources: ['Bookmark'],
+    prismaModels: [
+      {
+        name: 'Bookmark',
+        ownerFields: [requiredOwner('projectId'), requiredOwner('sessionId')],
+        relationContracts: [
+          {
+            field: 'project',
+            target: 'Project',
+            fromFields: ['projectId'],
+            onDelete: 'Cascade'
+          }
+        ]
+      }
+    ],
+    policy: {
+      kind: 'coordinator-cleanup',
+      effect: 'hard-delete',
+      path: 'project-metadata-soft-delete',
+      operation: 'ProjectRepository.delete',
+      note: 'Private Bookmarks are removed before the Project metadata row is retained as history.'
+    }
+  },
+  {
     id: 'project-memory',
     medium: 'sqlite',
     resources: ['MemoryEntry'],
@@ -170,6 +228,39 @@ const PROJECT_OWNED_DATA_CATALOG: readonly ProjectOwnedDataCatalogEntry[] = [
     }
   },
   {
+    id: 'session-replay',
+    medium: 'sqlite',
+    resources: ['SessionReplayProgress', 'SessionDiscussionSnapshot'],
+    prismaModels: [
+      {
+        name: 'SessionReplayProgress',
+        ownerFields: [requiredOwner('projectId'), requiredOwner('sessionId')],
+        relationContracts: [
+          { field: 'project', target: 'Project', fromFields: ['projectId'], onDelete: 'Cascade' }
+        ]
+      },
+      {
+        name: 'SessionDiscussionSnapshot',
+        ownerFields: [requiredOwner('sourceProjectId'), requiredOwner('sourceSessionId')],
+        relationContracts: [
+          {
+            field: 'sourceProject',
+            target: 'Project',
+            fromFields: ['sourceProjectId'],
+            onDelete: 'Cascade'
+          }
+        ]
+      }
+    ],
+    policy: {
+      kind: 'coordinator-cleanup',
+      effect: 'hard-delete',
+      path: 'project-metadata-soft-delete',
+      operation: 'ProjectRepository.delete',
+      note: 'Discussion snapshots are owned by their source Project; replay progress is owned by the replayed Session’s Project. Both are removed with that Project.'
+    }
+  },
+  {
     id: 'vision-evidence',
     medium: 'sqlite',
     resources: ['VisionEvidence'],
@@ -209,6 +300,7 @@ const PROJECT_OWNED_DATA_CATALOG: readonly ProjectOwnedDataCatalogEntry[] = [
       'PendingSessionReconciliation',
       'SessionTurnUsage',
       'SessionModelCallUsage',
+      'ClassificationUsage',
       'SessionRun',
       'SessionArtifactRef'
     ],
@@ -224,6 +316,10 @@ const PROJECT_OWNED_DATA_CATALOG: readonly ProjectOwnedDataCatalogEntry[] = [
             onDelete: 'Restrict'
           }
         ]
+      },
+      {
+        name: 'ClassificationUsage',
+        ownerFields: [optionalOwner('projectId'), optionalOwner('sessionId')]
       },
       {
         name: 'PendingSessionReconciliation',

@@ -1,4 +1,8 @@
 import {
+  bootstrapApplicationCommandGroup,
+  registerBootstrapApplicationCommands
+} from './settings/bootstrap-application-commands'
+import {
   specialistApplicationCommandGroup,
   registerSpecialistApplicationCommands,
   type SpecialistApplicationOwner
@@ -87,6 +91,21 @@ import {
   registerLiteratureApplicationCommands,
   type LiteratureCommandOwner
 } from './literature/application-commands'
+import {
+  pdfAnnotationApplicationCommandGroup,
+  registerPdfAnnotationApplicationCommands,
+  type PdfAnnotationCommandOwner
+} from './pdf-annotations/application-commands'
+import {
+  bookmarkApplicationCommandGroup,
+  registerBookmarkApplicationCommands,
+  type BookmarkCommandOwner
+} from './bookmarks/application-commands'
+import {
+  sessionReplayCommandGroup,
+  registerSessionReplayCommands,
+  type SessionReplayCommandOwner
+} from './session-replay/application-commands'
 
 type AnyApplicationCommand = ApplicationCommand<string, readonly unknown[], unknown>
 type AnyApplicationCommandGroup = ApplicationCommandGroup<string, readonly AnyApplicationCommand[]>
@@ -94,7 +113,6 @@ type NotebookEnvironmentDependencies = Parameters<
   typeof installNotebookEnvironmentApplicationCommands
 >[1]
 type PermissionGrantDependencies = Parameters<typeof registerPermissionGrantApplicationCommands>[1]
-type RemoteAccessOwner = HostApplicationCommandDependencies['remoteAccess']
 
 type ApplicationCommandByNameDispatcher = Readonly<{
   invoke: (
@@ -126,8 +144,11 @@ type ApplicationCommandCompositionDependencies = Readonly<{
   memory: MemoryCommandOwner
   specialist: SpecialistApplicationOwner
   literature: LiteratureCommandOwner
+  bookmarks: BookmarkCommandOwner
+  sessionReplay: SessionReplayCommandOwner
+  pdfAnnotations: PdfAnnotationCommandOwner
   dataContent: DataContentApplicationCommandDependencies
-  host: Omit<HostApplicationCommandDependencies, 'remoteAccess'>
+  host: HostApplicationCommandDependencies
 }>
 
 type ApplicationCommandComposition = Readonly<{
@@ -135,30 +156,41 @@ type ApplicationCommandComposition = Readonly<{
   localWeb: ApplicationCommandByNameDispatcher
   remoteWeb: RemoteWebApplicationCommandDispatcher
   task: ApplicationCommandByNameDispatcher
-  bindRemoteAccess: (owner: RemoteAccessOwner) => void
+
   dispose: () => void
 }>
 
 const ELECTRON_NATIVE_COMMAND_NAMES = Object.freeze([
-  'remote-access:detect',
-  'remote-access:disable',
-  'remote-access:set-mode',
   'sessions:export-conversation',
+  'sessions:fork',
+  'sessions:inspect-diagnostics',
+  'sessions:export-diagnostics',
+  'sessions:cancel-diagnostics',
+  'sessions:export-package',
+  'sessions:import-package',
+  'sessions:package-operation',
   'uploads:stage-local-file'
 ])
 
 const TASK_NATIVE_COMMAND_NAMES = Object.freeze([
+  'settings:bootstrap',
   'settings:test-custom-server',
   'projects:update-session-defaults',
   'reviewer:abort',
   'settings:set-agent-routing',
   'sessions:fail-task-run',
   'sessions:settle-task-completion',
+  'sessions:bind-task-session',
+  'sessions:admit-task-turn',
   'sessions:stage-task-completion',
   'sessions:update-configuration'
 ])
 
 const TASK_COMMAND_NAMES = Object.freeze([
+  'settings:bootstrap',
+  'cli:install',
+  'settings:get-preflight',
+  'settings:list-skills',
   'settings:list-connectors',
   'settings:get-connector-detail',
   'settings:set-connector-enabled',
@@ -179,6 +211,8 @@ const TASK_COMMAND_NAMES = Object.freeze([
   'settings:set-agent-routing',
   'sessions:load-all',
   'sessions:save-session',
+  'sessions:bind-task-session',
+  'sessions:admit-task-turn',
   'sessions:stage-task-completion',
   'sessions:settle-task-completion',
   'sessions:fail-task-run',
@@ -190,6 +224,7 @@ const TASK_COMMAND_NAMES = Object.freeze([
   'reviewer:get-for-session',
   'reviewer:run',
   'artifacts:finalize-run',
+  'artifacts:resolve-version-descriptors',
   'preview-resources:acquire',
   'preview-resources:release'
 ])
@@ -216,10 +251,12 @@ const defineApplicationCommandModule = (
   Object.freeze({ groups: Object.freeze([...groups]), install })
 
 const createApplicationCommandModules = (
-  dependencies: ApplicationCommandCompositionDependencies,
-  remoteAccess: RemoteAccessOwner
+  dependencies: ApplicationCommandCompositionDependencies
 ): readonly ApplicationCommandModuleDescriptor[] =>
   Object.freeze([
+    defineApplicationCommandModule([bootstrapApplicationCommandGroup], (registrar) =>
+      registerBootstrapApplicationCommands(registrar, dependencies.settingsCore)
+    ),
     defineApplicationCommandModule([acpApplicationCommands], (registrar) =>
       registerAcpCommands(registrar, dependencies.acp)
     ),
@@ -265,50 +302,22 @@ const createApplicationCommandModules = (
     defineApplicationCommandModule([literatureApplicationCommandGroup], (registrar) =>
       registerLiteratureApplicationCommands(registrar, dependencies.literature)
     ),
+    defineApplicationCommandModule([bookmarkApplicationCommandGroup], (registrar) =>
+      registerBookmarkApplicationCommands(registrar, dependencies.bookmarks)
+    ),
+    defineApplicationCommandModule([sessionReplayCommandGroup], (registrar) =>
+      registerSessionReplayCommands(registrar, dependencies.sessionReplay)
+    ),
+    defineApplicationCommandModule([pdfAnnotationApplicationCommandGroup], (registrar) =>
+      registerPdfAnnotationApplicationCommands(registrar, dependencies.pdfAnnotations)
+    ),
     defineApplicationCommandModule(dataContentApplicationCommandGroups, (registrar) =>
       registerDataContentApplicationCommands(registrar, dependencies.dataContent)
     ),
     defineApplicationCommandModule(hostApplicationCommandGroups, (registrar) =>
-      registerHostApplicationCommands(registrar, { ...dependencies.host, remoteAccess })
+      registerHostApplicationCommands(registrar, { ...dependencies.host })
     )
   ])
-
-const createRemoteAccessSlot = (): Readonly<{
-  owner: RemoteAccessOwner
-  bind: (owner: RemoteAccessOwner) => void
-  dispose: () => void
-}> => {
-  let bound: RemoteAccessOwner | undefined
-  let disposed = false
-  const current = (): RemoteAccessOwner => {
-    if (disposed) throw new Error('Remote Access command owner slot is disposed.')
-    if (!bound) throw new Error('Remote Access command owner is not bound.')
-    return bound
-  }
-  const owner: RemoteAccessOwner = Object.freeze({
-    snapshot: (...args) => current().snapshot(...args),
-    probe: (...args) => current().probe(...args),
-    detect: (...args) => current().detect(...args),
-    setMode: (...args) => current().setMode(...args),
-    disable: (...args) => current().disable(...args),
-    approve: (...args) => current().approve(...args),
-    reject: (...args) => current().reject(...args),
-    revoke: (...args) => current().revoke(...args)
-  })
-
-  return Object.freeze({
-    owner,
-    bind: (next): void => {
-      if (disposed) throw new Error('Remote Access command owner slot is disposed.')
-      if (bound) throw new Error('Remote Access command owner is already bound.')
-      bound = next
-    },
-    dispose: (): void => {
-      disposed = true
-      bound = undefined
-    }
-  })
-}
 
 const certifyInventory = (
   groups: readonly AnyApplicationCommandGroup[]
@@ -397,8 +406,7 @@ const createApplicationCommandComposition = (
   dependencies: ApplicationCommandCompositionDependencies,
   onDiagnostic?: (diagnostic: ApplicationCommandDiagnostic) => void
 ): ApplicationCommandComposition => {
-  const remoteAccess = createRemoteAccessSlot()
-  const modules = createApplicationCommandModules(dependencies, remoteAccess.owner)
+  const modules = createApplicationCommandModules(dependencies)
   const certified = certifyInventory(modules.flatMap(({ groups }) => groups))
   const router = createApplicationCommandRouter(onDiagnostic)
   const installations: ApplicationCommandInstallation[] = []
@@ -421,7 +429,7 @@ const createApplicationCommandComposition = (
     } catch (cleanupError) {
       failures.push(cleanupError)
     }
-    remoteAccess.dispose()
+
     if (failures.length > 1) {
       throw new AggregateError(failures, 'Application command composition failed.')
     }
@@ -472,7 +480,7 @@ const createApplicationCommandComposition = (
     localWeb,
     remoteWeb,
     task,
-    bindRemoteAccess: remoteAccess.bind,
+
     dispose: (): void => {
       if (disposed) return
       disposed = true
@@ -489,7 +497,7 @@ const createApplicationCommandComposition = (
       } catch (error) {
         failures.push(error)
       }
-      remoteAccess.dispose()
+
       if (failures.length > 0) {
         throw new AggregateError(failures, 'Application command composition cleanup failed.')
       }
@@ -502,6 +510,5 @@ export type {
   ApplicationCommandByNameDispatcher,
   ApplicationCommandComposition,
   ApplicationCommandCompositionDependencies,
-  RemoteAccessOwner,
   RemoteWebApplicationCommandDispatcher
 }
