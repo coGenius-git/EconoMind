@@ -131,6 +131,7 @@ import { ComposerMessageQueueContent, ComposerMessageQueueTrigger } from './Comp
 import { ContextWindowDialog } from './ContextWindowDialog'
 import { ComposerModelPicker } from './ComposerModelPicker'
 import { ComposerSpecialistPicker } from './ComposerSpecialistPicker'
+import { useSpecialistExample } from './use-specialist-example'
 import { ComposerYourFilesMenu } from './ComposerYourFilesMenu'
 import { PermissionApprovalControls } from './PermissionApprovalControls'
 import { ReadingContextPicker } from './ReadingContextPicker'
@@ -689,7 +690,6 @@ const ConversationPanel = ({
   const specialistUnavailable = specialist.view.specialist.unavailable
   const specialistHasPendingSwitch = specialist.view.specialist.hasPendingSwitch
   const reconfigureError = specialist.view.specialist.reconfigureError
-  const onSpecialistChange = specialist.actions.selectSpecialist
   const onReconfigureChooseOther = specialist.actions.chooseOtherSpecialist
   const onReconfigureUseNone = specialist.actions.useMainAgent
   const onSendMessage = (forcedSkillIds: string[]): void => submitDraft({ forcedSkillIds })
@@ -704,6 +704,18 @@ const ConversationPanel = ({
   }
 
   const specialistItems = useSpecialistStore((state) => state.items)
+  const onSpecialistChange = useSpecialistExample({
+    scopeKey: composerFocusKey ?? activeSession?.id ?? 'new-conversation',
+    selectedId: specialistId,
+    items: specialistItems,
+    doc: draftDoc,
+    canEdit: canEditDraft && !isHistoryBrowsing && !isWslSetupDraft,
+    pending: specialistHasPendingSwitch || specialist.view.specialist.barrierInFlight,
+    failed: Boolean(reconfigureError),
+    select: specialist.actions.selectSpecialist,
+    changeDoc: onValidatedDraftDocChange,
+    t
+  })
   const catalogSkills = useSettingsStore((state) => state.skills)
   const settingsLoaded = useSettingsStore((state) => state.isLoaded)
   const openSettings = useSettingsStore((state) => state.openSettings)

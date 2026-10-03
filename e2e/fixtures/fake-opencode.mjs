@@ -1539,7 +1539,12 @@ if (process.argv.includes('--version')) {
           reply = handoffReply
         } else if (prompt.includes('Verify bundled Specialist identity:')) {
           const identities = {
-            'literature-agent': ['Literature Agent', '文献研究助手', 'econ-literature-evidence'],
+            'literature-agent': ['Literature Agent', '文献查找助手', 'econ-literature-evidence'],
+            'literature-review-agent': [
+              'Literature Review Agent',
+              '文献综述助手',
+              'econ-literature-evidence'
+            ],
             'methodology-agent': [
               'Methodology Agent',
               '研究设计与因果识别助手',

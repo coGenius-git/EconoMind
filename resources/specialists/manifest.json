@@ -2,6 +2,7 @@
   "version": 1,
   "specialists": [
     "literature-agent",
+    "literature-review-agent",
     "methodology-agent",
     "data-agent",
     "review-agent"
