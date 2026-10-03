@@ -92,6 +92,30 @@
       "name": "Econometrics Assistant",
       "source": "featured",
       "updatedAt": "2026-09-11T00:00:00.000Z"
+    },
+    {
+      "id": "econ-literature-evidence",
+      "name": "经管文献与证据",
+      "source": "featured",
+      "updatedAt": "2026-10-03T00:00:00.000Z"
+    },
+    {
+      "id": "econ-causal-design",
+      "name": "经管研究设计与识别",
+      "source": "featured",
+      "updatedAt": "2026-10-03T00:00:00.000Z"
+    },
+    {
+      "id": "econ-data-audit",
+      "name": "经管数据审计",
+      "source": "featured",
+      "updatedAt": "2026-10-03T00:00:00.000Z"
+    },
+    {
+      "id": "econ-research-review",
+      "name": "经管研究评审与复现",
+      "source": "featured",
+      "updatedAt": "2026-10-03T00:00:00.000Z"
     }
   ]
 }

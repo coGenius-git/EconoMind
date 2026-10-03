@@ -93,6 +93,28 @@ const mainSwitchRequest: AcpPermissionRequest = {
 }
 
 describe('PermissionApprovalControls specialist switch card', () => {
+  it('resolves a built-in Specialist by name in the switch approval', () => {
+    useSpecialistStore.setState({
+      items: [{ ...researchProfile, kind: 'builtin', readonly: true, version: '1.0.0' }],
+      isLoaded: true
+    })
+
+    act(() => {
+      root.render(<PermissionApprovalControls requests={[switchRequest]} onRespond={vi.fn()} />)
+    })
+
+    expect(container.textContent).toContain('Researcher')
+    expect(container.textContent).toContain(researchProfile.description)
+    expect(container.textContent).not.toContain('can no longer be resolved by name')
+    const detail = container.querySelector<HTMLButtonElement>('[data-testid="specialist-detail"]')
+    expect(detail).not.toBeNull()
+    act(() => detail!.click())
+    expect(useSettingsStore.getState().pendingSettingsIntent?.route).toEqual({
+      panel: 'specialists',
+      view: { kind: 'builtin', id: researchProfile.id }
+    })
+  })
+
   it('deep-links to the specialist config page when the detail block is clicked', () => {
     useSpecialistStore.setState({
       items: [{ kind: 'custom', ...researchProfile }],

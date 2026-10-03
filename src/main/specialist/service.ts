@@ -272,10 +272,14 @@ export class SpecialistService {
     if (builtin) throw new SpecialistReadonlyError('builtin', builtin.id)
   }
 
-  // Returns all custom specialists as views (no Reviewer, no Main Agent, no None).
-  async list(): Promise<SpecialistView[]> {
+  // Custom profiles remain the default for mutation callers. Discovery can also include the
+  // readonly builtin catalog, without the Settings-only Reviewer/Main/None placeholders.
+  async list(options: { includeBuiltins?: boolean } = {}): Promise<SpecialistView[]> {
     const doc = await this.repo.getAll()
-    return doc.specialists.map(toView)
+    const custom = doc.specialists.map(toView)
+    return options.includeBuiltins
+      ? [...custom, ...(await this.builtinEntries()).map((entry) => this.toBuiltinView(entry))]
+      : custom
   }
 
   // Returns the full list for the Settings UI, including the built-in Reviewer placeholder.
@@ -349,11 +353,13 @@ export class SpecialistService {
     return toView(found)
   }
 
-  async getByName(name: string): Promise<SpecialistView> {
-    const doc = await this.repo.getAll()
-    const found = doc.specialists.find((s) => s.name === name)
+  async getByName(
+    name: string,
+    options: { includeBuiltins?: boolean } = {}
+  ): Promise<SpecialistView> {
+    const found = (await this.list(options)).find((s) => s.name === name)
     if (!found) throw agentsPublicError(`Specialist "${name}" not found.`)
-    return toView(found)
+    return found
   }
 
   async resolveCustomMutationByName(name: string): Promise<SpecialistView> {

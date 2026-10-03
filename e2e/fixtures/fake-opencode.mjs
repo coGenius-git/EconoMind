@@ -1537,6 +1537,28 @@ if (process.argv.includes('--version')) {
         const handoffReply = await permissionHandoffTask(context, prompt)
         if (handoffReply) {
           reply = handoffReply
+        } else if (prompt.includes('Verify bundled Specialist identity:')) {
+          const identities = {
+            'literature-agent': ['Literature Agent', '文献研究助手', 'econ-literature-evidence'],
+            'methodology-agent': [
+              'Methodology Agent',
+              '研究设计与因果识别助手',
+              'econ-causal-design'
+            ],
+            'data-agent': ['Data Agent', '经管数据审计与分析助手', 'econ-data-audit'],
+            'review-agent': ['Review Agent', '研究评审助手', 'econ-research-review']
+          }
+          const requested = prompt.match(/Verify bundled Specialist identity: ([a-z-]+)\./)?.[1]
+          const identity = identities[requested]
+          if (
+            !identity ||
+            !prompt.includes(`Current Specialist: ${identity[0]}`) ||
+            !prompt.includes(`你是 EconoMind 的 ${identity[0]}（${identity[1]}）`) ||
+            !prompt.includes(identity[2])
+          ) {
+            throw new Error('The bundled Specialist identity did not reach the agent.')
+          }
+          reply = 'Bundled Specialist identity verified.'
         } else if (prompt.includes('Verify interaction follow-up.')) {
           reply = 'Interaction follow-up completed.'
         } else if (prompt.includes('Request restart verification permission.')) {

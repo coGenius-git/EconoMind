@@ -28,9 +28,9 @@ const specialistNameFor = (
 ): string => {
   if (specialistId === undefined) return 'Main Agent'
   const item = items.find(
-    (candidate) => candidate.kind === 'custom' && candidate.id === specialistId
+    (candidate) => candidate.kind !== 'reviewer' && candidate.id === specialistId
   )
-  return item?.kind === 'custom' ? item.name : 'the selected specialist'
+  return item && item.kind !== 'reviewer' ? item.name : 'the selected specialist'
 }
 
 const pendingSpecialistReconfigureError = (

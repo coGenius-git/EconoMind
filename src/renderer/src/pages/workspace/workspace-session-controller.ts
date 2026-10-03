@@ -216,14 +216,14 @@ const useWorkspaceSessionController = ({
     specialistCatalogLoaded &&
     newConversationSpecialistId !== undefined &&
     !specialistItems.some(
-      (item) => item.kind === 'custom' && item.enabled && item.id === newConversationSpecialistId
+      (item) => item.kind !== 'reviewer' && item.enabled && item.id === newConversationSpecialistId
     )
   const activeSpecialistUnavailable = activeSession
     ? specialistCatalogLoaded &&
       !Object.hasOwn(pendingSpecialists, activeSession.id) &&
       activeSession.specialistId !== undefined &&
       !specialistItems.some(
-        (item) => item.kind === 'custom' && item.enabled && item.id === activeSession.specialistId
+        (item) => item.kind !== 'reviewer' && item.enabled && item.id === activeSession.specialistId
       )
     : newConversationSpecialistUnavailable
   const specialistSendAvailable = activeSession
@@ -402,7 +402,7 @@ const useWorkspaceSessionController = ({
         return false
       }
       return specialistItems.some(
-        (item) => item.kind === 'custom' && item.enabled && item.id === session.specialistId
+        (item) => item.kind !== 'reviewer' && item.enabled && item.id === session.specialistId
       )
     }
     if (!activeSession) return !newConversationSpecialistUnavailable
@@ -567,9 +567,9 @@ const useWorkspaceSessionController = ({
         return
       }
       const match = specialistItemsRef.current.find(
-        (item) => item.kind === 'custom' && item.name === pending.targetName
+        (item) => item.kind !== 'reviewer' && item.name === pending.targetName
       )
-      if (match?.kind === 'custom') {
+      if (match && match.kind !== 'reviewer') {
         setPendingSpecialists((current) => ({
           ...current,
           [pending.sessionId]: match.id

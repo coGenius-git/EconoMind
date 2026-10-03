@@ -25,7 +25,7 @@ export type SettingsNavigationActions = {
   openSettingsToOpenAlex: () => void
   closeSettings: () => void
   openSettingsToSkill: (skillId: string) => void
-  openSettingsToSpecialist: (specialistId: string) => void
+  openSettingsToSpecialist: (specialistId: string, kind?: 'custom' | 'builtin') => void
   openSettingsToCompute: () => void
   openSettingsToComputeHost: (providerId: string) => void
   openSettingsToComputeAuthentication: (
@@ -80,8 +80,11 @@ export const createSettingsNavigationSlice = ({
     openSettingsToSkill: (skillId) =>
       openTo({ panel: 'skills', view: { kind: 'detail', id: skillId } }),
 
-    openSettingsToSpecialist: (specialistId) =>
-      openTo({ panel: 'specialists', view: { kind: 'edit', id: specialistId } }),
+    openSettingsToSpecialist: (specialistId, kind = 'custom') =>
+      openTo({
+        panel: 'specialists',
+        view: { kind: kind === 'builtin' ? 'builtin' : 'edit', id: specialistId }
+      }),
 
     openSettingsToCompute: () => openTo({ panel: 'compute', view: { kind: 'list' } }),
 

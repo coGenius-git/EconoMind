@@ -57,7 +57,7 @@ const SpecialistSwitchDetail = ({
   const targetName = payload.targetName
   const profile =
     targetName !== null
-      ? items.find((item) => item.kind === 'custom' && item.name === targetName)
+      ? items.find((item) => item.kind !== 'reviewer' && item.name === targetName)
       : undefined
 
   // The direction line names both sides of the switch; a null side is the Main Agent. Public
@@ -65,8 +65,8 @@ const SpecialistSwitchDetail = ({
   // block's identity presentation.
   const resolveLabel = (name: string | null): string => {
     if (name === null) return t('Main Agent')
-    const found = items.find((item) => item.kind === 'custom' && item.name === name)
-    return found && found.kind === 'custom' ? (found.displayName ?? found.name) : name
+    const found = items.find((item) => item.kind !== 'reviewer' && item.name === name)
+    return found && found.kind !== 'reviewer' ? (found.displayName ?? found.name) : name
   }
   const currentLabel = resolveLabel(payload.currentName)
   const targetLabel = resolveLabel(targetName)
@@ -97,7 +97,7 @@ const SpecialistSwitchDetail = ({
 
   // The target name can no longer be resolved (renamed or removed since the request started).
   // Approval will fail main-side name validation; surface that before the user decides.
-  if (!profile || profile.kind !== 'custom') {
+  if (!profile || profile.kind === 'reviewer') {
     return (
       <ErrorNotice
         title={targetName}
@@ -112,7 +112,7 @@ const SpecialistSwitchDetail = ({
 
   const capabilityLabel =
     profile.capabilityMode === 'full' ? t('Full access') : t('Selected capabilities')
-  const openConfig = (): void => openSettingsToSpecialist(profile.id)
+  const openConfig = (): void => openSettingsToSpecialist(profile.id, profile.kind)
 
   return (
     <div className="flex flex-col gap-2">

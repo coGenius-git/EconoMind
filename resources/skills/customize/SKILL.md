@@ -45,9 +45,11 @@ The Skill never uses the following, and you must not invent them:
 The SDK is name-first and lives in the trusted calling session. JavaScript methods, inputs, and
 returned records all use camelCase. Methods:
 
-- `host.agents.list()` — custom Specialist summaries for discovery and selection only.
+- `host.agents.list()` — custom and built-in Specialist summaries for discovery and selection only;
+  excludes the Settings-only Reviewer row.
 - `host.agents.get(name)` — one existing Specialist's complete current state by immutable name
-  (returns stable `id` and `revision`, but you do not show those to the user).
+  (returns stable `id` and `revision`, but you do not show those to the user). Built-in Specialists
+  can be read and selected, but cannot be updated or deleted.
 - `host.agents.create(input)` — object form (see below).
 - `host.agents.update(name, patch)` — `name` selects the Specialist and is immutable; use
   `patch.displayName` to change its presentation label.
