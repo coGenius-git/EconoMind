@@ -6028,6 +6028,82 @@ describe('ConversationPanel fix loop lock', () => {
     expect(container.querySelector('[data-testid="specialist-unavailable-notice"]')).toBeNull()
   })
 
+  it.each(['full', 'selected'] as const)(
+    'offers only the built-in Specialist skills in %s capability mode',
+    (capabilityMode) => {
+      useSpecialistStore.setState({
+        items: [
+          {
+            kind: 'builtin',
+            readonly: true,
+            version: '1.0.0',
+            id: 'builtin-specialist',
+            name: 'BUILTIN_SPECIALIST',
+            description: 'Built-in research specialist.',
+            systemPrompt: 'Help the user.',
+            enabled: true,
+            capabilityMode,
+            fullAccess: {
+              excludedSkillIds: ['excluded'],
+              excludedConnectorIds: [],
+              connectorTools: []
+            },
+            selectedCapabilities: {
+              skillIds: ['allowed', 'unavailable'],
+              connectorIds: [],
+              connectorTools: []
+            },
+            revision: 1
+          }
+        ],
+        isLoaded: true
+      })
+      useSettingsStore.setState({
+        skillsLoaded: true,
+        skills: ['allowed', 'excluded', 'unavailable'].map((id) => ({
+          id,
+          name: id,
+          displayName: `${id} research skill`,
+          description: '',
+          source: 'featured',
+          updatedAt: '',
+          enabled: id !== 'allowed',
+          available: id !== 'unavailable'
+        }))
+      })
+      renderPanel({
+        view: { activeSession: { ...idleSession, specialistId: 'builtin-specialist' } },
+        composer: { view: { doc: emptyDoc } }
+      })
+
+      const editor = getComposerEditor()
+      const token = document.createTextNode('/')
+      editor.appendChild(token)
+      const range = document.createRange()
+      range.setStart(token, 1)
+      range.collapse(true)
+      document.getSelection()?.removeAllRanges()
+      document.getSelection()?.addRange(range)
+      const createRange = document.createRange.bind(document)
+      const createRangeMock = vi.spyOn(document, 'createRange').mockImplementation(() => {
+        const anchor = createRange()
+        anchor.getBoundingClientRect = () => new DOMRect()
+        return anchor
+      })
+      try {
+        act(() => editor.dispatchEvent(new Event('input', { bubbles: true })))
+      } finally {
+        createRangeMock.mockRestore()
+      }
+
+      const listbox = document.body.querySelector('[role="listbox"]')
+      expect(listbox).not.toBeNull()
+      expect(listbox?.textContent).toContain('allowed research skill')
+      expect(listbox?.textContent).not.toContain('excluded research skill')
+      expect(listbox?.textContent).not.toContain('unavailable research skill')
+    }
+  )
+
   it('adds the enhanced composer edge and compact picker for an available Specialist', () => {
     useSpecialistStore.setState({
       items: [

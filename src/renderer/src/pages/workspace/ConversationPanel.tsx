@@ -857,7 +857,7 @@ const ConversationPanel = ({
   const canRetryArtifactFinalization = isRetryableArtifactFinalizationError(activeSession?.error)
 
   const activeSpecialist = specialistId
-    ? specialistItems.find((item) => item.kind === 'custom' && item.id === specialistId)
+    ? specialistItems.find((item) => item.kind !== 'reviewer' && item.id === specialistId)
     : undefined
   const selectedSpecialist = specialistId
     ? specialistItems.find((item) => item.kind !== 'reviewer' && item.id === specialistId)
@@ -867,7 +867,7 @@ const ConversationPanel = ({
       ? getAvatarColor(selectedSpecialist.colorKey)
       : undefined
   const effectiveSpecialistSkills = resolveEffectiveSpecialistSkills(
-    activeSpecialist?.kind === 'custom' ? activeSpecialist : undefined,
+    activeSpecialist && activeSpecialist.kind !== 'reviewer' ? activeSpecialist : undefined,
     catalogSkills
       .filter((skill) => skill.available !== false)
       .map((skill) => ({

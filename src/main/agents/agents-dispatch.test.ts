@@ -107,9 +107,10 @@ describe('AgentsService.dispatch — extensible operation dispatcher', () => {
         reconfigure: true
       }
     })
-    // The service received ONLY { name: 'Bio' } — every reserved key was dropped.
-    expect(getByName).toHaveBeenCalledWith('Bio')
-    expect(getByName.mock.calls[0]).toEqual(['Bio'])
+    // Only the public name and the trusted builtin-discovery option reach the service.
+    // Every caller-supplied reserved key was dropped.
+    expect(getByName).toHaveBeenCalledWith('Bio', { includeBuiltins: true })
+    expect(getByName.mock.calls[0]).toEqual(['Bio', { includeBuiltins: true }])
   })
 
   it('fail-closes privileged ops when their approval seam is not configured', async () => {

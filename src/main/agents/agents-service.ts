@@ -358,9 +358,10 @@ export class AgentsService {
     })
   }
 
-  // Returns custom Specialists only — never synthesizes the Settings-only Reviewer row.
+  // Includes readonly builtin Specialists for discovery and switching, but never the
+  // Settings-only Reviewer row. Mutation methods keep their separate custom-only lookup.
   async list(): Promise<SpecialistSummaryReadModel[]> {
-    const profiles = await this.deps.specialistService.list()
+    const profiles = await this.deps.specialistService.list({ includeBuiltins: true })
     return profiles.map(projectAgentSummary)
   }
 
@@ -369,7 +370,7 @@ export class AgentsService {
   async get(params: { name?: unknown }): Promise<SpecialistDetailReadModel> {
     const name = asString(params.name)
     if (!name) throw agentsPublicError('name is required')
-    const profile = await this.deps.specialistService.getByName(name)
+    const profile = await this.deps.specialistService.getByName(name, { includeBuiltins: true })
     return projectAgentDetail(profile)
   }
 

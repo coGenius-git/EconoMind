@@ -441,9 +441,9 @@ const WorkspacePage = ({
   const historyAllowedSkillIds = useMemo(() => {
     if (historySpecialistId === undefined) return undefined
     const specialist = specialistItems.find(
-      (item) => item.kind === 'custom' && item.enabled && item.id === historySpecialistId
+      (item) => item.kind !== 'reviewer' && item.enabled && item.id === historySpecialistId
     )
-    if (specialist?.kind !== 'custom') return new Set<string>()
+    if (!specialist || specialist.kind === 'reviewer') return new Set<string>()
     const effective = resolveEffectiveSpecialistSkills(
       specialist,
       catalogSkills.map((skill) => ({
@@ -457,9 +457,9 @@ const WorkspacePage = ({
   const activeSpecialistAllowedSkillIds = useMemo(() => {
     if (activeSpecialistId === undefined) return undefined
     const specialist = specialistItems.find(
-      (item) => item.kind === 'custom' && item.enabled && item.id === activeSpecialistId
+      (item) => item.kind !== 'reviewer' && item.enabled && item.id === activeSpecialistId
     )
-    if (specialist?.kind !== 'custom') return new Set<string>()
+    if (!specialist || specialist.kind === 'reviewer') return new Set<string>()
     const effective = resolveEffectiveSpecialistSkills(
       specialist,
       catalogSkills.map((skill) => ({

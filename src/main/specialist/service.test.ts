@@ -85,6 +85,21 @@ describe('SpecialistService.list', () => {
     })
     const custom = await withBuiltin.create({ name: 'CUSTOM_CURATOR' })
 
+    const agents = new AgentsService({
+      specialistService: withBuiltin,
+      catalog: {
+        listSkillCatalog: async () => [],
+        getConnectors: async () => undefined
+      }
+    })
+    expect((await agents.list()).map((profile) => profile.id)).toEqual([custom.id, builtin.id])
+    expect(await agents.get({ name: builtin.name })).toMatchObject({
+      id: builtin.id,
+      revision: 0,
+      systemPrompt: builtin.systemPrompt
+    })
+    await expect(withBuiltin.getByName(builtin.name)).rejects.toThrow(/not found/i)
+
     expect(await withBuiltin.list()).toEqual([custom])
     await expect(withBuiltin.getById(builtin.id)).rejects.toThrow(/not found/i)
     expect(await withBuiltin.resolveRunnableById(builtin.id)).toMatchObject({

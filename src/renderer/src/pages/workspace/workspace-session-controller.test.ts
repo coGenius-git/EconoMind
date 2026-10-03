@@ -150,12 +150,14 @@ const deferred = <T>(): {
 type Options = Parameters<typeof useWorkspaceSessionController>[0]
 type ControllerHook = {
   result: { current: ReturnType<typeof useWorkspaceSessionController> }
-  rerender: (next: ChatSession) => void
+  rerender: (next: ChatSession | undefined) => void
   unmount: () => void
 }
 
 const renderController = (overrides: Partial<Options> = {}): ControllerHook => {
-  let activeSession = overrides.activeSession ?? session()
+  let activeSession = Object.hasOwn(overrides, 'activeSession')
+    ? overrides.activeSession
+    : session()
   const container = document.createElement('div')
   const root = createRoot(container)
   const result = {
@@ -163,7 +165,7 @@ const renderController = (overrides: Partial<Options> = {}): ControllerHook => {
   }
   const defaults: Options = {
     activeSession,
-    selectedSessionId: activeSession.id,
+    selectedSessionId: activeSession?.id,
     isPersistenceHydrated: true,
     isPersistenceReady: true,
     canDeleteConversations: true,
@@ -190,7 +192,7 @@ const renderController = (overrides: Partial<Options> = {}): ControllerHook => {
   render()
   return {
     result,
-    rerender: (next: ChatSession): void => {
+    rerender: (next: ChatSession | undefined): void => {
       activeSession = next
       render()
     },
@@ -753,6 +755,38 @@ describe('workspace session controller', () => {
     mounted.push(hook)
 
     expect(hook.result.current.lifecycle.canStartSend(inactive.id)).toBe(true)
+  })
+
+  it.each([
+    ['custom', true, true],
+    ['builtin', true, true],
+    ['custom', false, false],
+    ['builtin', false, false],
+    ['reviewer', true, false],
+    ['missing', true, false]
+  ] as const)('checks %s Specialist availability when enabled=%s', (kind, enabled, available) => {
+    const specialistId = kind === 'reviewer' ? 'reviewer' : 'spec-a'
+    const profile =
+      kind === 'missing'
+        ? []
+        : ([{ kind, id: specialistId, name: 'SPECIALIST_A', enabled }] as SpecialistListItem[])
+    const active = session({ specialistId })
+    const inactive = session({ id: 'session-b', specialistId })
+    useSessionStore.setState({ sessions: [active, inactive], selectedSessionId: active.id })
+    const hook = renderController({ activeSession: active, specialistItems: profile })
+    mounted.push(hook)
+
+    expect(hook.result.current.view.specialist.unavailable).toBe(!available)
+    expect(hook.result.current.view.specialist.sendAvailable).toBe(available)
+    expect(hook.result.current.lifecycle.canStartSend()).toBe(available)
+    expect(hook.result.current.lifecycle.canStartSend(inactive.id)).toBe(available)
+
+    hook.rerender(undefined)
+    act(() => hook.result.current.actions.selectSpecialist(specialistId))
+    expect(hook.result.current.view.specialist.newConversationId).toBe(specialistId)
+    expect(hook.result.current.view.specialist.unavailable).toBe(!available)
+    expect(hook.result.current.view.specialist.sendAvailable).toBe(available)
+    expect(hook.result.current.lifecycle.canStartSend()).toBe(available)
   })
 
   it('blocks sends until active and background Session content is loaded', () => {

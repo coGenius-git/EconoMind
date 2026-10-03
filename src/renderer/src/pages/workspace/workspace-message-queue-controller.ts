@@ -179,7 +179,7 @@ const WorkspaceMessageQueueRuntimeBridge = ({
         return false
       }
       return specialistItems.some(
-        (item) => item.kind === 'custom' && item.enabled && item.id === session.specialistId
+        (item) => item.kind !== 'reviewer' && item.enabled && item.id === session.specialistId
       )
     },
     isSideChatOpen: (sessionId) => openSideChatParentSessionIds.has(sessionId),
