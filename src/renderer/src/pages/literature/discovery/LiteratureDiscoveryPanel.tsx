@@ -61,7 +61,7 @@ export function LiteratureDiscoveryPanel({
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto p-6">
+    <div className="flex min-w-0 flex-col gap-4 p-6">
       <header className="space-y-1">
         <h2 className="text-xl font-bold">{t('Search external sources')}</h2>
         <p className="text-sm text-muted-foreground">

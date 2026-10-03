@@ -422,6 +422,18 @@ describe('LiteratureLibraryPage', () => {
         saveBlobFile,
         literature: {
           screening: vi.fn(),
+          discoverySearch: vi.fn(async () => ({ candidates: [], statuses: [], warnings: [] })),
+          discoveryImport: vi.fn(async () => ({ imported: [], skipped: [], importedCount: 0 })),
+          discoveryScreen: vi.fn(async () => ({
+            outcomes: [],
+            includeCount: 0,
+            excludeCount: 0,
+            undecidedCount: 0,
+            failedCount: 0
+          })),
+          discoverySignIn: vi.fn(async () => ({ signedIn: false, message: '' })),
+          discoverySignOut: vi.fn(async () => ({ signedIn: false, message: '' })),
+          discoveryStatus: vi.fn(async () => ({ signedIn: false, message: '' })),
           journals: vi.fn(async () => ({ datasets: [], matches: [] })),
           exportRecord: vi.fn(),
           sources: vi.fn(async () => []),
