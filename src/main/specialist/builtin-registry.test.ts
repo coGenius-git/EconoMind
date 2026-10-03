@@ -127,6 +127,11 @@ describe('BuiltinSpecialistRegistry', () => {
         connectorIds: ['literature'],
         connectorTools: []
       },
+      'literature-review-agent': {
+        skillIds: ['econ-literature-evidence'],
+        connectorIds: ['literature'],
+        connectorTools: []
+      },
       'methodology-agent': {
         skillIds: ['econ-causal-design'],
         connectorIds: [],
