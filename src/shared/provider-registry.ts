@@ -50,10 +50,15 @@ export type VendorRegion = {
   // The region's OpenAI /v1/chat/completions base, when it differs from the Anthropic `baseUrl` and the
   // vendor supports both endpoints. Falls back to the region's `baseUrl` when absent.
   openaiBaseUrl?: string
+  // The region's native Responses API base, when it differs from the OpenAI chat base. Falls back to
+  // `openaiBaseUrl` and then `baseUrl` when absent.
+  responsesBaseUrl?: string
   // Where the user creates/copies a key for this endpoint; falls back to the vendor-level one.
   apiKeyUrl?: string
   // Full URL of the vendor's model-list endpoint for this region; falls back to the vendor-level one.
   modelsListUrl?: string
+  // An authoritative curated subset when this region serves fewer models than the vendor catalog.
+  modelIds?: readonly string[]
 }
 
 export type OfficialModel = {
@@ -109,10 +114,12 @@ export type OfficialVendor = {
   }
   // Single-endpoint vendors set `baseUrl`; multi-region vendors set `regions` instead (never both).
   // For dual-endpoint vendors, `baseUrl` is the Anthropic /v1/messages route and `openaiBaseUrl` is the
-  // separate OpenAI /v1/chat/completions root. Set both only for a vendor whose apiEndpoints include
-  // 'openai'.
+  // separate OpenAI /v1/chat/completions root. `responsesBaseUrl` may differ when the vendor's native
+  // Responses API uses a different base path. Set these only when the vendor exposes the
+  // corresponding endpoint.
   baseUrl?: string
   openaiBaseUrl?: string
+  responsesBaseUrl?: string
   regions?: VendorRegion[]
   // Page where the user obtains an API key. For multi-region vendors a per-region url takes priority.
   apiKeyUrl?: string
@@ -140,6 +147,18 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
         reasoningEffort: 'low-medium-high-xhigh-ultra'
       },
       { id: 'gpt-6-astra', contextWindow: 1_050_000, reasoningEffort: 'standard-5' },
+      // https://developers.openai.com/api/docs/models/gpt-6.1-sol
+      { id: 'gpt-6.1-sol', contextWindow: 1_050_000, reasoningEffort: 'standard-5' },
+      {
+        id: 'gpt-6-sol',
+        contextWindow: 1_050_000,
+        reasoningEffort: 'none-low-medium-high-max'
+      },
+      {
+        id: 'gpt-6-luna',
+        contextWindow: 1_050_000,
+        reasoningEffort: 'none-low-medium-high-max'
+      },
       {
         id: 'gpt-5.6-terra',
         contextWindow: 1_050_000,
@@ -168,10 +187,12 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
     // Models with a 1M-context variant list both the standard id and the `[1m]` one.
     models: [
       { id: 'claude-opus-5', contextWindow: 1_000_000 },
+      { id: 'claude-opus-5-5', contextWindow: 1_000_000 },
       { id: 'claude-fable-5-1', contextWindow: 1_000_000 },
       { id: 'claude-opus-4-8', contextWindow: 1_000_000 },
       { id: 'claude-opus-4-8[1m]', contextWindow: 1_000_000 },
       { id: 'claude-sonnet-5', contextWindow: 1_000_000 },
+      { id: 'claude-sonnet-5-5', contextWindow: 1_000_000 },
       {
         id: 'claude-haiku-4-5-20251001',
         contextWindow: 200_000,
@@ -185,7 +206,7 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
   {
     id: 'xai',
     label: 'xAI (Grok)',
-    // xAI documents four selectable effort values for Grok 4.6. Models with a different capability
+    // xAI documents four selectable effort values for Grok 4.6 and 4.7. Models with a different capability
     // override this default below; models without a documented effort control stay unsupported.
     reasoningEffort: 'low-medium-high-xhigh',
     // xAI serves OpenAI-compatible Chat Completions and native Responses from the same versioned
@@ -199,6 +220,8 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
     // audio, and video generation models, so exposing refresh would pollute the chat-model picker.
     // Experimental Grok 4.20 beta variants are intentionally omitted from the stable default list.
     models: [
+      // https://docs.x.ai/developers/grok-4-7
+      { id: 'grok-4.7', contextWindow: 500_000 },
       { id: 'grok-4.6', contextWindow: 500_000 },
       { id: 'grok-4.5', contextWindow: 500_000 },
       {
@@ -236,30 +259,35 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
     // DeepSeek exposes both routes: Anthropic /v1/messages under `/anthropic`, and the OpenAI-compatible
     // route under `/v1`. The same model ids work on both, so it's safe to prefer OpenAI where the
     // framework supports it (e.g. OpenCode). openaiBaseUrl is the exact version-carrying base clients
-    // append `/chat/completions` to, and the same `/v1` root serves `/v1/responses` for Responses-capable
-    // models.
+    // append `/chat/completions` to. Native Responses uses the documented origin base instead.
     apiEndpoints: ['anthropic', 'openai'],
     baseUrl: 'https://api.deepseek.com/anthropic',
     openaiBaseUrl: 'https://api.deepseek.com/v1',
+    responsesBaseUrl: 'https://api.deepseek.com',
     apiKeyUrl: 'https://platform.deepseek.com/api_keys',
     modelsListUrl: 'https://api.deepseek.com/v1/models',
     models: [
       { id: 'deepseek-v4-pro', contextWindow: 1_000_000 },
       { id: 'deepseek-v4-pro[1m]', contextWindow: 1_000_000 },
+      // DeepSeek V4.1 Flash uses the stable API id deepseek-flash.
+      { id: 'deepseek-flash', contextWindow: 1_000_000 },
       { id: 'deepseek-v4-flash', contextWindow: 1_000_000 },
       { id: 'deepseek-v4-flash-vision-exp', contextWindow: 1_000_000 }
     ],
     // Bundled DeepSeek V4 models serve the native Responses API. Keep the explicit list because the
     // vendor also exposes non-Responses models through its live model catalog.
     responsesModels: [
+      'deepseek-flash',
       'deepseek-v4-pro',
       'deepseek-v4-pro[1m]',
       'deepseek-v4-flash',
       'deepseek-v4-flash-vision-exp'
     ],
-    // Only the vision-exp id accepts image input. Pro and flash stay text-only; sending images to
-    // them returns 400. The explicit list also covers the same id when it arrives via live refresh.
-    multimodal: { multimodalModels: ['deepseek-v4-flash-vision-exp'] }
+    // V4.1 Flash accepts image input; the legacy Flash ids now route to the same model.
+    // Keep Pro text-only, and apply these capabilities to ids received through live refresh too.
+    multimodal: {
+      multimodalModels: ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp']
+    }
   },
   {
     id: 'bailian',
@@ -474,11 +502,11 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
     apiKeyUrl: 'https://www.kimi.com/code/docs',
     models: [
       { id: 'kimi-k3', contextWindow: 1_000_000, reasoningEffort: 'standard-5' },
-      { id: 'kimi-for-coding', contextWindow: 256_000 },
+      { id: 'kimi-for-coding', contextWindow: 1_048_576 },
       { id: 'kimi-for-coding-highspeed', contextWindow: 256_000 }
     ],
     // Only the k3 model in this plan is vision-capable; the coding-tuned ids are text-only.
-    multimodal: { multimodalModels: ['kimi-k3'] }
+    multimodal: { multimodalModels: ['kimi-k3', 'kimi-for-coding'] }
   },
   {
     id: 'minimax',
@@ -509,12 +537,22 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
       // MiniMax documents M3 reasoning as a binary thinking switch: none disables thinking and high
       // enables Adaptive Thinking. Older M2 models remain conservative until documented otherwise.
       { id: 'MiniMax-M3', contextWindow: 1_000_000, reasoningEffort: 'none-high' },
+      // Token Plan preview; keep M3 as the default for pay-as-you-go keys. Unlike M3, this model
+      // always thinks and supports five effort levels (default: max).
+      // https://platform.minimax.io/docs/api-reference/text-anthropic-api
+      {
+        id: 'MiniMax-M3.1-Flash-Preview',
+        contextWindow: 1_000_000,
+        reasoningEffort: 'standard-5'
+      },
       { id: 'MiniMax-M3[1m]', contextWindow: 1_000_000, reasoningEffort: 'none-high' },
       { id: 'MiniMax-M2.7', contextWindow: 204_800 },
       { id: 'MiniMax-M2.5', contextWindow: 204_800 }
     ],
-    // M3 is natively multimodal; older M2 models remain text-only.
-    multimodal: { multimodalModels: ['MiniMax-M3', 'MiniMax-M3[1m]'] }
+    // M3 and M3.1 are natively multimodal; older M2 models remain text-only.
+    multimodal: {
+      multimodalModels: ['MiniMax-M3', 'MiniMax-M3[1m]', 'MiniMax-M3.1-Flash-Preview']
+    }
   },
   {
     id: 'stepfun',
@@ -545,35 +583,50 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
       }
     ],
     models: [
+      { id: 'step-5-preview', contextWindow: 1_000_000 },
       { id: 'step-3.7-flash', contextWindow: 262_144 },
       { id: 'step-3.5-flash', contextWindow: 262_144 }
     ],
-    // step-3.7-flash is multimodal (vision); step-3.5-flash is text-only.
-    multimodal: { multimodalModels: ['step-3.7-flash'] }
+    // Step 5 Preview and step-3.7-flash are multimodal; step-3.5-flash is text-only.
+    multimodal: { multimodalModels: ['step-5-preview', 'step-3.7-flash'] }
   },
   {
     id: 'stepplan',
     label: 'Step Plan',
     reasoningEffort: 'low-medium-high',
-    // StepFun's Step Plan is a quota-based subscription (platform.stepfun.com/plan-subscribe) that
-    // routes under `/step_plan` on the mainland-China host: Anthropic /v1/messages and the
-    // OpenAI-compatible /v1/chat/completions. `baseUrl` is the `/step_plan` root the Anthropic client
-    // appends /v1/messages to; `openaiBaseUrl` is the /step_plan/v1 base clients append
-    // /chat/completions to. Quota plans ship a fixed catalog and expose no live model list.
+    // StepFun's Step Plan is a quota-based subscription that routes under `/step_plan` on both the
+    // mainland-China and overseas hosts: Anthropic /v1/messages and the OpenAI-compatible
+    // /v1/chat/completions. Keep China first so historical providers without a region continue to
+    // resolve to the former `.com` endpoint. Quota plans ship a fixed catalog and expose no live model
+    // list.
     apiEndpoints: ['anthropic', 'openai'],
-    baseUrl: 'https://api.stepfun.com/step_plan',
-    openaiBaseUrl: 'https://api.stepfun.com/step_plan/v1',
-    apiKeyUrl: 'https://platform.stepfun.com/plan-subscribe',
+    regions: [
+      {
+        id: 'china',
+        label: 'China',
+        baseUrl: 'https://api.stepfun.com/step_plan',
+        openaiBaseUrl: 'https://api.stepfun.com/step_plan/v1',
+        apiKeyUrl: 'https://platform.stepfun.com/plan-subscribe'
+      },
+      {
+        id: 'global',
+        label: 'Global',
+        baseUrl: 'https://api.stepfun.ai/step_plan',
+        openaiBaseUrl: 'https://api.stepfun.ai/step_plan/v1',
+        apiKeyUrl: 'https://platform.stepfun.ai/plan-subscribe'
+      }
+    ],
     // step-router-v1 auto-switches between deepseek-v4-pro and step-3.7-flash; step-3.5-flash-2603 is
-    // the high-frequency-agent build. step-3.7-flash leads as the recommended flagship default.
+    // the high-frequency-agent build. Step 5 Preview leads as the recommended flagship default.
     models: [
+      { id: 'step-5-preview', contextWindow: 1_000_000 },
       { id: 'step-3.7-flash', contextWindow: 262_144 },
       { id: 'step-3.5-flash', contextWindow: 262_144 },
       { id: 'step-3.5-flash-2603', contextWindow: 262_144, reasoningEffort: 'low-high' },
       { id: 'step-router-v1', contextWindow: 262_144 }
     ],
-    // Only the step-3.7-flash flagship is multimodal (vision); the agent/code builds are text-only.
-    multimodal: { multimodalModels: ['step-3.7-flash'] }
+    // Step 5 Preview and step-3.7-flash are multimodal; the agent/code builds are text-only.
+    multimodal: { multimodalModels: ['step-5-preview', 'step-3.7-flash'] }
   },
   {
     id: 'xiaomimimo',
@@ -587,30 +640,60 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
     apiKeyUrl: 'https://platform.xiaomimimo.com/console/api-keys',
     modelsListUrl: 'https://api.xiaomimimo.com/v1/models',
     models: [
+      { id: 'mimo-v2.6-pro', contextWindow: 1_000_000 },
+      { id: 'mimo-v2.6-flash', contextWindow: 1_000_000 },
+      { id: 'mimo-v2.6-pro-ultraspeed', contextWindow: 1_000_000 },
       { id: 'mimo-v2.5-pro', contextWindow: 1_000_000 },
       { id: 'mimo-v2.5', contextWindow: 1_000_000 }
-    ]
-    // Xiaomi MiMo's chat models are text-only, so no `multimodal` rule (image input stays disabled).
+    ],
+    // V2.6 supports image input on both APIs; keep capabilities scoped to the documented ids.
+    // https://mimo.mi.com/docs/en-US/news/latest/v2-6
+    multimodal: {
+      multimodalModels: ['mimo-v2.6-pro', 'mimo-v2.6-flash', 'mimo-v2.6-pro-ultraspeed']
+    }
   },
   {
     id: 'sensenova',
     label: 'SenseNova',
     reasoningEffort: 'unsupported',
     // SenseTime's SenseNova serves both routes on one host: the Anthropic-compatible /v1/messages
-    // at the bare root and the OpenAI-compatible /v1/chat/completions under /v1. The same model ids
-    // work on both. No modelsListUrl: the live /v1/models list also serves the image-generation-only
-    // sensenova-u1-fast (POST /v1/images/generations, not a chat model), and the refresh has no
-    // modality filter — so the catalog stays curated to the two chat ids.
+    // at the bare root and the OpenAI-compatible /v1/chat/completions under /v1.
+    // https://platform.sensenova.cn/docs documents the newer hosted models on Chat Completions;
+    // do not infer Messages support (including Kimi vision) from their original vendors.
+    // Keep the catalog curated: /v1/models also includes image-only U1 models and refresh does
+    // not filter output modalities.
     apiEndpoints: ['anthropic', 'openai'],
-    baseUrl: 'https://token.sensenova.cn',
-    openaiBaseUrl: 'https://token.sensenova.cn/v1',
-    apiKeyUrl: 'https://platform.sensenova.cn/token-plan',
-    models: [
-      { id: 'sensenova-6.7-flash-lite', contextWindow: 256_000 },
-      { id: 'deepseek-v4-flash', contextWindow: 1_000_000 }
+    regions: [
+      // Keep China first: pre-region provider records must retain their original endpoint.
+      {
+        id: 'china',
+        label: 'China',
+        baseUrl: 'https://token.sensenova.cn',
+        openaiBaseUrl: 'https://token.sensenova.cn/v1',
+        apiKeyUrl: 'https://platform.sensenova.cn/console/keys'
+      },
+      {
+        id: 'global',
+        label: 'Global',
+        baseUrl: 'https://token.sensenova.ai',
+        openaiBaseUrl: 'https://token.sensenova.ai/v1',
+        apiKeyUrl: 'https://platform.sensenova.ai/console/keys',
+        // https://platform.sensenova.ai/docs lists only Flash Lite as a chat model.
+        modelIds: ['sensenova-6.8-flash-lite']
+      }
     ],
-    // Only sensenova-6.7-flash-lite accepts image input; deepseek-v4-flash is text-only.
-    multimodal: { multimodalModels: ['sensenova-6.7-flash-lite'] }
+    models: [
+      { id: 'sensenova-6.8-flash-lite', contextWindow: 262_144 },
+      { id: 'deepseek-v4-pro', contextWindow: 1_000_000, apiEndpoint: 'openai' },
+      { id: 'deepseek-v4-flash', contextWindow: 1_000_000 },
+      { id: 'glm-5.2', contextWindow: 1_000_000, apiEndpoint: 'openai' },
+      { id: 'kimi-k3', contextWindow: 1_000_000, apiEndpoint: 'openai' },
+      // Preserve pinned selections without silently migrating them to a different model.
+      { id: 'sensenova-6.7-flash-lite', contextWindow: 256_000 }
+    ],
+    multimodal: {
+      multimodalModels: ['sensenova-6.8-flash-lite', 'kimi-k3', 'sensenova-6.7-flash-lite']
+    }
   },
   {
     id: 'volcengine',
@@ -621,12 +704,27 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
     // and OpenAI Responses at /api/v3/responses (the probe derives it from `openaiBaseUrl`). The same
     // model ids work on all three. No modelsListUrl: Ark's catalog also serves embedding, image
     // (Seedream), and video (Seedance) models alongside the chat ids, and the refresh has no
-    // modality filter — so the Doubao Seed chat catalog stays curated.
+    // modality filter — so the chat catalog stays curated.
     apiEndpoints: ['anthropic', 'openai', 'responses'],
     baseUrl: 'https://ark.cn-beijing.volces.com/api/compatible',
     openaiBaseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
     apiKeyUrl: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apikey',
+    // Official model cards and effort mappings (verified 2026-09-16):
+    // https://console.volcengine.com/ark/region:cn-beijing/model
+    // https://www.volcengine.com/docs/82379/1449737
     models: [
+      { id: 'doubao-seed-2-1-pro-260915', contextWindow: 1_024_000 },
+      {
+        id: 'deepseek-v4-1-flash-260910',
+        contextWindow: 1_024_000,
+        reasoningEffort: 'none-low-high-max'
+      },
+      {
+        id: 'glm-5-3-flash-260828',
+        contextWindow: 1_024_000,
+        reasoningEffort: 'low-high-max'
+      },
+      // Keep dated selections pinned; a catalog update must not replace an existing model.
       { id: 'doubao-seed-2-1-pro-260628', contextWindow: 256_000 },
       { id: 'doubao-seed-2-1-turbo-260628', contextWindow: 256_000 },
       { id: 'doubao-seed-2-0-pro-260215', contextWindow: 256_000 },
@@ -634,9 +732,12 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
       { id: 'doubao-seed-2-0-mini-260215', contextWindow: 256_000 },
       { id: 'doubao-seed-2-0-code-preview-260215', contextWindow: 256_000 }
     ],
-    // The Seed 2.x general models accept image input; the code-preview coding model is text-only.
+    // Explicit image-input support; the older code-preview coding model remains text-only.
     multimodal: {
       multimodalModels: [
+        'doubao-seed-2-1-pro-260915',
+        'deepseek-v4-1-flash-260910',
+        'glm-5-3-flash-260828',
         'doubao-seed-2-1-pro-260628',
         'doubao-seed-2-1-turbo-260628',
         'doubao-seed-2-0-pro-260215',
@@ -758,6 +859,12 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
     models: [
       { id: 'kimi-k2.7-code', contextWindow: 262_144 },
       {
+        id: 'grok-4.7',
+        contextWindow: 500_000,
+        apiEndpoint: 'responses',
+        reasoningEffort: 'low-medium-high-xhigh'
+      },
+      {
         id: 'grok-4.6',
         contextWindow: 500_000,
         apiEndpoint: 'responses',
@@ -780,6 +887,11 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
       { id: 'kimi-k3', contextWindow: 1_048_576 },
       { id: 'kimi-k2.6', contextWindow: 262_144 },
       { id: 'longcat-2.0', contextWindow: 1_000_000, reasoningEffort: 'none-high' },
+      {
+        id: 'deepseek-v4.1-flash',
+        contextWindow: 1_000_000,
+        reasoningEffort: 'low-high-max'
+      },
       { id: 'deepseek-v4-pro', contextWindow: 1_000_000, reasoningEffort: 'high-max' },
       {
         id: 'deepseek-v4-flash',
@@ -791,6 +903,8 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
         contextWindow: 1_000_000,
         reasoningEffort: 'none-high-max'
       },
+      { id: 'mimo-v2.6-flash', contextWindow: 1_048_576 },
+      { id: 'mimo-v2.6-pro', contextWindow: 1_048_576 },
       { id: 'mimo-v2.5', contextWindow: 1_000_000 },
       { id: 'mimo-v2.5-pro', contextWindow: 1_048_576 },
       {
@@ -798,6 +912,12 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
         contextWindow: 1_000_000,
         apiEndpoint: 'anthropic',
         reasoningEffort: 'none-high'
+      },
+      {
+        id: 'muse-spark-1.3-contributor',
+        contextWindow: 1_048_576,
+        apiEndpoint: 'responses',
+        reasoningEffort: 'minimal-low-medium-high'
       },
       {
         id: 'muse-spark-1.2-contributor',
@@ -812,6 +932,12 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
         reasoningEffort: 'none-high'
       },
       {
+        id: 'qwen3.8-flash',
+        contextWindow: 1_000_000,
+        apiEndpoint: 'anthropic',
+        reasoningEffort: 'low-medium-xhigh'
+      },
+      {
         id: 'qwen3.7-max',
         contextWindow: 1_000_000,
         apiEndpoint: 'anthropic',
@@ -823,21 +949,28 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
         apiEndpoint: 'anthropic',
         reasoningEffort: 'none-high'
       },
+      { id: 'hy4-preview', contextWindow: 1_024_000, reasoningEffort: 'none-high' },
       { id: 'hy3', contextWindow: 256_000, reasoningEffort: 'none-high' }
     ],
     multimodal: {
       multimodalModels: [
         'kimi-k2.7-code',
+        'grok-4.7',
         'grok-4.6',
         'gpt-5.6-luna',
         'glm-5.3-flash',
         'kimi-k3',
         'kimi-k2.6',
+        'deepseek-v4.1-flash',
         'deepseek-v4-flash-vision-exp',
+        'mimo-v2.6-flash',
+        'mimo-v2.6-pro',
         'mimo-v2.5',
         'mimo-v2.5-pro',
+        'muse-spark-1.3-contributor',
         'muse-spark-1.2-contributor',
         'qwen3.8-max',
+        'qwen3.8-flash',
         'qwen3.7-plus'
       ]
     }
@@ -849,10 +982,18 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
     apiEndpoints: ['openai'],
     baseUrl: 'https://opencode.ai/zen/v1',
     apiKeyUrl: 'https://opencode.ai/zen',
-    // Zen also mixes protocols. Exclude Google-native, temporary free, deprecated, and explicitly
-    // product-excluded models while preserving the existing Kimi default.
+    // Zen also mixes protocols. Exclude Google-native, deprecated, and explicitly
+    // product-excluded models while preserving the existing Kimi default. Legacy lower-tier
+    // models are not backfilled, and the transient limited-time free entries stay out (the
+    // two grandfathered free models at the tail predate that policy).
     models: [
       { id: 'kimi-k2.7-code', contextWindow: 262_144 },
+      {
+        id: 'gpt-6-astra',
+        contextWindow: 1_050_000,
+        apiEndpoint: 'responses',
+        reasoningEffort: 'standard-5'
+      },
       {
         id: 'gpt-5.6-sol',
         contextWindow: 1_050_000,
@@ -872,6 +1013,12 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
         reasoningEffort: 'none-low-medium-high-max'
       },
       {
+        id: 'claude-fable-5-1',
+        contextWindow: 1_000_000,
+        apiEndpoint: 'anthropic',
+        reasoningEffort: 'standard-5'
+      },
+      {
         id: 'claude-fable-5',
         contextWindow: 1_000_000,
         apiEndpoint: 'anthropic',
@@ -888,6 +1035,12 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
         contextWindow: 1_000_000,
         apiEndpoint: 'anthropic',
         reasoningEffort: 'standard-5'
+      },
+      {
+        id: 'grok-4.7',
+        contextWindow: 500_000,
+        apiEndpoint: 'responses',
+        reasoningEffort: 'low-medium-high-xhigh'
       },
       {
         id: 'grok-4.6',
@@ -1007,10 +1160,22 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
       },
       { id: 'grok-build-0.1', contextWindow: 256_000, apiEndpoint: 'responses' },
       {
+        id: 'muse-spark-1.3',
+        contextWindow: 1_048_576,
+        apiEndpoint: 'responses',
+        reasoningEffort: 'minimal-low-medium-high'
+      },
+      {
         id: 'muse-spark-1.2',
         contextWindow: 1_048_576,
         apiEndpoint: 'responses',
         reasoningEffort: 'minimal-low-medium-high'
+      },
+      {
+        id: 'qwen3.8-flash',
+        contextWindow: 1_000_000,
+        apiEndpoint: 'anthropic',
+        reasoningEffort: 'low-medium-xhigh'
       },
       {
         id: 'qwen3.7-max',
@@ -1032,21 +1197,35 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
       },
       { id: 'kimi-k3', contextWindow: 1_048_576 },
       { id: 'kimi-k2.6', contextWindow: 262_144, reasoningEffort: 'none-high' },
+      {
+        id: 'deepseek-v4.1-flash',
+        contextWindow: 1_000_000,
+        reasoningEffort: 'low-high-max'
+      },
       { id: 'deepseek-v4-flash', contextWindow: 1_000_000 },
       { id: 'deepseek-v4-pro', contextWindow: 1_000_000 },
       { id: 'minimax-m3', contextWindow: 512_000 },
+      { id: 'glm-5.3', contextWindow: 1_000_000, reasoningEffort: 'low-high-max' },
+      { id: 'glm-5.3-flash', contextWindow: 1_000_000, reasoningEffort: 'low-high-max' },
       { id: 'glm-5.2', contextWindow: 1_000_000, reasoningEffort: 'high-max' },
-      { id: 'glm-5.1', contextWindow: 204_800, reasoningEffort: 'none-high' }
+      { id: 'glm-5.1', contextWindow: 204_800, reasoningEffort: 'none-high' },
+      // Free Chat Completions models documented at https://opencode.ai/docs/zen/.
+      // Context and vision metadata: https://models.dev/api.json (opencode), checked 2026-09-13.
+      { id: 'big-pickle', contextWindow: 200_000, apiEndpoint: 'openai' },
+      { id: 'mimo-v2.5-free', contextWindow: 200_000, apiEndpoint: 'openai' }
     ],
     multimodal: {
       multimodalModels: [
         'kimi-k2.7-code',
+        'gpt-6-astra',
         'gpt-5.6-sol',
         'gpt-5.6-terra',
         'gpt-5.6-luna',
+        'claude-fable-5-1',
         'claude-fable-5',
         'claude-opus-5',
         'claude-sonnet-5',
+        'grok-4.7',
         'grok-4.6',
         'gpt-5.5',
         'gpt-5.5-pro',
@@ -1068,11 +1247,16 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
         'claude-haiku-4-5',
         'grok-4.5',
         'grok-build-0.1',
+        'muse-spark-1.3',
         'muse-spark-1.2',
+        'qwen3.8-flash',
         'qwen3.5-plus',
         'kimi-k3',
         'kimi-k2.6',
-        'minimax-m3'
+        'deepseek-v4.1-flash',
+        'minimax-m3',
+        'glm-5.3-flash',
+        'mimo-v2.5-free'
       ]
     }
   },
@@ -1197,6 +1381,19 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
         id: 'qwen/qwen3.7-max',
         contextWindow: 1_000_000,
         reasoningEffort: 'none-high'
+      },
+      // Free, tool-capable entries from https://openrouter.ai/api/v1/models (2026-09-13).
+      // Keep exact free IDs: appending :free to an arbitrary paid model does not make it available.
+      // Both also expose /api/v1/messages, so retain the gateway's dual-endpoint compatibility.
+      {
+        id: 'openrouter/free',
+        contextWindow: 200_000,
+        reasoningEffort: 'unsupported'
+      },
+      {
+        id: 'google/gemma-4-31b-it:free',
+        contextWindow: 262_144,
+        reasoningEffort: 'unsupported'
       }
     ],
     // OpenRouter's catalog is curated (no live refresh), and vision support is an unpredictable subset
@@ -1221,7 +1418,9 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
         'google/gemini-3.5-flash',
         'x-ai/grok-4.5',
         'moonshotai/kimi-k3',
-        'qwen/qwen3.7-max'
+        'qwen/qwen3.7-max',
+        'openrouter/free',
+        'google/gemma-4-31b-it:free'
       ]
     }
   }
@@ -1239,9 +1438,27 @@ export const isOfficialVendorId = (value: unknown): value is OfficialVendorId =>
 export const getOfficialVendor = (id: OfficialVendorId): OfficialVendor | undefined =>
   VENDORS_BY_ID.get(id)
 
-// Projects the structured bundled catalog into the string ids used by settings persistence and UI.
-export const getOfficialVendorModelIds = (id: OfficialVendorId): string[] =>
-  VENDORS_BY_ID.get(id)?.models.map((model) => model.id) ?? []
+// Resolve the catalog for the selected endpoint. A regional restriction takes precedence over
+// cached model discovery so changing regions cannot expose models served only by the old endpoint.
+export const getOfficialVendorModelIds = (
+  id: OfficialVendorId,
+  regionId?: string,
+  fetchedModels?: readonly string[]
+): string[] => {
+  const vendor = VENDORS_BY_ID.get(id)
+  if (!vendor) return []
+  const region =
+    vendor.regions?.find((candidate) => candidate.id === regionId) ?? vendor.regions?.[0]
+  // DeepSeek discovery omits still-routable legacy ids. Preserve the bundled names so
+  // pinned sessions remain usable, including settings cached before this compatibility rule.
+  if (id === 'deepseek' && fetchedModels?.length) {
+    return [...new Set([...fetchedModels, ...vendor.models.map((model) => model.id)])]
+  }
+  return [
+    ...(region?.modelIds ??
+      (fetchedModels?.length ? fetchedModels : vendor.models.map((model) => model.id)))
+  ]
+}
 
 // Resolves the bundled, model-specific effort capability. Unknown/live-fetched model ids use the
 // vendor default; a vendor without an explicit declaration keeps the product's standard five-level
@@ -1290,6 +1507,24 @@ export const resolveVendorOpenAiBaseUrl = (
   return region?.openaiBaseUrl
 }
 
+// Resolves a vendor's explicitly published native Responses API base, when it differs from the
+// OpenAI chat base. This is intentionally separate because DeepSeek's Responses API uses the origin
+// while its Chat Completions API uses `/v1`.
+export const resolveVendorResponsesBaseUrl = (
+  id: OfficialVendorId,
+  regionId?: string
+): string | undefined => {
+  const vendor = VENDORS_BY_ID.get(id)
+
+  if (!vendor) return undefined
+  if (vendor.responsesBaseUrl) return vendor.responsesBaseUrl
+
+  const regions = vendor.regions ?? []
+  const region = regions.find((candidate) => candidate.id === regionId) ?? regions[0]
+
+  return region?.responsesBaseUrl
+}
+
 // Resolves where the user gets an API key for a vendor, preferring the selected region's console and
 // falling back to the vendor-level one. Returns undefined for an unknown vendor or when none is set.
 export const resolveVendorApiKeyUrl = (
@@ -1333,8 +1568,8 @@ export const resolveVendorModelsUrl = (
 }
 
 // The default model for a freshly added vendor (first catalog entry).
-export const defaultVendorModel = (id: OfficialVendorId): string | undefined =>
-  VENDORS_BY_ID.get(id)?.models[0]?.id
+export const defaultVendorModel = (id: OfficialVendorId, regionId?: string): string | undefined =>
+  getOfficialVendorModelIds(id, regionId)[0]
 
 // The chat APIs a vendor speaks, defaulting to Anthropic /v1/messages when unset.
 export const resolveVendorApiEndpoints = (id: OfficialVendorId): ChatApiEndpoint[] => {

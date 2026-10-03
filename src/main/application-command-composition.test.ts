@@ -45,6 +45,35 @@ import { LocalFsService } from './local-fs/service'
 import type { ManagedPreviewResource, ManagedPreviewRangeResult } from '../shared/preview-resources'
 
 const EMPTY_OWNER = Object.freeze({})
+
+it('exposes bootstrap only to local Task callers without widening renderer management', async () => {
+  const bootstrap = vi.fn(async () => ({ ok: true }))
+  const composition = createApplicationCommandComposition({
+    ...dependencies(),
+    settingsCore: {
+      service: { bootstrap },
+      emitInstallEvent: vi.fn(),
+      snapshotCommits: { projectAfter: (pending: Promise<unknown>) => pending }
+    } as never
+  })
+  expect(composition.localWeb.commandNames()).not.toContain('settings:bootstrap')
+  expect(composition.remoteWeb.commandNames()).not.toContain('settings:bootstrap')
+  await expect(
+    composition.task.invoke('settings:bootstrap', {
+      ...invocation('remote'),
+      args: [{ action: 'runtime' }]
+    })
+  ).resolves.toEqual({ ok: false, code: 'invalid_request' })
+  expect(bootstrap).not.toHaveBeenCalled()
+  await expect(
+    composition.task.invoke('settings:bootstrap', {
+      ...invocation(),
+      args: [{ action: 'runtime' }]
+    })
+  ).resolves.toEqual({ ok: true })
+  expect(bootstrap).toHaveBeenCalledOnce()
+  composition.dispose()
+})
 const unexpectedCommand = defineApplicationCommand<'test:unexpected', readonly [], void>(
   'test:unexpected'
 )
@@ -75,6 +104,9 @@ const dependencies = (): ApplicationCommandCompositionDependencies =>
     } as unknown as ApplicationCommandCompositionDependencies['specialist'],
     memory: EMPTY_OWNER,
     literature: EMPTY_OWNER,
+    bookmarks: EMPTY_OWNER,
+    sessionReplay: EMPTY_OWNER,
+    pdfAnnotations: EMPTY_OWNER,
     dataContent: EMPTY_OWNER,
     host: EMPTY_OWNER
   }) as ApplicationCommandCompositionDependencies
@@ -208,6 +240,13 @@ describe('application command composition', () => {
       'acp:respond-elicitation',
       'acp:respond-permission',
       'acp:respond-plan',
+      'bookmarks:create',
+      'bookmarks:delete',
+      'bookmarks:list',
+      'bookmarks:resolve-pdf-source',
+      'bookmarks:update-note',
+      'lifecycle:claim-runtime-writer',
+      'literature:cancel-pdf-import',
       'literature:citation-styles',
       'literature:complete-metadata',
       'literature:export-record',
@@ -218,6 +257,7 @@ describe('application command composition', () => {
       'literature:import-pdf',
       'literature:import-records',
       'literature:jobs',
+      'literature:journals',
       'literature:lookup-metadata',
       'literature:screening',
       'literature:search',
@@ -232,6 +272,17 @@ describe('application command composition', () => {
       'memory:snapshot',
       'memory:update-category',
       'memory:update-entry',
+      'pdf-annotations:cancel-import',
+      'pdf-annotations:create',
+      'pdf-annotations:delete',
+      'pdf-annotations:import-native',
+      'pdf-annotations:list',
+      'pdf-annotations:update',
+      'pdf-structure:cancel',
+      'pdf-structure:clear-cache',
+      'pdf-structure:parse',
+      'pdf-structure:read-cached',
+      'pdf-structure:read-thumbnail',
       'projects:create',
       'projects:delete',
       'projects:get',
@@ -240,10 +291,24 @@ describe('application command composition', () => {
       'projects:retry-deletion-cleanup',
       'projects:update',
       'projects:update-archive',
+      'session-replay:get',
+      'session-replay:get-selection-snapshot',
+      'session-replay:list',
+      'session-replay:list-selection-snapshots',
+      'session-replay:save-selection-snapshot',
+      'session-replay:save-view',
+      'session-replay:unlink-session',
+      'sessions:cancel-diagnostics',
       'sessions:delete-session',
       'sessions:edit-details',
+      'sessions:export-diagnostics',
+      'sessions:export-package',
       'sessions:filter-pdf-context-candidates',
+      'sessions:fork',
+      'sessions:import-package',
+      'sessions:inspect-diagnostics',
       'sessions:link-pdf-context',
+      'sessions:package-operation',
       'sessions:set-delegation-policy',
       'sessions:unlink-pdf-context',
       'sessions:update-archive',
@@ -253,7 +318,8 @@ describe('application command composition', () => {
       'tags:set-assignment',
       'tags:snapshot',
       'tags:update',
-      'uploads:finalize-session'
+      'uploads:finalize-session',
+      'uploads:recover-draft'
     ])
   })
 
@@ -309,6 +375,10 @@ describe('application command composition', () => {
     const composition = createApplicationCommandComposition(dependencies())
 
     expect(composition.task.commandNames()).toEqual([
+      'settings:bootstrap',
+      'cli:install',
+      'settings:get-preflight',
+      'settings:list-skills',
       'settings:list-connectors',
       'settings:get-connector-detail',
       'settings:set-connector-enabled',
@@ -329,6 +399,8 @@ describe('application command composition', () => {
       'settings:set-agent-routing',
       'sessions:load-all',
       'sessions:save-session',
+      'sessions:bind-task-session',
+      'sessions:admit-task-turn',
       'sessions:stage-task-completion',
       'sessions:settle-task-completion',
       'sessions:fail-task-run',
@@ -340,6 +412,7 @@ describe('application command composition', () => {
       'reviewer:get-for-session',
       'reviewer:run',
       'artifacts:finalize-run',
+      'artifacts:resolve-version-descriptors',
       'preview-resources:acquire',
       'preview-resources:release'
     ])
@@ -356,58 +429,6 @@ describe('application command composition', () => {
     expect(composition).not.toHaveProperty('cli')
     expect(composition).not.toHaveProperty('localRpc')
     expect(composition).not.toHaveProperty('specialist')
-  })
-
-  it('late-binds the single Remote Access owner and fails closed around its lifetime', async () => {
-    const snapshot = Object.freeze({
-      canManage: true,
-      canManagePairing: true,
-      mode: 'off' as const,
-      enabled: false,
-      lifecycle: 'disabled' as const,
-      remoteIt: Object.freeze({ installed: false, loggedIn: false, registered: false }),
-      pendingRequests: Object.freeze([]),
-      trustedBrowsers: Object.freeze([])
-    })
-    const firstSnapshot = vi.fn(() => snapshot)
-    const firstOwner = {
-      snapshot: firstSnapshot,
-      probe: vi.fn(),
-      detect: vi.fn(),
-      setMode: vi.fn(),
-      disable: vi.fn(),
-      approve: vi.fn(),
-      reject: vi.fn(),
-      revoke: vi.fn()
-    }
-    const replacementSnapshot = vi.fn(() =>
-      Object.freeze({ ...snapshot, mode: 'remoteit' as const, enabled: true, lifecycle: 'running' })
-    )
-    const replacementOwner = { ...firstOwner, snapshot: replacementSnapshot }
-    const composition = createApplicationCommandComposition(dependencies())
-
-    await expect(
-      composition.remoteWeb.invoke('remote-access:get-snapshot', invocation('remote'))
-    ).rejects.toThrow('Remote Access command owner is not bound.')
-
-    composition.bindRemoteAccess(firstOwner as never)
-    await expect(
-      composition.remoteWeb.invoke('remote-access:get-snapshot', invocation('remote'))
-    ).resolves.toBe(snapshot)
-    expect(firstSnapshot).toHaveBeenCalledOnce()
-    expect(() => composition.bindRemoteAccess(replacementOwner as never)).toThrow(
-      'Remote Access command owner is already bound.'
-    )
-    expect(replacementSnapshot).not.toHaveBeenCalled()
-
-    composition.dispose()
-    composition.dispose()
-    expect(() => composition.bindRemoteAccess(firstOwner as never)).toThrow(
-      'Remote Access command owner slot is disposed.'
-    )
-    await expect(
-      composition.remoteWeb.invoke('remote-access:get-snapshot', invocation('remote'))
-    ).rejects.toThrow('Application command router is disposed.')
   })
 
   it('rejects declared commands that are missing from the installed router inventory', () => {
@@ -498,20 +519,10 @@ describe('application command composition', () => {
     ])
 
     const disposeFailureEvents: string[] = []
-    let disposedRemoteAccessHandler:
-      ((invocation: ApplicationInvocation<readonly unknown[]>) => unknown) | undefined
+
     installInstrumentedRouterFactory(disposeFailureEvents, {
       failUninstallAt: new Set([lastInstallationIndex, 3]),
-      failRouterDispose: true,
-      onRegisterGroup: (groupName, handlers) => {
-        if (groupName !== 'remote-access') return
-        disposedRemoteAccessHandler = (
-          handlers as Record<
-            string,
-            (invocation: ApplicationInvocation<readonly unknown[]>) => unknown
-          >
-        )['remote-access:get-snapshot']
-      }
+      failRouterDispose: true
     })
     const disposeFailure = createApplicationCommandComposition(source)
     let disposalFailure: unknown
@@ -533,25 +544,11 @@ describe('application command composition', () => {
       'router:dispose'
     ])
     expect(() => disposeFailure.dispose()).not.toThrow()
-    expect(() => disposedRemoteAccessHandler?.(invocation('remote'))).toThrow(
-      'Remote Access command owner slot is disposed.'
-    )
 
-    let remoteAccessHandler:
-      ((invocation: ApplicationInvocation<readonly unknown[]>) => unknown) | undefined
     const slotFailureEvents: string[] = []
     installInstrumentedRouterFactory(slotFailureEvents, {
       failCompleteAt: lastInstallationIndex,
-      failRouterDispose: true,
-      onRegisterGroup: (groupName, handlers) => {
-        if (groupName !== 'remote-access') return
-        remoteAccessHandler = (
-          handlers as Record<
-            string,
-            (invocation: ApplicationInvocation<readonly unknown[]>) => unknown
-          >
-        )['remote-access:get-snapshot']
-      }
+      failRouterDispose: true
     })
     let slotConstructionFailure: unknown
     try {
@@ -567,9 +564,6 @@ describe('application command composition', () => {
       ...uninstallEvents.slice(1),
       'router:dispose'
     ])
-    expect(() => remoteAccessHandler?.(invocation('remote'))).toThrow(
-      'Remote Access command owner slot is disposed.'
-    )
   })
 
   it('routes different narrow views through one shared command owner', async () => {
@@ -608,6 +602,33 @@ it('routes Task Connector reads to the existing Settings owner without adding We
   expect(listConnectors).toHaveBeenCalledOnce()
   expect(composition.localWeb.commandNames()).not.toContain('settings:test-custom-server')
   expect(composition.remoteWeb.commandNames()).not.toContain('settings:test-custom-server')
+  composition.dispose()
+})
+
+it('routes Task doctor prerequisites to the existing Settings owners', async () => {
+  const preflight = {
+    claudeReady: false,
+    opencodeReady: false,
+    codebuddyReady: false,
+    codexReady: true,
+    agentFrameworkId: 'codex',
+    agentReady: true,
+    activeProviderReady: true
+  }
+  const skills = [{ id: 'literature-review' }]
+  const getPreflight = vi.fn(async () => preflight)
+  const listSkills = vi.fn(async () => skills)
+  const composition = createApplicationCommandComposition({
+    ...dependencies(),
+    settingsCore: { service: { getPreflight, listSkills } } as never
+  })
+
+  await expect(composition.task.invoke('settings:get-preflight', invocation())).resolves.toEqual(
+    preflight
+  )
+  await expect(composition.task.invoke('settings:list-skills', invocation())).resolves.toEqual(
+    skills
+  )
   composition.dispose()
 })
 

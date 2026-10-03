@@ -1,0 +1,52 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { afterEach, expect, it } from 'vitest'
+
+import { createProjectDbClient } from '../projects/prisma-client'
+import { migrateApplicationDatabase } from './migration-service'
+
+let root: string | undefined
+let client: ReturnType<typeof createProjectDbClient> | undefined
+
+afterEach(async () => {
+  await client?.$disconnect()
+  if (root) await rm(root, { recursive: true, force: true })
+})
+
+it('installs the Bookmark table with durable ownership, JSON, and paging constraints', async () => {
+  root = await mkdtemp(join(tmpdir(), 'bookmarks-migration-'))
+  client = createProjectDbClient(root)
+  await migrateApplicationDatabase(client)
+  await client.$executeRawUnsafe('DROP TABLE "bookmarks"')
+  await client.$executeRawUnsafe(
+    'DELETE FROM "_open_science_migrations" WHERE id >= \'0042_bookmarks\''
+  )
+
+  await expect(
+    migrateApplicationDatabase(client, { databasePath: join(root, 'open-science.db') })
+  ).resolves.toMatchObject({
+    applied: [
+      '0042_bookmarks',
+      '0043_classification_usage',
+      '0044_pdf_annotations',
+      '0045_literature_smart_collections',
+      '0046_literature_smart_pause_run',
+      '0047_journal_attributes',
+      '0048_session_replay'
+    ]
+  })
+
+  const indexes = await client.$queryRawUnsafe<Array<{ name: string }>>(
+    'PRAGMA index_list("bookmarks")'
+  )
+  expect(indexes.map(({ name }) => name)).toEqual(
+    expect.arrayContaining([
+      'bookmarks_projectId_sessionId_createdAt_id_idx',
+      'bookmarks_projectId_sessionId_sourceKind_sourceId_idx'
+    ])
+  )
+  await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({ applied: [] })
+  expect(await client.$queryRawUnsafe('PRAGMA foreign_key_check')).toEqual([])
+})

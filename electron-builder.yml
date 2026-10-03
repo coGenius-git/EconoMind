@@ -1,12 +1,15 @@
+# Modified by EconoMind contributors: branding, attribution and independent distribution.
+# Based on AIPOCH Open Science; see LICENSE and NOTICE.
 appId: com.economind.app
 productName: EconoMind
-copyright: Copyright © 2026 EconoMind
+copyright: Copyright © 2026 AIPOCH; modifications © 2026 EconoMind contributors
 directories:
   buildResources: build
 # Apply a valid deep ad-hoc signature on macOS (no Developer ID available). Without this,
 # electron-builder ships an incompletely-signed bundle that Gatekeeper flags as "damaged"
 # on downloaded/quarantined copies, so the app won't launch on other machines. See the hook.
 afterPack: build/adhoc-sign.cjs
+afterSign: build/sign-windows.cjs
 files:
   # Positive allowlist: never sweep local databases, user progress, fixtures or agent state
   # from the repository root into a distributable. Production dependencies are collected by builder.
@@ -17,6 +20,9 @@ files:
   - 'resources/**'
   - 'package.json'
   - 'LICENSE'
+  - 'NOTICE'
+  - 'UPSTREAM.md'
+  - 'docs/OPEN_SOURCE.md'
   - '!resources/bin{,/**/*}'
   - '!resources/**/*.test.*'
   - '!resources/**/test_*.py'
@@ -32,6 +38,10 @@ files:
   - '!**/.claude{,/**/*}'
   - '!**/.codex{,/**/*}'
   - '!**/.env{,.*}'
+  - '!**/{.worktree,.worktrees,.codegraph,.agents}{,/**/*}'
+  # Runtime source builds, diagnostic traces and internal plans are local-only artifacts.
+  - '!tmp{,/**/*}'
+  - '!docs/internal{,/**/*}'
   - '!src/*'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
@@ -57,6 +67,7 @@ files:
   - '!node_modules/@aipoch/notebook-network-sandbox{,/**/*}'
   - '!node_modules/@aipoch/safe-file-publisher-native/{src,test,tests}/**'
   - '!node_modules/@aipoch/safe-file-publisher-native/build/**/*.{pdb,lib,exp,iobj,ipdb,obj,tlog,vcxproj,filters}'
+  - '!packages/notebook-network-sandbox{,/**/*}'
   # pdfjs-dist ships several redundant copies. The main process only loads `legacy/build` (text
   # extraction) and needs `cmaps`/`standard_fonts` for CJK/CID PDFs; the renderer bundles its own
   # copy via Vite. Drop the modern build, viewer, image decoders, TS types, and source maps
@@ -66,10 +77,21 @@ files:
   - '!node_modules/pdfjs-dist/image_decoders{,/**/*}'
   - '!node_modules/pdfjs-dist/types{,/**/*}'
   - '!node_modules/pdfjs-dist/**/*.map'
+  # Micromamba is copied from this staging tree to the resources root by the platform-specific
+  # extraResources entries below. Keep the staging copies out of app.asar and avoid shipping a
+  # second, unused copy under app.asar.unpacked/resources/bin.
+  - '!resources/bin{,/**/*}'
 asarUnpack:
   - resources/**
+  - '!resources/bin{,/**/*}'
+  - node_modules/@aipoch/credential-identity-probe-native/build/Release/credential_*
+  - node_modules/@aipoch/process-tree-native/build/Release/*.node
   - node_modules/@aipoch/safe-file-publisher-native/build/Release/*.node
   # sharp loads its platform N-API binding and libvips shared libraries by physical path.
+  - node_modules/pdfjs-dist/**
+  - node_modules/@napi-rs/**
+  - node_modules/detect-libc/**
+  - node_modules/semver/**
   - node_modules/sharp/**
   - node_modules/@img/**
   # The ACP agent runs as a spawned child process, so its entry must live outside the asar.
@@ -83,6 +105,18 @@ asarUnpack:
 # The micromamba binary is added per-platform below (mac/win/linux extraResources), not here, so
 # the two extraResources lists don't collide.
 extraResources:
+  # Keep the project license readable outside app.asar on every platform.
+  - from: LICENSE
+    to: LICENSE.txt
+  - from: NOTICE
+    to: NOTICE.txt
+  - from: UPSTREAM.md
+    to: UPSTREAM.md
+  - from: docs/OPEN_SOURCE.md
+    to: OPEN_SOURCE.md
+  # Keep the copied third-party provider icon paths' MIT notice readable in every packaged app.
+  - from: src/renderer/src/assets/provider-icons/LobeHub-icons-LICENSE
+    to: LobeHub-icons-LICENSE
   - from: node_modules/.prisma
     to: node_modules/.prisma
   - from: node_modules/@prisma/client
@@ -100,10 +134,19 @@ extraResources:
       - '*.d.ts'
       - 'LICENSE'
       - 'package.json'
-# Windows: an unsigned NSIS installer. SmartScreen shows a bypassable "unknown publisher" prompt.
-# The afterPack ad-hoc-sign hook is a no-op off macOS, so it is safe on this target.
+# Windows: stable releases use Azure Artifact Signing; nightly and other builds remain unsigned.
+# The afterSign hook supplements missing bundled PE signatures for Store submissions after
+# electron-builder edits/signs the launcher. Existing helper/vendor signatures are preserved.
 win:
   executableName: economind
+  # Windows ProgID is a persisted association identity; other platforms use a display name.
+  fileAssociations:
+    - ext: science
+      name: EconoMind Session package
+      description: EconoMind Session package
+      mimeType: application/x-open-science-session
+      role: Viewer
+      rank: Default
   icon: build/icon.ico
   artifactName: economind-${name}-${version}-win-${arch}.${ext}
   # AppContainer profiles and firewall rules require a product uninstaller, so Windows ships only
@@ -125,6 +168,8 @@ win:
       to: windows-notebook-sandbox-uninstall.ps1
     - from: packages/notebook-network-sandbox/vendor/windows/${arch}/notebook-appcontainer-host.exe
       to: notebook-network-sandbox/windows/${arch}/notebook-appcontainer-host.exe
+    - from: packages/notebook-network-sandbox/vendor/wsl2/manifest.json
+      to: notebook-network-sandbox/wsl2/manifest.json
 nsis:
   artifactName: economind-${name}-${version}-win-${arch}-setup.${ext}
   shortcutName: ${productName}
@@ -136,8 +181,17 @@ nsis:
   perMachine: false
   allowElevation: false
   allowToChangeInstallationDirectory: true
-  include: build/installer.nsh
+  license: LICENSE
+  include: build/installer-license.nsh
 mac:
+  # Windows ProgID is a persisted association identity; other platforms use a display name.
+  fileAssociations:
+    - ext: science
+      name: EconoMind Session package
+      description: EconoMind Session package
+      mimeType: application/x-open-science-session
+      role: Viewer
+      rank: Default
   # Compile the Icon Composer package into the app bundle (Assets.car + an ICNS fallback for
   # pre-Tahoe macOS). This is intentionally separate from dmg.icon below: the mounted installer
   # volume still uses the legacy, explicitly-designed ICNS artwork.
@@ -149,12 +203,17 @@ mac:
   minimumSystemVersion: '12.0.0'
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
+    # Electron locates its Helper bundles using this internal name. Keep it aligned with productName.
     CFBundleName: EconoMind
     CFBundleDisplayName: EconoMind
     NSCameraUsageDescription: Application requests access to the device's camera.
     NSMicrophoneUsageDescription: Application requests access to the device's microphone.
-    NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
-    NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+    NSDesktopFolderUsageDescription: EconoMind needs access to Desktop files to browse, open, and save your research files.
+    NSDocumentsFolderUsageDescription: EconoMind needs access to Documents files to browse, open, and save your research files.
+    NSDownloadsFolderUsageDescription: EconoMind needs access to Downloads files to browse, open, and save your research files.
+    NSNetworkVolumesUsageDescription: EconoMind needs access to network volumes to browse, open, and save your research files.
+    NSRemovableVolumesUsageDescription: EconoMind needs access to removable volumes to browse, open, and save your research files.
+    NSLocalNetworkUsageDescription: EconoMind needs local network access to connect to compute hosts and services you configure.
   notarize: false
   extraResources:
     # Ship the ad-hoc-signed micromamba mach-O at Contents/Resources/micromamba, where
@@ -163,6 +222,23 @@ mac:
     - from: resources/bin/mac/${arch}/micromamba
       to: micromamba
 dmg:
+  title: EconoMind
+  background: build/dmg-background.png
+  iconSize: 88
+  iconTextSize: 12
+  contents:
+    - x: 130
+      y: 286
+      name: EconoMind.app
+    - x: 530
+      y: 286
+      type: link
+      path: /Applications
+    - x: 530
+      y: 75
+      type: file
+      path: LICENSE
+      name: LICENSE.txt
   # The DMG volume icon does not consume the app's Icon Composer asset catalog. Keep the existing
   # ICNS dedicated to the mounted disk image instead of electron-builder's generated app fallback.
   icon: build/icon.icns
@@ -171,6 +247,14 @@ dmg:
   sign: true
   artifactName: economind-${name}-${version}-mac-${arch}.${ext}
 linux:
+  # Windows ProgID is a persisted association identity; other platforms use a display name.
+  fileAssociations:
+    - ext: science
+      name: EconoMind Session package
+      description: EconoMind Session package
+      mimeType: application/x-open-science-session
+      role: Viewer
+      rank: Default
   # Keep the installed launcher filename aligned with Electron's Linux app_id/WM_CLASS so desktop
   # environments associate urgency requests with the existing dock/taskbar entry.
   syncDesktopName: true
@@ -179,16 +263,23 @@ linux:
   target:
     - AppImage
     - deb
-  maintainer: aipoch
+  maintainer: EconoMind contributors
   category: Utility
   extraResources:
     # Staged per-arch micromamba binary, copied to the resources root (Task 2's resolveMicromamba
     # looks for it there via process.resourcesPath).
     - from: resources/bin/linux/${arch}/micromamba
       to: micromamba
+    # Debian registers this CLI entry; AppImage retains its explicit user launcher workflow.
+    - from: build/deb-cli-launcher
+      to: open-science-cli
 appImage:
   artifactName: economind-${name}-${version}-linux-${arch}.${ext}
 deb:
+  fpm:
+    - build/deb-copyright=/usr/share/doc/economind/copyright
+  afterInstall: build/deb-after-install.tpl
+  afterRemove: build/deb-after-remove.tpl
   artifactName: economind-${name}_${version}_${arch}.${ext}
   depends:
     - libgtk-3-0
@@ -202,17 +293,8 @@ deb:
     - libsecret-1-0
     - bubblewrap
 npmRebuild: false
-# electron-updater feed. Win/Linux/macOS auto-update reads app-update.yml (generated from this block)
-# and fetches its feed from <url>. Win/Linux use the default `latest` channel (latest.yml /
-# latest-linux.yml). macOS builds override the channel to the arch at build time (see build.yml), so
-# each arch polls its own `${arch}-mac.yml` — arm64 and x64 build on separate runners and would
-# otherwise collide on one latest-mac.yml. Mac in-place update needs a Developer ID signature (now
-# configured) and the feed is regenerated post-staple in notarize-mac.yml. The GitHub Release remains
-# the human-facing download source, populated by release.yml — electron-builder runs with --publish
-# never, so this block only shapes app-update.yml + the feed files, it does not upload anything.
-publish:
-  provider: generic
-  url: https://statics.aipoch.com/open-science/app/stable
-  channel: latest
+# EconoMind has no independent update feed configured. Do not install upstream binaries
+# over this derivative. Configure a separately verified EconoMind feed before a future release.
+publish: null
 electronDownload:
   mirror: https://npmmirror.com/mirrors/electron/

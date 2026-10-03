@@ -2,9 +2,9 @@ import { describe, it, expect, vi } from 'vitest'
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { ConnectorService } from './service'
 import { ParserEngine } from './engine'
-import { McpClientManager, McpToolCallError } from './mcp-client-manager'
+import { McpClientManager, McpToolCallError } from './custom-mcp'
 import type { SpecialistView } from '../../shared/specialist'
-import type { CustomMcpServerConfig } from './mcp-client-manager'
+import type { CustomMcpServerConfig } from './custom-mcp'
 
 const internal = { origin: 'internal' as const }
 
@@ -12,13 +12,98 @@ const jsonRes = (body: unknown): Response =>
   ({ ok: true, status: 200, json: async () => body }) as Response
 
 describe('ConnectorService', () => {
-  it('parks an OpenAlex call for credential recovery and resumes the exact call after save', async () => {
+  it('routes literature through enablement and tool policy without affecting datasets', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        jsonRes({ status: 'ok', message: { DOI: '10.1038/nature12968', 'updated-by': [] } })
+      )
+    const settings = {
+      enabledIds: [],
+      autoAllowIds: [],
+      disabledConnectorIds: [] as string[],
+      blockedToolIds: [] as string[]
+    }
+    const svc = new ConnectorService({
+      engine: new ParserEngine({ fetchImpl }),
+      getConnectors: () => settings,
+      resolveApiKey: () => undefined
+    })
+    const args = { doi: '10.1038/nature12968' }
+    await expect(
+      svc.call('literature', 'crossref_get_updates', args, internal)
+    ).resolves.toMatchObject({
+      updated_by: []
+    })
+    settings.blockedToolIds.push('literature/crossref_get_updates')
+    await expect(svc.call('literature', 'crossref_get_updates', args, internal)).rejects.toThrow(
+      'tool blocked by policy: literature/crossref_get_updates'
+    )
+    settings.disabledConnectorIds.push('literature')
+    await expect(svc.call('literature', 'crossref_get_updates', args, internal)).rejects.toThrow(
+      /disabled/
+    )
+    expect(svc.isEnabled('zenodo')).toBe(true)
+    expect(fetchImpl).toHaveBeenCalledOnce()
+  })
+  it('routes new public literature tools without OpenAlex credentials and respects existing tool blocks', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        jsonRes({ status: 'ok', message: { DOI: '10.1038/nature12968', 'updated-by': [] } })
+      )
+    const settings = {
+      enabledIds: [] as string[],
+      autoAllowIds: [] as string[],
+      blockedToolIds: [] as string[]
+    }
+    const requestCredential = vi.fn()
+    const svc = new ConnectorService({
+      engine: new ParserEngine({ fetchImpl }),
+      getConnectors: () => settings,
+      resolveApiKey: () => undefined,
+      requestCredential
+    })
+    await expect(
+      svc.call('literature', 'crossref_get_updates', { doi: '10.1038/nature12968' }, internal)
+    ).resolves.toMatchObject({ updated_by: [] })
+    expect(requestCredential).not.toHaveBeenCalled()
+    settings.blockedToolIds.push('literature/crossref_get_updates')
+    await expect(
+      svc.call('literature', 'crossref_get_updates', { doi: '10.1038/nature12968' }, internal)
+    ).rejects.toThrow('tool blocked by policy: literature/crossref_get_updates')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs OpenAlex anonymously without opening a credential request', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonRes({ meta: { count: 0 }, results: [] }))
+    const requestCredential = vi.fn()
+    const svc = new ConnectorService({
+      engine: new ParserEngine({ fetchImpl }),
+      getConnectors: () => ({ enabledIds: [], autoAllowIds: [] }),
+      resolveApiKey: () => undefined,
+      requestCredential
+    })
+
+    await expect(
+      svc.call('literature', 'openalex_search_works', { query: 'CRISPR', max_records: 1 }, internal)
+    ).resolves.toMatchObject({ n_records_returned: 0 })
+    expect(requestCredential).not.toHaveBeenCalled()
+    expect(new URL(String(fetchImpl.mock.calls[0][0])).searchParams.has('api_key')).toBe(false)
+  })
+
+  it('requests a key after an anonymous rate limit and retries the exact call', async () => {
     let connectors = {
       enabledIds: [] as string[],
       autoAllowIds: [] as string[],
       openAlexApiKeyRef: undefined as string | undefined
     }
-    const fetchImpl = vi.fn().mockResolvedValue(jsonRes({ meta: { count: 0 }, results: [] }))
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
+      .mockResolvedValueOnce(jsonRes({ meta: { count: 0 }, results: [] }))
     const requestCredential = vi.fn(async () => {
       connectors = { ...connectors, openAlexApiKeyRef: 'encrypted-ref' }
       return true
@@ -47,14 +132,19 @@ describe('ConnectorService', () => {
       },
       undefined
     )
-    expect(fetchImpl).toHaveBeenCalledOnce()
-    expect(new URL(String(fetchImpl.mock.calls[0][0])).searchParams.get('api_key')).toBe(
+    expect(fetchImpl).toHaveBeenCalledTimes(4)
+    expect(new URL(String(fetchImpl.mock.calls[0][0])).searchParams.has('api_key')).toBe(false)
+    expect(new URL(String(fetchImpl.mock.calls[3][0])).searchParams.get('api_key')).toBe(
       'OPENALEX_KEY'
     )
   })
 
-  it('does not dispatch OpenAlex when credential recovery is declined', async () => {
-    const fetchImpl = vi.fn()
+  it('keeps the rate-limit error when key recovery is declined', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
     const svc = new ConnectorService({
       engine: new ParserEngine({ fetchImpl }),
       getConnectors: () => ({ enabledIds: [], autoAllowIds: [] }),
@@ -64,8 +154,28 @@ describe('ConnectorService', () => {
 
     await expect(
       svc.call('literature', 'openalex_search_works', { query: 'CRISPR', max_records: 1 }, internal)
-    ).rejects.toThrow(/credential_required/)
-    expect(fetchImpl).not.toHaveBeenCalled()
+    ).rejects.toThrow(/HTTP 429/)
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not replace a configured key after its rate limit is exhausted', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
+    const requestCredential = vi.fn()
+    const svc = new ConnectorService({
+      engine: new ParserEngine({ fetchImpl }),
+      getConnectors: () => ({ enabledIds: [], autoAllowIds: [], openAlexApiKeyRef: 'ref' }),
+      resolveApiKey: () => 'OPENALEX_KEY',
+      requestCredential
+    })
+
+    await expect(
+      svc.call('literature', 'openalex_search_works', { query: 'CRISPR', max_records: 1 }, internal)
+    ).rejects.toThrow(/HTTP 429/)
+    expect(requestCredential).not.toHaveBeenCalled()
   })
 
   it('does not dispatch OpenAlex when the tool is blocked during credential recovery', async () => {
@@ -76,7 +186,11 @@ describe('ConnectorService', () => {
       openAlexApiKeyRef: undefined as string | undefined
     }
     let settleCredential: ((configured: boolean) => void) | undefined
-    const fetchImpl = vi.fn()
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
     const requestCredential = vi.fn(
       () =>
         new Promise<boolean>((resolve) => {
@@ -97,7 +211,7 @@ describe('ConnectorService', () => {
       { query: 'CRISPR', max_records: 1 },
       internal
     )
-    await vi.waitFor(() => expect(requestCredential).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(requestCredential).toHaveBeenCalledOnce(), { timeout: 3_000 })
     connectors = {
       ...connectors,
       blockedToolIds: ['literature/openalex_search_works'],
@@ -106,7 +220,7 @@ describe('ConnectorService', () => {
     settleCredential?.(true)
 
     await expect(call).rejects.toThrow(/blocked by policy/)
-    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
   })
 
   it('does not dispatch OpenAlex when the connector is disabled during credential recovery', async () => {
@@ -117,7 +231,11 @@ describe('ConnectorService', () => {
       openAlexApiKeyRef: undefined as string | undefined
     }
     let settleCredential: ((configured: boolean) => void) | undefined
-    const fetchImpl = vi.fn()
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
     const requestCredential = vi.fn(
       () =>
         new Promise<boolean>((resolve) => {
@@ -138,7 +256,7 @@ describe('ConnectorService', () => {
       { query: 'CRISPR', max_records: 1 },
       internal
     )
-    await vi.waitFor(() => expect(requestCredential).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(requestCredential).toHaveBeenCalledOnce(), { timeout: 3_000 })
     connectors = {
       ...connectors,
       disabledConnectorIds: ['literature'],
@@ -147,7 +265,7 @@ describe('ConnectorService', () => {
     settleCredential?.(true)
 
     await expect(call).rejects.toThrow(/disabled/)
-    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
   })
 
   it('preserves a satisfied Once approval across credential recovery', async () => {
@@ -1670,6 +1788,109 @@ describe('ConnectorService', () => {
       expect(onCustomServerAvailabilityChanged).toHaveBeenCalledWith('oauth-1', 'unauthenticated')
     })
 
+    it.each([
+      { transport: 'stdio' as const, command: '' },
+      { transport: 'stdio' as const, command: '  ' },
+      { transport: 'streamable_http' as const, url: '' }
+    ])('explains incomplete configuration before external discovery: %j', async (endpoint) => {
+      const call = vi.fn()
+      const mcpClientManager = manager(call, ['lookup'])
+      const svc = new ConnectorService({
+        mcpClientManager,
+        getConnectors: () => ({
+          enabledIds: [],
+          autoAllowIds: [],
+          customMcpServers: [
+            {
+              id: 'incomplete',
+              name: 'incomplete',
+              displayName: 'Incomplete',
+              enabled: true,
+              ...endpoint
+            }
+          ]
+        }),
+        resolveApiKey: () => undefined
+      })
+      await expect(svc.call('incomplete', 'lookup', {}, internal)).rejects.toThrow(
+        'set the command or URL'
+      )
+      expect(mcpClientManager.listTools).not.toHaveBeenCalled()
+      expect(call).not.toHaveBeenCalled()
+    })
+
+    it('preserves identifiers and tail outcomes while redacting credentials and marking truncation', async () => {
+      const call = vi
+        .fn()
+        .mockRejectedValue(
+          new McpToolCallError(
+            `Job 123 submitted. RAW_ENV_SECRET RAW_HEADER_SECRET ${'detail '.repeat(500)}Job 123 outcome unconfirmed; do not resubmit.`
+          )
+        )
+      const svc = new ConnectorService({
+        mcpClientManager: manager(call, ['lookup']),
+        getConnectors: () => ({
+          enabledIds: [],
+          autoAllowIds: [],
+          customMcpServers: [
+            {
+              id: 'bounded',
+              name: 'bounded',
+              displayName: 'Bounded',
+              transport: 'stdio',
+              command: 'example-mcp',
+              enabled: true,
+              env: { DEBUG: '1', API_KEY: 'RAW_ENV_SECRET' },
+              headers: { 'X-API-Key': 'RAW_HEADER_SECRET', 'X-Version': '2' }
+            }
+          ]
+        }),
+        resolveApiKey: () => undefined
+      })
+      const error = await svc.call('bounded', 'lookup', {}, internal).catch((error) => error)
+      if (!(error instanceof Error)) throw new Error('Expected a Connector failure')
+      expect(error.message).toContain('Job 123 submitted')
+      expect(error.message).toContain('Job 123 outcome unconfirmed; do not resubmit')
+      expect(error.message).toContain('[diagnostic truncated]')
+      expect(error.message).not.toContain('RAW_ENV_SECRET')
+      expect(error.message).not.toContain('RAW_HEADER_SECRET')
+      expect(error.message.length).toBeLessThan(2200)
+    })
+
+    it('retains a business diagnosis without declaring authentication failure or a disconnect', async () => {
+      const call = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new McpToolCallError('403 Forbidden: resource outside allowed collection.')
+        )
+        .mockResolvedValueOnce({ ok: true })
+      const svc = new ConnectorService({
+        mcpClientManager: manager(call, ['lookup']),
+        getConnectors: () => ({
+          enabledIds: [],
+          autoAllowIds: [],
+          customMcpServers: [
+            {
+              id: 'business',
+              name: 'business',
+              displayName: 'Business',
+              transport: 'stdio',
+              command: 'business-mcp',
+              enabled: true
+            }
+          ]
+        }),
+        resolveApiKey: () => undefined
+      })
+      const error = await svc.call('business', 'lookup', {}, internal).catch((error) => error)
+      if (!(error instanceof Error)) throw new Error('Expected Connector tool failure')
+      expect(error.message).toContain('connector_tool_error')
+      expect(error.message).toContain('resource outside allowed collection')
+      expect(error.message).not.toContain('connector_unauthenticated')
+      expect(error.message).not.toContain('unavailable')
+      await expect(svc.call('business', 'lookup', {}, internal)).resolves.toEqual({ ok: true })
+    })
+
     it('keeps a connector-managed authentication tool reachable after a sign-in error', async () => {
       const call = vi
         .fn()
@@ -1695,7 +1916,7 @@ describe('ConnectorService', () => {
       })
 
       await expect(svc.call('content-service', 'status', {}, internal)).rejects.toThrow(
-        'connector_unauthenticated'
+        'this Connector’s loaded Skill'
       )
       await expect(svc.call('content-service', 'login', {}, internal)).resolves.toEqual({
         authenticated: true
@@ -1983,8 +2204,9 @@ describe('ConnectorService specialist capability gate', () => {
     currentConnectors = { ...currentConnectors, openAlexApiKeyRef: undefined }
     await expect(
       svc.call('literature', 'openalex_search_works', { query: 'RNA', max_records: 1 }, context)
-    ).rejects.toThrow(/credential_required/)
-    expect(fetchImpl).toHaveBeenCalledOnce()
+    ).resolves.toMatchObject({ n_records_returned: 0 })
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(new URL(String(fetchImpl.mock.calls[1][0])).searchParams.has('api_key')).toBe(false)
   })
 
   it.each([
@@ -2008,7 +2230,11 @@ describe('ConnectorService specialist capability gate', () => {
       }
       let current: SpecialistView | undefined = specialist()
       let settleCredential: ((configured: boolean) => void) | undefined
-      const fetchImpl = vi.fn()
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(new Response('{}', { status: 429 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 429 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 429 }))
       const requestCredential = vi.fn(
         () =>
           new Promise<boolean>((resolve) => {
@@ -2034,13 +2260,13 @@ describe('ConnectorService specialist capability gate', () => {
         }
       )
 
-      await vi.waitFor(() => expect(requestCredential).toHaveBeenCalledOnce())
+      await vi.waitFor(() => expect(requestCredential).toHaveBeenCalledOnce(), { timeout: 3_000 })
       current = revokedProfile
       connectors = { ...connectors, openAlexApiKeyRef: 'encrypted-ref' }
       settleCredential?.(true)
 
       await expect(call).rejects.toThrow(expectedError)
-      expect(fetchImpl).not.toHaveBeenCalled()
+      expect(fetchImpl).toHaveBeenCalledTimes(3)
     }
   )
 
@@ -2061,7 +2287,11 @@ describe('ConnectorService specialist capability gate', () => {
             settleAccessRecheck = resolve
           })
       )
-    const fetchImpl = vi.fn()
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 429 }))
     const svc = new ConnectorService({
       engine: new ParserEngine({ fetchImpl }),
       getConnectors: () => connectors,
@@ -2084,12 +2314,14 @@ describe('ConnectorService specialist capability gate', () => {
       }
     )
 
-    await vi.waitFor(() => expect(resolveSpecialistProfile).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(resolveSpecialistProfile).toHaveBeenCalledTimes(2), {
+      timeout: 3_000
+    })
     connectors = { ...connectors, openAlexApiKeyRef: undefined }
     settleAccessRecheck?.(current)
 
-    await expect(call).rejects.toThrow(/credential_required/)
-    expect(fetchImpl).not.toHaveBeenCalled()
+    await expect(call).rejects.toThrow(/HTTP 429/)
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
   })
 
   it('keeps Main and Specialist connector scopes independent and enforces both modes before dispatch', async () => {

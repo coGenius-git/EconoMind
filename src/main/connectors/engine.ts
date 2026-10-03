@@ -14,15 +14,7 @@ const DEFAULT_BACKOFF_MS = 400
 
 // Some public APIs (e.g. AlphaFold EBI) reject requests without a User-Agent; send a stable one.
 const USER_AGENT =
-  'Mozilla/5.0 (compatible; OpenScience/1.0; +https://github.com/aipoch/open-science)'
-
-// Builds the NCBI E-utilities etiquette query suffix; empty when unset (calls still work).
-export function ncbiEtiquette(credentials: ConnectorCredentials): string {
-  const parts: string[] = []
-  if (credentials.ncbiEmail) parts.push(`email=${encodeURIComponent(credentials.ncbiEmail)}`)
-  if (credentials.ncbiApiKey) parts.push(`api_key=${encodeURIComponent(credentials.ncbiApiKey)}`)
-  return parts.length ? `&${parts.join('&')}` : ''
-}
+  'Mozilla/5.0 (compatible; EconoMind/1.0; +https://github.com/aipoch/open-science)'
 
 // Strips credential query params (NCBI email/api_key) from a URL before it can land in an error
 // message or log. Falls back to the raw string if it doesn't parse as a URL.
@@ -34,6 +26,16 @@ function redactUrl(url: string): string {
     return parsed.toString()
   } catch {
     return url
+  }
+}
+
+export class ConnectorHttpError extends Error {
+  override readonly name = 'ConnectorHttpError'
+  readonly status: number
+
+  constructor(status: number, url: string, suffix = '') {
+    super(`HTTP ${status} for ${redactUrl(url)}.${suffix}`)
+    this.status = status
   }
 }
 
@@ -154,7 +156,9 @@ export class ParserEngine {
     const doFetch = async (
       url: string,
       accept: string,
-      init?: RequestInit
+      init?: RequestInit,
+      retries = this.retries,
+      allowHttpStatuses: readonly number[] = []
     ): Promise<{ response: Response; bodyText?: string }> => {
       for (let attempt = 0; ; attempt++) {
         signal.throwIfAborted()
@@ -181,7 +185,7 @@ export class ParserEngine {
             headers: { accept, 'user-agent': USER_AGENT, ...init?.headers },
             signal: requestSignal
           })
-          if (res.ok && res.body) {
+          if ((res.ok || allowHttpStatuses.includes(res.status)) && res.body) {
             const reader = res.body.getReader()
             // Native fetch observes abort too; explicitly cancel injected/independent streams.
             const cancelReader = (): void => {
@@ -237,14 +241,14 @@ export class ParserEngine {
             throw new ConnectorRequestTimeoutError(url, this.timeoutMs, attempt + 1)
           }
           // Immediate network failures may be transient, so retry them within the bounded budget.
-          if (attempt < this.retries) {
+          if (attempt < retries) {
             await abortableDelay(connectorRetryDelay(attempt, null, this.backoffMs), signal)
             continue
           }
           throw failure
         }
         if (!res) throw new Error(`No response for ${redactUrl(url)}`)
-        if (res.ok) {
+        if (res.ok || allowHttpStatuses.includes(res.status)) {
           signal?.throwIfAborted()
           return { response: res, ...(bodyText !== undefined ? { bodyText } : {}) }
         }
@@ -253,7 +257,7 @@ export class ParserEngine {
         const retryAfter = res.headers?.get?.('retry-after') ?? null
         const delay = retryable ? connectorRetryDelay(attempt, retryAfter, this.backoffMs) : 0
         const insufficientBudget = delay >= deadline - Date.now()
-        if (attempt < this.retries && retryable && !(retryAfter && insufficientBudget)) {
+        if (attempt < retries && retryable && !(retryAfter && insufficientBudget)) {
           await abortableDelay(delay, signal)
           continue
         }
@@ -261,8 +265,31 @@ export class ParserEngine {
           retryable && retryAfter
             ? ` Retry after ${Math.ceil(delay / 1_000)}s.${insufficientBudget ? ' The remaining call budget cannot accommodate this wait.' : ''}`
             : ''
-        throw new Error(`HTTP ${res.status} for ${redactUrl(url)}.${retryHint}`)
+        throw new ConnectorHttpError(res.status, url, retryHint)
       }
+    }
+    const postFormText = async (url: string, body: FormData): Promise<string> => {
+      // Native fetch supplies the multipart boundary. Do not resubmit a job after a lost reply.
+      const { response, bodyText } = await doFetch(
+        url,
+        'application/json',
+        { method: 'POST', body },
+        0
+      )
+      return bodyText === undefined ? response.text() : bodyText
+    }
+    const postUrlEncodedText = async (url: string, body: URLSearchParams): Promise<string> => {
+      const { response, bodyText } = await doFetch(
+        url,
+        'application/json',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body
+        },
+        0
+      )
+      return bodyText === undefined ? response.text() : bodyText
     }
     return {
       ...(signal ? { signal } : {}),
@@ -271,23 +298,51 @@ export class ParserEngine {
         const { response, bodyText } = await doFetch(url, 'application/json')
         return bodyText === undefined ? response.json() : JSON.parse(bodyText)
       },
-      fetchJsonWithHeaders: async (url) => {
-        const { response, bodyText } = await doFetch(url, 'application/json')
+      fetchJsonWithHeaders: async (url, options) => {
+        const { response, bodyText } = await doFetch(
+          url,
+          'application/json',
+          undefined,
+          this.retries,
+          options?.allowHttpStatuses
+        )
         return {
           body: bodyText === undefined ? await response.json() : JSON.parse(bodyText),
-          headers: response.headers
+          headers: response.headers,
+          status: response.status
         }
       },
-      fetchText: async (url) => {
-        const { response, bodyText } = await doFetch(url, 'text/plain, application/xml, */*')
+      fetchText: async (url, accept = 'text/plain, application/xml, */*', options) => {
+        const { response, bodyText } = await doFetch(
+          url,
+          accept,
+          undefined,
+          options?.retry === false ? 0 : this.retries
+        )
         return bodyText === undefined ? response.text() : bodyText
       },
-      postJson: async (url, body) => {
-        const { response, bodyText } = await doFetch(url, 'application/json', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body)
-        })
+      postFormText,
+      postUrlEncodedText,
+      postForm: async (url, body) => {
+        const { response, bodyText } = await doFetch(
+          url,
+          'application/json',
+          { method: 'POST', body },
+          0
+        )
+        return bodyText === undefined ? response.json() : JSON.parse(bodyText)
+      },
+      postJson: async (url, body, options) => {
+        const { response, bodyText } = await doFetch(
+          url,
+          'application/json',
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body)
+          },
+          options?.retry === false ? 0 : this.retries
+        )
         return bodyText === undefined ? response.json() : JSON.parse(bodyText)
       }
     }

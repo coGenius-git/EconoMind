@@ -4,6 +4,7 @@ import {
   OFFICIAL_VENDORS,
   defaultVendorModel,
   getOfficialVendor,
+  getOfficialVendorModelIds,
   isOfficialVendorId,
   isVendorModelMultimodal,
   isVendorModelResponsesSupported,
@@ -16,12 +17,37 @@ import {
   resolveVendorModelsUrl,
   resolveVendorModelReasoningEffort,
   resolveVendorOpenAiBaseUrl,
+  resolveVendorResponsesBaseUrl,
   usesVendorAnthropicApiKeyHeader,
   vendorHasRegions,
   type OfficialVendorId
 } from './provider-registry'
 
 describe('provider registry', () => {
+  it('offers GPT-6.1 Sol with its published capabilities and preserves the default', () => {
+    expect(getOfficialVendorModelIds('openai')).toContain('gpt-6.1-sol')
+    expect(defaultVendorModel('openai')).toBe('gpt-5.6-sol')
+    expect(resolveModelContextWindow('openai', 'gpt-6.1-sol')).toBe(1_050_000)
+    expect(isVendorModelMultimodal('openai', 'gpt-6.1-sol')).toBe(true)
+    expect(resolveVendorModelApiEndpoints('openai', 'gpt-6.1-sol')).toEqual(['responses'])
+    expect(resolveVendorModelReasoningEffort('openai', 'gpt-6.1-sol')).toEqual({
+      supported: true,
+      slots: ['low', 'medium', 'high', 'xhigh', 'max']
+    })
+  })
+
+  it('offers Claude Sonnet 5.5 with its published capabilities and preserves the default', () => {
+    expect(getOfficialVendorModelIds('anthropic')).toContain('claude-sonnet-5-5')
+    expect(defaultVendorModel('anthropic')).toBe('claude-opus-5')
+    expect(resolveModelContextWindow('anthropic', 'claude-sonnet-5-5')).toBe(1_000_000)
+    expect(isVendorModelMultimodal('anthropic', 'claude-sonnet-5-5')).toBe(true)
+    expect(resolveVendorModelApiEndpoints('anthropic', 'claude-sonnet-5-5')).toEqual(['anthropic'])
+    expect(resolveVendorModelReasoningEffort('anthropic', 'claude-sonnet-5-5')).toEqual({
+      supported: true,
+      slots: ['low', 'medium', 'high', 'xhigh', 'max']
+    })
+  })
+
   it('defines exactly one of baseUrl or regions per vendor, with a non-empty catalog', () => {
     for (const vendor of OFFICIAL_VENDORS) {
       const hasBaseUrl = Boolean(vendor.baseUrl)
@@ -30,6 +56,14 @@ describe('provider registry', () => {
       expect(hasBaseUrl).not.toBe(hasRegions) // exactly one is set
       expect(vendor.models.length).toBeGreaterThan(0)
       expect(vendor.reasoningEffort).toBeDefined()
+      for (const region of vendor.regions ?? []) {
+        if (!region.modelIds) continue
+        expect(region.modelIds.length).toBeGreaterThan(0)
+        expect(new Set(region.modelIds).size).toBe(region.modelIds.length)
+        for (const modelId of region.modelIds) {
+          expect(vendor.models.some(({ id }) => id === modelId)).toBe(true)
+        }
+      }
     }
   })
 
@@ -71,6 +105,7 @@ describe('provider registry', () => {
     expect(defaultVendorModel('opencode')).toBe('kimi-k2.7-code')
     expect(goModels).toEqual([
       'kimi-k2.7-code',
+      'grok-4.7',
       'grok-4.6',
       'gpt-5.6-luna',
       'glm-5.3-flash',
@@ -80,26 +115,35 @@ describe('provider registry', () => {
       'kimi-k3',
       'kimi-k2.6',
       'longcat-2.0',
+      'deepseek-v4.1-flash',
       'deepseek-v4-pro',
       'deepseek-v4-flash',
       'deepseek-v4-flash-vision-exp',
+      'mimo-v2.6-flash',
+      'mimo-v2.6-pro',
       'mimo-v2.5',
       'mimo-v2.5-pro',
       'minimax-m3',
+      'muse-spark-1.3-contributor',
       'muse-spark-1.2-contributor',
       'qwen3.8-max',
+      'qwen3.8-flash',
       'qwen3.7-max',
       'qwen3.7-plus',
+      'hy4-preview',
       'hy3'
     ])
     expect(zenModels).toEqual([
       'kimi-k2.7-code',
+      'gpt-6-astra',
       'gpt-5.6-sol',
       'gpt-5.6-terra',
       'gpt-5.6-luna',
+      'claude-fable-5-1',
       'claude-fable-5',
       'claude-opus-5',
       'claude-sonnet-5',
+      'grok-4.7',
       'grok-4.6',
       'gpt-5.5',
       'gpt-5.5-pro',
@@ -122,19 +166,41 @@ describe('provider registry', () => {
       'claude-haiku-4-5',
       'grok-4.5',
       'grok-build-0.1',
+      'muse-spark-1.3',
       'muse-spark-1.2',
+      'qwen3.8-flash',
       'qwen3.7-max',
       'qwen3.7-plus',
       'qwen3.5-plus',
       'kimi-k3',
       'kimi-k2.6',
+      'deepseek-v4.1-flash',
       'deepseek-v4-flash',
       'deepseek-v4-pro',
       'minimax-m3',
+      'glm-5.3',
+      'glm-5.3-flash',
       'glm-5.2',
-      'glm-5.1'
+      'glm-5.1',
+      'big-pickle',
+      'mimo-v2.5-free'
     ])
-    for (const excluded of ['minimax-m2.7', 'minimax-m2.5', 'qwen3.6-plus']) {
+    // Deliberately curated out, two standing policies: legacy lower-tier models are not backfilled
+    // (m2.x MiniMax, qwen3.6-plus, glm-5, kimi-k2.5, gpt-5.x codex variants older than gpt-5.3-codex),
+    // and the transient limited-time free entries stay out — the free roster churns too fast to ship
+    // bundled (big-pickle and mimo-v2.5-free predate this policy and are grandfathered).
+    for (const excluded of [
+      'minimax-m2.7',
+      'minimax-m2.5',
+      'qwen3.6-plus',
+      'glm-5',
+      'kimi-k2.5',
+      'gpt-5-codex',
+      'gpt-5.1-codex',
+      'muse-spark-1.3-contributor-free',
+      'mimo-v2.6-flash-free',
+      'nemotron-3-ultra-free'
+    ]) {
       expect(goModels).not.toContain(excluded)
       expect(zenModels).not.toContain(excluded)
     }
@@ -146,6 +212,145 @@ describe('provider registry', () => {
     expect(resolveVendorModelApiEndpoints('opencode', 'minimax-m3')).toEqual(['openai'])
     expect(isVendorModelMultimodal('opencode-go', 'glm-5.3-flash')).toBe(true)
     expect(isVendorModelMultimodal('opencode', 'gpt-5.3-codex-spark')).toBe(false)
+  })
+
+  it('exposes the 2026-09 OpenCode Zen additions with their documented capabilities', () => {
+    // Protocol per https://opencode.ai/docs/zen; context/vision/effort per
+    // https://models.dev/api.json (opencode), checked 2026-09-22.
+    expect(resolveVendorModelApiEndpoints('opencode', 'gpt-6-astra')).toEqual(['responses'])
+    expect(resolveVendorModelApiEndpoints('opencode', 'claude-fable-5-1')).toEqual(['anthropic'])
+    expect(resolveVendorModelApiEndpoints('opencode', 'grok-4.7')).toEqual(['responses'])
+    expect(resolveVendorModelApiEndpoints('opencode', 'muse-spark-1.3')).toEqual(['responses'])
+    expect(resolveVendorModelApiEndpoints('opencode', 'qwen3.8-flash')).toEqual(['anthropic'])
+    expect(resolveVendorModelApiEndpoints('opencode', 'deepseek-v4.1-flash')).toEqual(['openai'])
+    expect(resolveVendorModelApiEndpoints('opencode', 'glm-5.3')).toEqual(['openai'])
+    expect(resolveVendorModelApiEndpoints('opencode', 'glm-5.3-flash')).toEqual(['openai'])
+    expect(resolveModelContextWindow('opencode', 'gpt-6-astra')).toBe(1_050_000)
+    expect(resolveModelContextWindow('opencode', 'claude-fable-5-1')).toBe(1_000_000)
+    expect(resolveModelContextWindow('opencode', 'grok-4.7')).toBe(500_000)
+    expect(resolveModelContextWindow('opencode', 'muse-spark-1.3')).toBe(1_048_576)
+    expect(resolveModelContextWindow('opencode', 'qwen3.8-flash')).toBe(1_000_000)
+    expect(resolveModelContextWindow('opencode', 'deepseek-v4.1-flash')).toBe(1_000_000)
+    expect(resolveModelContextWindow('opencode', 'glm-5.3')).toBe(1_000_000)
+    expect(resolveModelContextWindow('opencode', 'glm-5.3-flash')).toBe(1_000_000)
+    expect(resolveVendorModelReasoningEffort('opencode', 'gpt-6-astra')).toEqual({
+      supported: true,
+      slots: ['low', 'medium', 'high', 'xhigh', 'max']
+    })
+    expect(resolveVendorModelReasoningEffort('opencode', 'claude-fable-5-1')).toEqual({
+      supported: true,
+      slots: ['low', 'medium', 'high', 'xhigh', 'max']
+    })
+    expect(resolveVendorModelReasoningEffort('opencode', 'grok-4.7')).toEqual({
+      supported: true,
+      slots: ['low', 'medium', 'high', 'xhigh', 'xhigh']
+    })
+    expect(resolveVendorModelReasoningEffort('opencode', 'muse-spark-1.3')).toEqual({
+      supported: true,
+      // models.dev lists a fifth xhigh rung; the shipped preset keeps the 1.2 ceiling.
+      slots: ['minimal', 'low', 'medium', 'high', 'high']
+    })
+    expect(resolveVendorModelReasoningEffort('opencode', 'qwen3.8-flash')).toEqual({
+      supported: true,
+      slots: ['low', 'medium', 'xhigh', 'xhigh', 'xhigh']
+    })
+    expect(resolveVendorModelReasoningEffort('opencode', 'deepseek-v4.1-flash')).toEqual({
+      supported: true,
+      slots: ['low', 'high', 'max', 'max', 'max']
+    })
+    expect(resolveVendorModelReasoningEffort('opencode', 'glm-5.3')).toEqual({
+      supported: true,
+      slots: ['low', 'high', 'max', 'max', 'max']
+    })
+    expect(resolveVendorModelReasoningEffort('opencode', 'glm-5.3-flash')).toEqual({
+      supported: true,
+      slots: ['low', 'high', 'max', 'max', 'max']
+    })
+    expect(isVendorModelMultimodal('opencode', 'gpt-6-astra')).toBe(true)
+    expect(isVendorModelMultimodal('opencode', 'claude-fable-5-1')).toBe(true)
+    expect(isVendorModelMultimodal('opencode', 'grok-4.7')).toBe(true)
+    expect(isVendorModelMultimodal('opencode', 'muse-spark-1.3')).toBe(true)
+    expect(isVendorModelMultimodal('opencode', 'qwen3.8-flash')).toBe(true)
+    expect(isVendorModelMultimodal('opencode', 'deepseek-v4.1-flash')).toBe(true)
+    expect(isVendorModelMultimodal('opencode', 'glm-5.3')).toBe(false)
+    expect(isVendorModelMultimodal('opencode', 'glm-5.3-flash')).toBe(true)
+  })
+
+  it('exposes the 2026-09 OpenCode Go additions with their documented capabilities', () => {
+    // Protocol per https://opencode.ai/docs/go; context/vision/effort per
+    // https://models.dev/api.json (opencode-go), checked 2026-09-22.
+    expect(resolveVendorModelApiEndpoints('opencode-go', 'grok-4.7')).toEqual(['responses'])
+    expect(resolveVendorModelApiEndpoints('opencode-go', 'deepseek-v4.1-flash')).toEqual(['openai'])
+    expect(resolveVendorModelApiEndpoints('opencode-go', 'mimo-v2.6-flash')).toEqual(['openai'])
+    expect(resolveVendorModelApiEndpoints('opencode-go', 'mimo-v2.6-pro')).toEqual(['openai'])
+    expect(resolveVendorModelApiEndpoints('opencode-go', 'muse-spark-1.3-contributor')).toEqual([
+      'responses'
+    ])
+    expect(resolveVendorModelApiEndpoints('opencode-go', 'qwen3.8-flash')).toEqual(['anthropic'])
+    expect(resolveVendorModelApiEndpoints('opencode-go', 'hy4-preview')).toEqual(['openai'])
+    expect(resolveModelContextWindow('opencode-go', 'grok-4.7')).toBe(500_000)
+    expect(resolveModelContextWindow('opencode-go', 'deepseek-v4.1-flash')).toBe(1_000_000)
+    expect(resolveModelContextWindow('opencode-go', 'mimo-v2.6-flash')).toBe(1_048_576)
+    expect(resolveModelContextWindow('opencode-go', 'mimo-v2.6-pro')).toBe(1_048_576)
+    expect(resolveModelContextWindow('opencode-go', 'muse-spark-1.3-contributor')).toBe(1_048_576)
+    expect(resolveModelContextWindow('opencode-go', 'qwen3.8-flash')).toBe(1_000_000)
+    expect(resolveModelContextWindow('opencode-go', 'hy4-preview')).toBe(1_024_000)
+    expect(resolveVendorModelReasoningEffort('opencode-go', 'grok-4.7')).toEqual({
+      supported: true,
+      slots: ['low', 'medium', 'high', 'xhigh', 'xhigh']
+    })
+    expect(resolveVendorModelReasoningEffort('opencode-go', 'deepseek-v4.1-flash')).toEqual({
+      supported: true,
+      slots: ['low', 'high', 'max', 'max', 'max']
+    })
+    expect(resolveVendorModelReasoningEffort('opencode-go', 'qwen3.8-flash')).toEqual({
+      supported: true,
+      slots: ['low', 'medium', 'xhigh', 'xhigh', 'xhigh']
+    })
+    expect(resolveVendorModelReasoningEffort('opencode-go', 'muse-spark-1.3-contributor')).toEqual({
+      supported: true,
+      slots: ['minimal', 'low', 'medium', 'high', 'high']
+    })
+    expect(resolveVendorModelReasoningEffort('opencode-go', 'hy4-preview')).toEqual({
+      supported: true,
+      slots: ['none', 'high', 'high', 'high', 'high']
+    })
+    expect(resolveVendorModelReasoningEffort('opencode-go', 'mimo-v2.6-flash')).toEqual({
+      supported: false
+    })
+    expect(resolveVendorModelReasoningEffort('opencode-go', 'mimo-v2.6-pro')).toEqual({
+      supported: false
+    })
+    expect(isVendorModelMultimodal('opencode-go', 'grok-4.7')).toBe(true)
+    expect(isVendorModelMultimodal('opencode-go', 'deepseek-v4.1-flash')).toBe(true)
+    expect(isVendorModelMultimodal('opencode-go', 'mimo-v2.6-flash')).toBe(true)
+    expect(isVendorModelMultimodal('opencode-go', 'mimo-v2.6-pro')).toBe(true)
+    expect(isVendorModelMultimodal('opencode-go', 'muse-spark-1.3-contributor')).toBe(true)
+    expect(isVendorModelMultimodal('opencode-go', 'qwen3.8-flash')).toBe(true)
+    expect(isVendorModelMultimodal('opencode-go', 'hy4-preview')).toBe(false)
+  })
+
+  it.each([
+    { vendorId: 'openrouter', model: 'openrouter/free', contextWindow: 200_000, vision: true },
+    {
+      vendorId: 'openrouter',
+      model: 'google/gemma-4-31b-it:free',
+      contextWindow: 262_144,
+      vision: true
+    },
+    { vendorId: 'opencode', model: 'big-pickle', contextWindow: 200_000, vision: false },
+    { vendorId: 'opencode', model: 'mimo-v2.5-free', contextWindow: 200_000, vision: true }
+  ] as const)('offers $vendorId/$model with its documented capabilities', (entry) => {
+    expect(getOfficialVendorModelIds(entry.vendorId)).toContain(entry.model)
+    expect(resolveVendorModelApiEndpoints(entry.vendorId, entry.model)).toEqual(
+      entry.vendorId === 'openrouter' ? ['anthropic', 'openai'] : ['openai']
+    )
+    expect(isVendorModelResponsesSupported(entry.vendorId, entry.model)).toBe(false)
+    expect(resolveModelContextWindow(entry.vendorId, entry.model)).toBe(entry.contextWindow)
+    expect(isVendorModelMultimodal(entry.vendorId, entry.model)).toBe(entry.vision)
+    expect(resolveVendorModelReasoningEffort(entry.vendorId, entry.model)).toEqual({
+      supported: false
+    })
   })
 
   it('routes NVIDIA through Chat Completions with a curated agent catalog', () => {
@@ -175,17 +380,47 @@ describe('provider registry', () => {
     expect(getOfficialVendor('deepseek')?.label).toBe('DeepSeek')
   })
 
-  it('ships DeepSeek V4 with a vision-capable flash experimental model', () => {
+  it('retains DeepSeek compatibility names after discovery without changing other vendors', () => {
+    const fetched = ['deepseek-flash', 'deepseek-v4-pro', 'future-model']
+    expect(getOfficialVendorModelIds('deepseek', undefined, fetched)).toEqual([
+      ...fetched,
+      'deepseek-v4-pro[1m]',
+      'deepseek-v4-flash',
+      'deepseek-v4-flash-vision-exp'
+    ])
+    expect(fetched).toEqual(['deepseek-flash', 'deepseek-v4-pro', 'future-model'])
+    expect(getOfficialVendorModelIds('anthropic', undefined, ['live-model'])).toEqual([
+      'live-model'
+    ])
+  })
+
+  it('resolves V4.1 Flash protocol, context and reasoning capabilities', () => {
+    expect(resolveVendorModelApiEndpoints('deepseek', 'deepseek-flash')).toEqual([
+      'anthropic',
+      'openai',
+      'responses'
+    ])
+    expect(isVendorModelResponsesSupported('deepseek', 'deepseek-flash')).toBe(true)
+    expect(resolveModelContextWindow('deepseek', 'deepseek-flash')).toBe(1_000_000)
+    expect(resolveVendorModelReasoningEffort('deepseek', 'deepseek-flash')).toEqual({
+      supported: true,
+      slots: ['none', 'high', 'max', 'max', 'max']
+    })
+  })
+
+  it('ships DeepSeek V4.1 Flash under its official API id while retaining legacy models', () => {
     expect(
       getOfficialVendor('deepseek')?.models.map(({ id, contextWindow }) => ({ id, contextWindow }))
     ).toEqual([
       { id: 'deepseek-v4-pro', contextWindow: 1_000_000 },
       { id: 'deepseek-v4-pro[1m]', contextWindow: 1_000_000 },
+      { id: 'deepseek-flash', contextWindow: 1_000_000 },
       { id: 'deepseek-v4-flash', contextWindow: 1_000_000 },
       { id: 'deepseek-v4-flash-vision-exp', contextWindow: 1_000_000 }
     ])
     expect(defaultVendorModel('deepseek')).toBe('deepseek-v4-pro')
     expect(resolveVendorOpenAiBaseUrl('deepseek')).toBe('https://api.deepseek.com/v1')
+    expect(resolveVendorResponsesBaseUrl('deepseek')).toBe('https://api.deepseek.com')
     expect(resolveVendorApiEndpoints('deepseek')).toEqual(['anthropic', 'openai'])
   })
 
@@ -205,6 +440,25 @@ describe('provider registry', () => {
     // Unknown / missing region falls back to the first region's OpenAI base.
     expect(resolveVendorOpenAiBaseUrl('minimax')).toBe('https://api.minimax.io/v1')
     expect(resolveVendorOpenAiBaseUrl('minimax', 'nope')).toBe('https://api.minimax.io/v1')
+  })
+
+  it('offers the MiniMax M3.1 Token Plan preview without replacing the pay-as-you-go default', () => {
+    const model = 'MiniMax-M3.1-Flash-Preview'
+    for (const region of ['global', 'china']) {
+      expect(getOfficialVendorModelIds('minimax', region)).toContain(model)
+      expect(defaultVendorModel('minimax', region)).toBe('MiniMax-M3')
+    }
+    expect(resolveModelContextWindow('minimax', model)).toBe(1_000_000)
+    expect(isVendorModelMultimodal('minimax', model)).toBe(true)
+    expect(resolveVendorModelApiEndpoints('minimax', model)).toEqual([
+      'anthropic',
+      'openai',
+      'responses'
+    ])
+    expect(resolveVendorModelReasoningEffort('minimax', model)).toEqual({
+      supported: true,
+      slots: ['low', 'medium', 'high', 'xhigh', 'max']
+    })
   })
 
   it('routes GLM to Z.AI overseas and BigModel in China, on both endpoints', () => {
@@ -276,7 +530,7 @@ describe('provider registry', () => {
   it('exposes the first catalog entry as the default model', () => {
     expect(defaultVendorModel('openai')).toBe('gpt-5.6-sol')
     expect(defaultVendorModel('anthropic')).toBe('claude-opus-5')
-    expect(defaultVendorModel('xai')).toBe('grok-4.6')
+    expect(defaultVendorModel('xai')).toBe('grok-4.7')
     expect(defaultVendorModel('zhipu')).toBe('glm-5.3')
   })
 
@@ -285,7 +539,19 @@ describe('provider registry', () => {
       supported: true,
       slots: ['low', 'medium', 'high', 'xhigh', 'max']
     })
+    expect(resolveVendorModelReasoningEffort('openai', 'gpt-6-sol')).toEqual({
+      supported: true,
+      slots: ['none', 'low', 'medium', 'high', 'max']
+    })
+    expect(resolveVendorModelReasoningEffort('openai', 'gpt-6-luna')).toEqual({
+      supported: true,
+      slots: ['none', 'low', 'medium', 'high', 'max']
+    })
     expect(resolveVendorModelReasoningEffort('anthropic', 'claude-fable-5-1')).toEqual({
+      supported: true,
+      slots: ['low', 'medium', 'high', 'xhigh', 'max']
+    })
+    expect(resolveVendorModelReasoningEffort('anthropic', 'claude-opus-5-5')).toEqual({
       supported: true,
       slots: ['low', 'medium', 'high', 'xhigh', 'max']
     })
@@ -310,6 +576,10 @@ describe('provider registry', () => {
       slots: ['low', 'high', 'max', 'max', 'max']
     })
     expect(resolveVendorModelReasoningEffort('stepfun', 'step-3.7-flash')).toEqual({
+      supported: true,
+      slots: ['low', 'medium', 'high', 'high', 'high']
+    })
+    expect(resolveVendorModelReasoningEffort('stepfun', 'step-5-preview')).toEqual({
       supported: true,
       slots: ['low', 'medium', 'high', 'high', 'high']
     })
@@ -421,21 +691,89 @@ describe('provider registry', () => {
     expect(resolveVendorBaseUrl('xiaomimimo')).toBe('https://api.xiaomimimo.com/anthropic')
     expect(resolveVendorOpenAiBaseUrl('xiaomimimo')).toBe('https://api.xiaomimimo.com/v1')
     expect(resolveVendorModelsUrl('xiaomimimo')).toBe('https://api.xiaomimimo.com/v1/models')
-    expect(defaultVendorModel('xiaomimimo')).toBe('mimo-v2.5-pro')
+    expect(defaultVendorModel('xiaomimimo')).toBe('mimo-v2.6-pro')
+    expect(getOfficialVendorModelIds('xiaomimimo')).toEqual([
+      'mimo-v2.6-pro',
+      'mimo-v2.6-flash',
+      'mimo-v2.6-pro-ultraspeed',
+      'mimo-v2.5-pro',
+      'mimo-v2.5'
+    ])
+  })
+
+  it.each(['mimo-v2.6-pro', 'mimo-v2.6-flash', 'mimo-v2.6-pro-ultraspeed'])(
+    'resolves Xiaomi MIMO %s capabilities',
+    (model) => {
+      expect(resolveModelContextWindow('xiaomimimo', model)).toBe(1_000_000)
+      expect(resolveVendorModelApiEndpoints('xiaomimimo', model)).toEqual(['anthropic', 'openai'])
+      expect(isVendorModelMultimodal('xiaomimimo', model)).toBe(true)
+      expect(resolveVendorModelReasoningEffort('xiaomimimo', model)).toEqual({
+        supported: true,
+        slots: ['none', 'high', 'high', 'high', 'high']
+      })
+    }
+  )
+
+  it.each([undefined, 'china', 'unknown'])(
+    'preserves the China endpoint for SenseNova region %s',
+    (region) => {
+      expect(resolveVendorBaseUrl('sensenova', region)).toBe('https://token.sensenova.cn')
+      expect(resolveVendorOpenAiBaseUrl('sensenova', region)).toBe('https://token.sensenova.cn/v1')
+      expect(getOfficialVendorModelIds('sensenova', region)).toContain('sensenova-6.7-flash-lite')
+    }
+  )
+
+  it('keeps the Global SenseNova catalog independent of China and stale discovery', () => {
+    expect(resolveVendorBaseUrl('sensenova', 'global')).toBe('https://token.sensenova.ai')
+    expect(resolveVendorOpenAiBaseUrl('sensenova', 'global')).toBe('https://token.sensenova.ai/v1')
+    expect(resolveVendorApiKeyUrl('sensenova', 'global')).toBe(
+      'https://platform.sensenova.ai/console/keys'
+    )
+    expect(resolveVendorModelsUrl('sensenova', 'global')).toBeUndefined()
+    expect(defaultVendorModel('sensenova', 'global')).toBe('sensenova-6.8-flash-lite')
+    expect(
+      getOfficialVendorModelIds('sensenova', 'global', ['deepseek-v4-pro', 'sensenova-u1-fast'])
+    ).toEqual(['sensenova-6.8-flash-lite'])
+    expect(getOfficialVendorModelIds('minimax', 'global', ['discovered-model'])).toEqual([
+      'discovered-model'
+    ])
+    expect(getOfficialVendorModelIds('minimax', 'china')).toEqual(
+      getOfficialVendorModelIds('minimax', 'global')
+    )
   })
 
   it('routes SenseNova through both APIs with a curated chat catalog', () => {
     expect(resolveVendorApiEndpoints('sensenova')).toEqual(['anthropic', 'openai'])
     expect(resolveVendorBaseUrl('sensenova')).toBe('https://token.sensenova.cn')
     expect(resolveVendorOpenAiBaseUrl('sensenova')).toBe('https://token.sensenova.cn/v1')
-    expect(resolveVendorApiKeyUrl('sensenova')).toBe('https://platform.sensenova.cn/token-plan')
+    expect(resolveVendorApiKeyUrl('sensenova')).toBe('https://platform.sensenova.cn/console/keys')
     // The live list also serves the image-generation-only sensenova-u1-fast, which the refresh
     // cannot filter out — so refresh-from-vendor is hidden and the chat catalog stays curated.
     expect(resolveVendorModelsUrl('sensenova')).toBeUndefined()
-    expect(defaultVendorModel('sensenova')).toBe('sensenova-6.7-flash-lite')
+    expect(defaultVendorModel('sensenova')).toBe('sensenova-6.8-flash-lite')
+    expect(getOfficialVendorModelIds('sensenova')).toEqual([
+      'sensenova-6.8-flash-lite',
+      'deepseek-v4-pro',
+      'deepseek-v4-flash',
+      'glm-5.2',
+      'kimi-k3',
+      'sensenova-6.7-flash-lite'
+    ])
+    expect(resolveModelContextWindow('sensenova', 'sensenova-6.8-flash-lite')).toBe(262_144)
+    for (const model of ['deepseek-v4-pro', 'glm-5.2', 'kimi-k3']) {
+      expect(resolveVendorModelApiEndpoints('sensenova', model)).toEqual(['openai'])
+      expect(resolveModelContextWindow('sensenova', model)).toBe(1_000_000)
+    }
+    for (const model of [
+      'sensenova-6.8-flash-lite',
+      'deepseek-v4-flash',
+      'sensenova-6.7-flash-lite'
+    ]) {
+      expect(resolveVendorModelApiEndpoints('sensenova', model)).toEqual(['anthropic', 'openai'])
+    }
   })
 
-  it('routes Volcengine Ark through all three APIs with a curated Doubao Seed catalog', () => {
+  it('routes Volcengine Ark through all three APIs with a curated chat catalog', () => {
     expect(resolveVendorApiEndpoints('volcengine')).toEqual(['anthropic', 'openai', 'responses'])
     expect(resolveVendorBaseUrl('volcengine')).toBe(
       'https://ark.cn-beijing.volces.com/api/compatible'
@@ -447,9 +785,42 @@ describe('provider registry', () => {
       'https://console.volcengine.com/ark/region:ark+cn-beijing/apikey'
     )
     // Ark's catalog also serves embedding/image/video models the refresh cannot filter out —
-    // so refresh-from-vendor is hidden and the Doubao Seed chat catalog stays curated.
+    // so refresh-from-vendor is hidden and the chat catalog stays curated.
     expect(resolveVendorModelsUrl('volcengine')).toBeUndefined()
-    expect(defaultVendorModel('volcengine')).toBe('doubao-seed-2-1-pro-260628')
+    expect(defaultVendorModel('volcengine')).toBe('doubao-seed-2-1-pro-260915')
+  })
+
+  it.each([
+    ['doubao-seed-2-1-pro-260915', ['minimal', 'low', 'medium', 'high', 'high']],
+    ['deepseek-v4-1-flash-260910', ['none', 'low', 'high', 'max', 'max']],
+    ['glm-5-3-flash-260828', ['low', 'high', 'max', 'max', 'max']]
+  ])('exposes the documented Ark capabilities for %s', (model, slots) => {
+    expect(getOfficialVendorModelIds('volcengine')).toContain(model)
+    expect(resolveModelContextWindow('volcengine', model)).toBe(1_024_000)
+    expect(isVendorModelMultimodal('volcengine', model)).toBe(true)
+    expect(resolveVendorModelApiEndpoints('volcengine', model)).toEqual([
+      'anthropic',
+      'openai',
+      'responses'
+    ])
+    expect(resolveVendorModelReasoningEffort('volcengine', model)).toEqual({
+      supported: true,
+      slots
+    })
+  })
+
+  it('keeps the previous dated Ark models and their context limits', () => {
+    for (const model of [
+      'doubao-seed-2-1-pro-260628',
+      'doubao-seed-2-1-turbo-260628',
+      'doubao-seed-2-0-pro-260215',
+      'doubao-seed-2-0-lite-260215',
+      'doubao-seed-2-0-mini-260215',
+      'doubao-seed-2-0-code-preview-260215'
+    ]) {
+      expect(getOfficialVendorModelIds('volcengine')).toContain(model)
+      expect(resolveModelContextWindow('volcengine', model)).toBe(256_000)
+    }
   })
 
   it('routes Tencent TokenHub through all three APIs with regional keys and curated models', () => {
@@ -554,7 +925,24 @@ describe('provider registry', () => {
     // xAI's live catalog also includes image, audio, and video generation models, so keep refresh
     // hidden and expose only the curated language-model catalog.
     expect(resolveVendorModelsUrl('xai')).toBeUndefined()
-    expect(defaultVendorModel('xai')).toBe('grok-4.6')
+    expect(defaultVendorModel('xai')).toBe('grok-4.7')
+  })
+
+  it('exposes Grok 4.7 with its documented capabilities and keeps existing xAI models', () => {
+    expect(getOfficialVendorModelIds('xai')).toEqual([
+      'grok-4.7',
+      'grok-4.6',
+      'grok-4.5',
+      'grok-4.3',
+      'grok-build-0.1'
+    ])
+    expect(resolveModelContextWindow('xai', 'grok-4.7')).toBe(500_000)
+    expect(isVendorModelMultimodal('xai', 'grok-4.7')).toBe(true)
+    expect(resolveVendorModelApiEndpoints('xai', 'grok-4.7')).toEqual(['openai', 'responses'])
+    expect(resolveVendorModelReasoningEffort('xai', 'grok-4.7')).toEqual({
+      supported: true,
+      slots: ['low', 'medium', 'high', 'xhigh', 'xhigh']
+    })
   })
 
   it('routes Apodex core models through Messages and Chat Completions', () => {
@@ -595,7 +983,9 @@ describe('provider registry', () => {
     expect(resolveVendorApiKeyUrl('stepfun', 'china')).toBe(
       'https://platform.stepfun.com/interface-key'
     )
-    expect(defaultVendorModel('stepfun')).toBe('step-3.7-flash')
+    expect(defaultVendorModel('stepfun')).toBe('step-5-preview')
+    expect(resolveModelContextWindow('stepfun', 'step-5-preview')).toBe(1_000_000)
+    expect(isVendorModelResponsesSupported('stepfun', 'step-5-preview')).toBe(true)
   })
 
   it('routes Bailian Responses only for the documented Qwen models', () => {
@@ -732,15 +1122,24 @@ describe('provider registry', () => {
     expect(resolveModelContextWindow('bailianplan', 'qwen3.8-max-preview')).toBe(983_616)
   })
 
-  it('routes Step Plan over Anthropic and OpenAI under /step_plan, no live model list', () => {
+  it('routes Step Plan over Anthropic and OpenAI in China and globally, no live model list', () => {
     expect(resolveVendorApiEndpoints('stepplan')).toEqual(['anthropic', 'openai'])
-    expect(vendorHasRegions('stepplan')).toBe(false)
+    expect(vendorHasRegions('stepplan')).toBe(true)
     expect(resolveVendorBaseUrl('stepplan')).toBe('https://api.stepfun.com/step_plan')
     expect(resolveVendorOpenAiBaseUrl('stepplan')).toBe('https://api.stepfun.com/step_plan/v1')
+    expect(resolveVendorBaseUrl('stepplan', 'global')).toBe('https://api.stepfun.ai/step_plan')
+    expect(resolveVendorOpenAiBaseUrl('stepplan', 'global')).toBe(
+      'https://api.stepfun.ai/step_plan/v1'
+    )
     // Quota-based plan: fixed catalog, no "refresh from vendor" endpoint.
     expect(resolveVendorModelsUrl('stepplan')).toBeUndefined()
     expect(resolveVendorApiKeyUrl('stepplan')).toBe('https://platform.stepfun.com/plan-subscribe')
-    expect(defaultVendorModel('stepplan')).toBe('step-3.7-flash')
+    expect(resolveVendorApiKeyUrl('stepplan', 'global')).toBe(
+      'https://platform.stepfun.ai/plan-subscribe'
+    )
+    expect(defaultVendorModel('stepplan')).toBe('step-5-preview')
+    expect(resolveModelContextWindow('stepplan', 'step-5-preview')).toBe(1_000_000)
+    expect(isVendorModelResponsesSupported('stepplan', 'step-5-preview')).toBe(false)
   })
 
   it('resolves the key-console URL, preferring the selected region', () => {
@@ -767,6 +1166,8 @@ describe('provider registry', () => {
       expect(isVendorModelMultimodal('openai', 'gpt-5.6-sol')).toBe(true)
       expect(isVendorModelMultimodal('openai', 'gpt-5.5')).toBe(true)
       expect(isVendorModelMultimodal('openai', 'gpt-5.4-mini')).toBe(true)
+      expect(isVendorModelMultimodal('openai', 'gpt-6-sol')).toBe(true)
+      expect(isVendorModelMultimodal('openai', 'gpt-6-luna')).toBe(true)
     })
 
     it('returns true for all Anthropic Claude models', () => {
@@ -774,6 +1175,7 @@ describe('provider registry', () => {
       expect(isVendorModelMultimodal('anthropic', 'claude-sonnet-5')).toBe(true)
       expect(isVendorModelMultimodal('anthropic', 'claude-haiku-4-5-20251001')).toBe(true)
       expect(isVendorModelMultimodal('anthropic', 'claude-opus-4-8[1m]')).toBe(true)
+      expect(isVendorModelMultimodal('anthropic', 'claude-opus-5-5')).toBe(true)
     })
 
     it('returns true for all curated Grok language models', () => {
@@ -789,10 +1191,12 @@ describe('provider registry', () => {
       expect(isVendorModelMultimodal('openai', 'gpt-6-turbo')).toBe(true)
     })
 
-    it('returns true only for the DeepSeek vision-exp model', () => {
+    it('recognizes DeepSeek V4.1 Flash and its legacy aliases as multimodal', () => {
       expect(isVendorModelMultimodal('deepseek', 'deepseek-v4-flash-vision-exp')).toBe(true)
       expect(isVendorModelMultimodal('deepseek', 'deepseek-v4-pro')).toBe(false)
-      expect(isVendorModelMultimodal('deepseek', 'deepseek-v4-flash')).toBe(false)
+      expect(isVendorModelMultimodal('deepseek', 'deepseek-v4-flash')).toBe(true)
+      expect(isVendorModelMultimodal('deepseek', 'deepseek-flash')).toBe(true)
+      expect(isVendorModelMultimodal('deepseek', 'unknown-model')).toBe(false)
     })
 
     it('matches the multimodal Qwen models in the Bailian catalog', () => {
@@ -844,16 +1248,21 @@ describe('provider registry', () => {
 
     it('returns true only for KimiForCode k3 model', () => {
       expect(isVendorModelMultimodal('kimiforcode', 'kimi-k3')).toBe(true)
-      expect(isVendorModelMultimodal('kimiforcode', 'kimi-for-coding')).toBe(false)
+      expect(isVendorModelMultimodal('kimiforcode', 'kimi-for-coding')).toBe(true)
       expect(isVendorModelMultimodal('kimiforcode', 'kimi-for-coding-highspeed')).toBe(false)
     })
 
-    it('returns false for Xiaomi MIMO models (no vision support)', () => {
+    it('preserves Xiaomi MIMO legacy and unknown model vision defaults', () => {
       expect(isVendorModelMultimodal('xiaomimimo', 'mimo-v2.5-pro')).toBe(false)
       expect(isVendorModelMultimodal('xiaomimimo', 'mimo-v2.5')).toBe(false)
+      expect(isVendorModelMultimodal('xiaomimimo', 'mimo-unknown')).toBe(false)
     })
 
-    it('returns true only for the SenseNova vision model', () => {
+    it('enables SenseNova Flash Lite and hosted Kimi vision without enabling text-only models', () => {
+      expect(isVendorModelMultimodal('sensenova', 'sensenova-6.8-flash-lite')).toBe(true)
+      expect(isVendorModelMultimodal('sensenova', 'kimi-k3')).toBe(true)
+      expect(isVendorModelMultimodal('sensenova', 'deepseek-v4-pro')).toBe(false)
+      expect(isVendorModelMultimodal('sensenova', 'glm-5.2')).toBe(false)
       expect(isVendorModelMultimodal('sensenova', 'sensenova-6.7-flash-lite')).toBe(true)
       expect(isVendorModelMultimodal('sensenova', 'deepseek-v4-flash')).toBe(false)
     })
@@ -869,9 +1278,11 @@ describe('provider registry', () => {
       )
     })
 
-    it('returns true only for the StepFun multimodal flash model', () => {
+    it('returns true for StepFun multimodal models only', () => {
+      expect(isVendorModelMultimodal('stepfun', 'step-5-preview')).toBe(true)
       expect(isVendorModelMultimodal('stepfun', 'step-3.7-flash')).toBe(true)
       expect(isVendorModelMultimodal('stepfun', 'step-3.5-flash')).toBe(false)
+      expect(isVendorModelMultimodal('stepplan', 'step-5-preview')).toBe(true)
       expect(isVendorModelMultimodal('stepplan', 'step-3.7-flash')).toBe(true)
       expect(isVendorModelMultimodal('stepplan', 'step-3.5-flash-2603')).toBe(false)
       expect(isVendorModelMultimodal('stepplan', 'step-router-v1')).toBe(false)
@@ -961,9 +1372,12 @@ describe('provider registry', () => {
 
     it('resolves shipped models with vendor-published per-model limits', () => {
       expect(resolveModelContextWindow('anthropic', 'claude-fable-5-1')).toBe(1_000_000)
+      expect(resolveModelContextWindow('anthropic', 'claude-opus-5-5')).toBe(1_000_000)
       expect(resolveModelContextWindow('anthropic', 'claude-opus-4-8')).toBe(1_000_000)
       expect(resolveModelContextWindow('anthropic', 'claude-haiku-4-5-20251001')).toBe(200_000)
       expect(resolveModelContextWindow('openai', 'gpt-6-astra')).toBe(1_050_000)
+      expect(resolveModelContextWindow('openai', 'gpt-6-sol')).toBe(1_050_000)
+      expect(resolveModelContextWindow('openai', 'gpt-6-luna')).toBe(1_050_000)
       expect(resolveModelContextWindow('openai', 'gpt-5.6-sol')).toBe(1_050_000)
       expect(resolveModelContextWindow('openai', 'gpt-5.4-mini')).toBe(400_000)
       expect(resolveModelContextWindow('xai', 'grok-4.5')).toBe(500_000)

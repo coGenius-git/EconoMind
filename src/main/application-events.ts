@@ -1,5 +1,9 @@
 import type { LiteratureChangedEvent } from '../shared/literature'
 import type {
+  PdfNativeAnnotationImportProgress,
+  PdfAnnotationsChangedEvent
+} from '../shared/pdf-annotations'
+import type {
   AcpAgentRuntimeUpdate,
   AcpPermissionRequest,
   AcpRuntimeEvent,
@@ -39,6 +43,8 @@ import type { UpdateStatus } from '../shared/update'
 import type { LocalePreferenceSnapshot } from '../shared/locale'
 import type { TagsChangedEvent } from '../shared/tags'
 import type { MemoryChangedEvent } from '../shared/memory'
+import type { WslSetupStatus } from '../shared/wsl-setup'
+import type { PackageOperationSnapshot } from '../shared/session-package'
 import type {
   SessionPersistenceFlushAbortedEvent,
   SessionPersistenceFlushRequest
@@ -51,6 +57,7 @@ const log = createLogger('application-events')
 // signals and generated Web-only channels stay on their existing transports until their owner moves
 // them deliberately.
 export type ApplicationEventMap = {
+  'sessions:package-operation-changed': PackageOperationSnapshot
   'acp:state': AcpStateUpdate
   'acp:event': readonly AcpRuntimeEvent[]
   'acp:agent-runtime-update': AcpAgentRuntimeUpdate
@@ -60,6 +67,7 @@ export type ApplicationEventMap = {
   'notebook:available': NotebookAvailableEvent
   'notebook:changed': NotebookChangedEvent
   'notebook-env:progress': ProvisionProgress
+  'runtime:policy-changed': undefined
   'notifications:changed': NotificationInboxChanged
   'background-result-delivery:changed': ProjectBackgroundActivityChangedEvent
   'project:created': Project
@@ -74,6 +82,8 @@ export type ApplicationEventMap = {
   'project-files:changed': ProjectFilesChangedEvent
   'permissions:changed': PermissionGrantsChangedEvent
   'literature:changed': LiteratureChangedEvent
+  'pdf-annotations:changed': PdfAnnotationsChangedEvent
+  'pdf-annotations:import-progress': PdfNativeAnnotationImportProgress
   'tags:changed': TagsChangedEvent
   'memory:changed': MemoryChangedEvent
   'connectors:approval-request': ConnectorApprovalRequest
@@ -93,12 +103,13 @@ export type ApplicationEventMap = {
   'settings:connector-runtime-changed': undefined
   'settings:install-log': ClaudeInstallEvent
   'settings:changed': SettingsSnapshot
+  'settings:wsl-setup-changed': WslSetupStatus
   'storage:migrate-progress': MigrationProgress
   'reviewer:updated': ReviewUpdateEvent
   'reviewer:suppress-next-auto-review': ReviewSuppressionEvent
   'reviewer:fix-loop-start': ReviewSessionRequest
   'reviewer:fix-loop-end': ReviewSessionRequest
-  'remote-access:changed': Record<string, never>
+
   'locale:changed': LocalePreferenceSnapshot
   'update:status': UpdateStatus
   'update:progress': DownloadProgress

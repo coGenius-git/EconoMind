@@ -7,14 +7,11 @@ import {
   type ReviewCheck,
   type ReviewWithChecks
 } from '../../shared/reviewer'
+import type { PersistedChatSession } from '../../shared/session-persistence'
 import {
-  materializeSessionConversationGraph,
-  type PersistedChatSession
-} from '../../shared/session-persistence'
-import {
-  getActiveConversationContext,
-  resolveActiveConversationMessages
-} from '../../shared/conversation-graph'
+  ReviewerCorrectionContext,
+  ReviewerCorrectionContextChangedError
+} from './correction-context'
 import type { ReviewerAcpRuntime } from './acp-runtime'
 import { ReviewerCorrectionOwner } from './correction'
 import type { SessionAuxiliaryTurnUsageRecord } from '../session-persistence/auxiliary-turn-usage'
@@ -42,10 +39,14 @@ const SESSION_REFRESH_POLL_MS = 50
 
 // Options for the Phase 3 fix loop.
 type ReviewerFixLoopOptions = {
+  resumeCorrection?: { promptMessageId: string; turnMessageId: string; round: number }
+  onAssessmentStarted?: () => void
   sessionId: string
   // The original turn's message id (shared across all Review rows in this closure).
   originalTurnMessageId: string
   correctionScope?: TurnScope
+  // The snapshot read by the assessment, never the fresh Session loaded after it finishes.
+  reviewedSession: PersistedChatSession
   // The currently-open warn/fail checks to carry forward into each re-review.
   openChecks: ReviewCheck[]
   projectId: string
@@ -147,8 +148,9 @@ export const runReviewerFixLoop = async (options: ReviewerFixLoopOptions): Promi
   } = options
 
   let openChecks = [...options.openChecks]
-  let correctionScope = options.correctionScope
-  const correctionPromptIds = new Set<string>()
+  const correctionScope =
+    options.correctionScope ?? resolveTurnScope(options.reviewedSession, originalTurnMessageId)
+  let correctionContext: ReviewerCorrectionContext | undefined
   let causeReviewId = openChecks[0]?.reviewId
   const correctionOwner = new ReviewerCorrectionOwner({ acpRuntime, onCorrectionPrompt })
   const commitDispositionBatch = async (
@@ -183,7 +185,7 @@ export const runReviewerFixLoop = async (options: ReviewerFixLoopOptions): Promi
     )
   }
 
-  for (let round = 0; round < maxRounds; round++) {
+  for (let round = options.resumeCorrection?.round ?? 0; round < maxRounds; round++) {
     if (openChecks.length === 0) break
 
     // Abort check: if the user cancelled during the loop, exit without further [Auditor] injections.
@@ -228,60 +230,84 @@ export const runReviewerFixLoop = async (options: ReviewerFixLoopOptions): Promi
     let correctionFailed = false
     let correctionPromptMessageId: string | undefined
     try {
-      const conversationGraph =
-        sessionBefore.conversationGraph ??
-        materializeSessionConversationGraph(sessionBefore).conversationGraph!
-      const originatingPrompt = resolveActiveConversationMessages(conversationGraph)
-        .toReversed()
-        .find((message) => message.role === 'user' && message.status === 'complete')
-      if (!originatingPrompt) {
-        await markOpenChecksUnaddressed('aborted', REVIEW_CORRECTION_CONTEXT_CHANGED)
-        return
+      correctionContext ??= new ReviewerCorrectionContext(options.reviewedSession, correctionScope)
+      const resuming = options.resumeCorrection?.round === round
+      if (resuming) {
+        const resumed = options.resumeCorrection!
+        const answer = sessionBefore.messages.find(
+          (message) => message.id === resumed.turnMessageId
+        )
+        if (
+          sessionBefore.activeRun ||
+          sessionBefore.resumeRecovery ||
+          sessionBefore.autoReviewEnabled === false ||
+          !answer ||
+          answer.status !== 'complete' ||
+          answer.responseToMessageId !== resumed.promptMessageId
+        ) {
+          throw new ReviewerCorrectionContextChangedError('unexpected-correction-turn')
+        }
+        // Validate the resumed tail before any assessment, including the all-pass exit path.
+        const witness = new ReviewerCorrectionContext(options.reviewedSession, correctionScope)
+        witness.advance(
+          sessionBefore,
+          resolveTurnScope(
+            sessionBefore,
+            resumed.turnMessageId,
+            new Map(),
+            correctionScope.messageBranchId
+          ),
+          resumed.promptMessageId
+        )
       }
-      correctionScope ??= resolveTurnScope(sessionBefore, originalTurnMessageId)
-      const knownMessages = sessionBefore.conversationGraph?.messages ?? sessionBefore.messages
-      const scopedPromptId = correctionScope.blocks.find(
-        (block) =>
-          block.kind === 'message' &&
-          knownMessages.some(
-            (message) =>
-              message.id === block.sourceId &&
-              message.role === 'user' &&
-              !message.responseToMessageId
-          )
-      )?.sourceId
-      const provenanceContext = getActiveConversationContext(
-        conversationGraph,
-        originatingPrompt.id
-      )
-      if (
-        !scopedPromptId ||
-        (originatingPrompt.id !== scopedPromptId &&
-          !correctionPromptIds.has(originatingPrompt.id)) ||
-        (correctionScope.agentFrameId &&
-          correctionScope.agentFrameId !== provenanceContext.agentFrameId) ||
-        (correctionScope.messageBranchId &&
-          correctionScope.messageBranchId !== provenanceContext.messageBranchId)
-      ) {
-        await markOpenChecksUnaddressed('aborted', REVIEW_CORRECTION_CONTEXT_CHANGED)
-        return
+      const provenanceContext = resuming ? undefined : correctionContext.resolve(sessionBefore)
+      const correctionResult = resuming
+        ? {
+            status: 'completed' as const,
+            promptMessageId: options.resumeCorrection!.promptMessageId
+          }
+        : await correctionOwner.request({
+            projectId,
+            sessionId: mainSessionId,
+            causeReviewId: causeReviewId ?? openChecks[0].reviewId,
+            checks: openChecks,
+            continuation: { round, maxRounds, findingIds: openChecks.map((check) => check.id) },
+            abortSignal,
+            provenanceContext: provenanceContext!,
+            onPromptAdmitted: async () => {
+              abortSignal?.throwIfAborted()
+              const latest = await getSession(sessionId)
+              abortSignal?.throwIfAborted()
+              if (!latest)
+                throw new Error('The durable session disappeared before correction admission.')
+              return correctionContext!.resolve(latest)
+            }
+          })
+      if (correctionResult.status === 'context_changed') {
+        // Admission rejected before dispatch, so no stop event will consume the suppression.
+        onCorrectionFailed?.()
+        throw new ReviewerCorrectionContextChangedError(correctionResult.reason)
       }
-      const correctionResult = await correctionOwner.request({
-        projectId,
-        sessionId: mainSessionId,
-        causeReviewId: causeReviewId ?? openChecks[0].reviewId,
-        checks: openChecks,
-        abortSignal,
-        provenanceContext
-      })
       if (correctionResult.status === 'failed') {
         correctionFailed = true
         onCorrectionFailed?.()
       } else if (correctionResult.status === 'completed') {
         correctionPromptMessageId = correctionResult.promptMessageId
-        correctionPromptIds.add(correctionPromptMessageId)
       }
     } catch (error) {
+      if (error instanceof ReviewerCorrectionContextChangedError) {
+        log.info('fix loop: correction context changed before dispatch', {
+          sessionId,
+          round,
+          causeReviewId,
+          reviewedTurnMessageId: originalTurnMessageId,
+          reviewedFrameId: correctionScope.agentFrameId,
+          reviewedBranchId: correctionScope.messageBranchId,
+          reason: error.reason
+        })
+        await markOpenChecksUnaddressed('aborted', REVIEW_CORRECTION_CONTEXT_CHANGED)
+        return
+      }
       correctionFailed = true
       log.warn('fix loop: failed to derive correction provenance', {
         sessionId,
@@ -313,14 +339,22 @@ export const runReviewerFixLoop = async (options: ReviewerFixLoopOptions): Promi
       | { session: PersistedChatSession; message: PersistedChatSession['messages'][number] }
       | undefined
     try {
-      correctionState = await waitForCorrectionAgentMessage({
-        sessionId,
-        correctionPromptMessageId,
-        messageIdsBefore,
-        getSession,
-        timeoutMs: sessionRefreshTimeoutMs,
-        abortSignal
-      })
+      correctionState =
+        options.resumeCorrection?.round === round
+          ? {
+              session: sessionBefore,
+              message: sessionBefore.messages.find(
+                (message) => message.id === options.resumeCorrection!.turnMessageId
+              )!
+            }
+          : await waitForCorrectionAgentMessage({
+              sessionId,
+              correctionPromptMessageId,
+              messageIdsBefore,
+              getSession,
+              timeoutMs: sessionRefreshTimeoutMs,
+              abortSignal
+            })
     } catch (error) {
       log.warn('fix loop: failed while refreshing durable correction turn', {
         sessionId,
@@ -364,6 +398,10 @@ export const runReviewerFixLoop = async (options: ReviewerFixLoopOptions): Promi
 
     const scopedResult = await runReviewAssessment({
       mode: 'tracked',
+      ...(options.resumeCorrection?.round === round
+        ? { resumedSourceFindingIds: openChecks.map((check) => check.id) }
+        : {}),
+      onStarted: options.onAssessmentStarted,
       abortSignal,
       session: correctionState.session,
       sessionId,
@@ -462,6 +500,23 @@ export const runReviewerFixLoop = async (options: ReviewerFixLoopOptions): Promi
 
     if (openChecks.length === 0) {
       log.info('fix loop: all checks resolved', { sessionId, rounds: round + 1 })
+      return
+    }
+
+    try {
+      correctionContext!.advance(
+        correctionState.session,
+        reReviewResult.scope,
+        correctionPromptMessageId
+      )
+    } catch (error) {
+      if (!(error instanceof ReviewerCorrectionContextChangedError)) throw error
+      log.info('fix loop: correction context changed during re-review', {
+        sessionId,
+        round,
+        reason: error.reason
+      })
+      await markOpenChecksUnaddressed('aborted', REVIEW_CORRECTION_CONTEXT_CHANGED)
       return
     }
 

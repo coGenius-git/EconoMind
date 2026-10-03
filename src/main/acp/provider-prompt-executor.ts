@@ -31,6 +31,7 @@ type ProviderPromptExecutionInput = Readonly<{
   isCurrent: () => boolean
   beforeDispatch: () => Promise<'active' | 'cancelled'>
   captureStop: () => boolean
+  onDispatched?: () => void
   onAccepted: () => void | Promise<void>
   routeNotification: (notification: SessionNotification) => void
   reportBestEffortFailure?: (stage: ProviderPromptObservationStage, error: unknown) => void
@@ -85,6 +86,7 @@ const normalizeFacts = (
 ): AcpProviderTurnResult => {
   const turnUsage = facts.turnUsage ?? toAcpTurnTokenUsage(response.usage)
   return Object.freeze({
+    ...(facts.compaction ? { compaction: Object.freeze({ ...facts.compaction }) } : {}),
     ...(turnUsage ? { turnUsage: Object.freeze({ ...turnUsage }) } : {}),
     ...(facts.modelTurnCount === undefined ? {} : { modelTurnCount: facts.modelTurnCount }),
     ...(facts.modelCalls
@@ -257,6 +259,7 @@ class AcpProviderPromptExecutor {
       let promptRequest: Promise<unknown>
       try {
         promptRequest = input.session.prompt(input.content)
+        input.onDispatched?.()
       } catch (error) {
         await cancelProbe()
         throw error

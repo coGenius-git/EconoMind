@@ -1,5 +1,9 @@
 import { load } from 'js-yaml'
+import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { runProcess } from './windows-installer-smoke.mjs'
 
 import {
   assertDifferentialObservation,
@@ -10,17 +14,17 @@ import {
   parseSingleRange,
   redactPackagedAppOutput,
   rewriteFeedPaths,
-  waitForInstallerExit
+  observeInstaller
 } from './windows-updater-certification.mjs'
 
 describe('Windows updater certification', () => {
   it('redacts packaged app tokens before output reaches CI diagnostics', () => {
     expect(
       redactPackagedAppOutput(
-        'Open Science Web: http://127.0.0.1:4321/?token=secret-token\nnext?mode=test&token=other'
+        'EconoMind Web: http://127.0.0.1:4321/?token=secret-token\nnext?mode=test&token=other'
       )
     ).toBe(
-      'Open Science Web: http://127.0.0.1:4321/?token=<redacted>\nnext?mode=test&token=<redacted>'
+      'EconoMind Web: http://127.0.0.1:4321/?token=<redacted>\nnext?mode=test&token=<redacted>'
     )
   })
 
@@ -52,12 +56,12 @@ describe('Windows updater certification', () => {
     const runProcessImpl = vi.fn(async () => ({ code: 2, stdout: '', stderr: 'installer failed' }))
 
     await expect(
-      waitForInstallerExit({
+      observeInstaller({
         installer: 'C:\\updates\\aipoch-open-science-0.11.1-win-x64-setup.exe',
         env: { LOCALAPPDATA: 'C:\\profile' },
         signal: controller.signal,
         runProcessImpl
-      })
+      }).exit
     ).resolves.toEqual({ code: 2, stdout: '', stderr: 'installer failed' })
     expect(runProcessImpl).toHaveBeenCalledWith(
       'powershell.exe',
@@ -76,6 +80,122 @@ describe('Windows updater certification', () => {
       })
     )
   })
+
+  it('waits for compiled observer readiness, including a split stdout marker', async () => {
+    const completed = Promise.withResolvers<{ code: number; stdout: string; stderr: string }>()
+    let onStdout!: (output: string) => void
+    const observer = observeInstaller({
+      installer: 'C:\\updates\\setup.exe',
+      env: {},
+      runProcessImpl: (_executable, _args, options) => {
+        onStdout = options.onStdout
+        return completed.promise
+      }
+    })
+    const apply = vi.fn()
+    const applying = observer.ready.then(apply)
+    onStdout('OPEN_SCIENCE_INSTALLER_OBSERVER_')
+    await Promise.resolve()
+    expect(apply).not.toHaveBeenCalled()
+    onStdout('OPEN_SCIENCE_INSTALLER_OBSERVER_READY\r\n')
+    await applying
+    expect(apply).toHaveBeenCalledOnce()
+    completed.resolve({ code: 7, stdout: '', stderr: '' })
+    await expect(observer.exit).resolves.toMatchObject({ code: 7 })
+  })
+
+  it('retries process discovery and handle acquisition after observer readiness', async () => {
+    let command = ''
+    const completed = Promise.withResolvers<{ code: number; stdout: string; stderr: string }>()
+    const observer = observeInstaller({
+      installer: 'C:\\updates\\setup.exe',
+      env: {},
+      runProcessImpl: (_executable, args, options) => {
+        command = String(args[args.indexOf('-Command') + 1])
+        options.onStdout?.('OPEN_SCIENCE_INSTALLER_OBSERVER_READY\r\n')
+        return completed.promise
+      }
+    })
+
+    await expect(observer.ready).resolves.toBeUndefined()
+    completed.resolve({ code: 126, stdout: '', stderr: 'process was not observable' })
+    await expect(observer.exit).resolves.toMatchObject({ code: 126 })
+    expect(command).toContain('$handle = [IntPtr]::Zero')
+    expect(command).toContain('while ($handle -eq [IntPtr]::Zero')
+  })
+
+  it('rejects readiness if PowerShell fails before observation starts', async () => {
+    const observer = observeInstaller({
+      installer: 'C:\\updates\\setup.exe',
+      env: {},
+      runProcessImpl: async () => ({ code: 1, stdout: '', stderr: 'compilation failed' })
+    })
+    await expect(observer.ready).rejects.toThrow('compilation failed')
+  })
+
+  it.skipIf(process.platform !== 'win32')(
+    'observes a short-lived process after actual PowerShell readiness',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'updater-observer-'))
+      const installer = join(root, 'observer-fixture.exe')
+      const release = join(root, 'release')
+      const controller = new AbortController()
+      await copyFile(process.execPath, installer)
+      const acquired = Promise.withResolvers<void>()
+      const observer = observeInstaller({
+        installer,
+        env: process.env,
+        signal: controller.signal,
+        runProcessImpl: (executable, args, options) =>
+          runProcess(executable, args, {
+            ...options,
+            onStdout: (output) => {
+              options.onStdout?.(output)
+              if (output.split(/\r?\n/).includes('OPEN_SCIENCE_INSTALLER_OBSERVER_ACQUIRED'))
+                acquired.resolve()
+            }
+          })
+      })
+      let processExit: ReturnType<typeof runProcess> | undefined
+      try {
+        await observer.ready
+        processExit = runProcess(
+          installer,
+          [
+            '-e',
+            'setInterval(() => { if (require("node:fs").existsSync(process.argv[1])) process.exit(7) }, 20)',
+            release
+          ],
+          {
+            allowNonZero: true,
+            signal: controller.signal,
+            timeoutMs: 15_000
+          }
+        )
+        // CIM readiness is not handle acquisition. Release the real process
+        // only once the observer owns its handle, including under CI contention.
+        await Promise.race([
+          acquired.promise,
+          observer.exit.then((result) => {
+            throw new Error(
+              `Observer exited before acquiring the process: ${JSON.stringify(result)}`
+            )
+          }),
+          processExit.then((result) => {
+            throw new Error(`Fixture exited before observation: ${JSON.stringify(result)}`)
+          })
+        ])
+        await writeFile(release, '')
+        await expect(observer.exit).resolves.toMatchObject({ code: 7 })
+        await expect(processExit).resolves.toMatchObject({ code: 7 })
+      } finally {
+        controller.abort()
+        await Promise.allSettled([observer.exit, processExit])
+        await rm(root, { recursive: true, force: true })
+      }
+    },
+    60_000
+  )
 
   it('points the installed updater at a local feed without weakening its signing policy', () => {
     const result = buildLocalUpdaterConfig(

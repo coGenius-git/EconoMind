@@ -1,6 +1,7 @@
+import { ErrorNotice } from '@/components/error-notice'
 /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V5 */
 /* Hallmark · component: citation style manager · genre: modern-minimal · theme: existing EconoMind tokens · enrichment: none */
-import { ArrowLeft, BookOpenText, FileText, LoaderCircle, Trash2, Upload } from 'lucide-react'
+import { ArrowLeft, BookOpenText, Eye, FileText, LoaderCircle, Trash2, Upload } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -22,6 +23,7 @@ type CitationStylesViewProps = Readonly<{
   styles?: LiteratureCitationStyleView[]
   onBack: () => void
   onStylesChange: (styles: LiteratureCitationStyleView[]) => void
+  embedded?: boolean
 }>
 
 type CitationStylePreview = NonNullable<LiteratureCitationStyleView['preview']>
@@ -32,7 +34,8 @@ type CitationStylePreviewState =
 const CitationStylesView = ({
   styles,
   onBack,
-  onStylesChange
+  onStylesChange,
+  embedded = false
 }: CitationStylesViewProps): React.JSX.Element => {
   const { t } = useTranslation()
   const inputRef = useRef<HTMLInputElement>(null)
@@ -51,6 +54,7 @@ const CitationStylesView = ({
   >()
   const previewRequestsRef = useRef(new Set<string>())
   const [activePreviewId, setActivePreviewId] = useState<string | null>(null)
+  const [skipEntryAnimation, setSkipEntryAnimation] = useState(false)
   const activePreviewRef = useRef<string | null>(null)
   const pinnedRef = useRef(false)
   const previewTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -172,13 +176,16 @@ const CitationStylesView = ({
     (style: LiteratureCitationStyleView, trigger: HTMLButtonElement, immediate = false): void => {
       cancelPreviewTimer()
       if (pinnedRef.current && activePreviewRef.current !== style.id) return
+      if (activePreviewRef.current === style.id) return
+      const instant = immediate || activePreviewRef.current !== null || warmRef.current
       const show = (): void => {
         previewTriggerRef.current = trigger
         activePreviewRef.current = style.id
+        setSkipEntryAnimation(instant)
         setActivePreviewId(style.id)
         loadPreview(style)
       }
-      if (immediate || activePreviewRef.current || warmRef.current) show()
+      if (instant) show()
       else previewTimerRef.current = setTimeout(show, 200)
     },
     [loadPreview]
@@ -333,14 +340,21 @@ const CitationStylesView = ({
           </PopoverAnchor>
           <PopoverContent
             ref={previewContentRef}
+            data-skip-entry-animation={skipEntryAnimation}
             aria-label={`${t('Preview')}: ${style.title}`}
             tabIndex={-1}
             side="top"
             align="end"
             collisionPadding={8}
-            className="max-h-[min(24rem,var(--radix-popover-content-available-height))] min-h-0 w-80 max-w-[calc(100vw-1rem)] space-y-2.5 overflow-y-auto overscroll-contain break-words p-3 select-text"
+            className="hover-bubble max-h-[min(24rem,var(--radix-popover-content-available-height))] min-h-0 w-80 max-w-[calc(100vw-1rem)] space-y-2.5 overflow-y-auto overscroll-contain break-words p-3 select-text"
             onPointerEnter={cancelPreviewTimer}
             onPointerLeave={scheduleClosePreview}
+            onFocusOutside={(event) => {
+              // The custom anchor's opening focus must not immediately dismiss its preview.
+              const target = event.detail.originalEvent.target
+              if (target instanceof Node && previewTriggerRef.current?.contains(target))
+                event.preventDefault()
+            }}
             onFocusCapture={() => {
               cancelPreviewTimer()
               pinnedRef.current = true
@@ -407,6 +421,10 @@ const CitationStylesView = ({
             ) : null}
           </PopoverContent>
         </Popover>
+        <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+          <Eye className="size-3.5" aria-hidden="true" />
+          {t('Preview')}
+        </span>
         {style.source === 'custom' ? (
           <Button
             type="button"
@@ -416,15 +434,18 @@ const CitationStylesView = ({
             aria-label={t('Delete {{style}}', { style: style.title })}
             title={t('Delete')}
             onClick={() => void deleteStyle(style.id)}
+            aria-busy={Boolean(deletingId === style.id)}
           >
-            {deletingId === style.id ? (
-              <LoaderCircle
-                className="size-4 animate-spin motion-reduce:animate-none"
-                aria-hidden="true"
-              />
-            ) : (
-              <Trash2 className="size-4" aria-hidden="true" />
-            )}
+            <span key={String(deletingId === style.id)} className="button-feedback">
+              {deletingId === style.id ? (
+                <LoaderCircle
+                  className="size-4 animate-spin motion-reduce:animate-none"
+                  aria-hidden="true"
+                />
+              ) : (
+                <Trash2 className="size-4" aria-hidden="true" />
+              )}
+            </span>
           </Button>
         ) : null}
       </li>
@@ -433,13 +454,21 @@ const CitationStylesView = ({
 
   return (
     <>
-      <div className="mx-auto flex h-full w-full max-w-4xl flex-col overflow-y-auto px-4 py-6 [scrollbar-width:none] lg:px-6 lg:py-8 [&::-webkit-scrollbar]:hidden">
+      <div className="flex h-full w-full flex-col overflow-y-auto px-4 py-6 [scrollbar-width:none] lg:px-6 lg:py-8 [&::-webkit-scrollbar]:hidden">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
-            <Button type="button" variant="ghost" size="sm" className="-ml-2 mb-3" onClick={onBack}>
-              <ArrowLeft className="size-4" aria-hidden="true" />
-              {t('Back to references')}
-            </Button>
+            {!embedded ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="-ml-2 mb-3"
+                onClick={onBack}
+              >
+                <ArrowLeft className="size-4" aria-hidden="true" />
+                {t('Back to references')}
+              </Button>
+            ) : null}
             <h2 className="text-2xl font-semibold tracking-tight">{t('Citation styles')}</h2>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
               {t('Choose the styles available when formatting references and documents.')}
@@ -462,27 +491,35 @@ const CitationStylesView = ({
                 if (file) void importStyle(file)
               }}
             />
-            <Button type="button" disabled={mutating} onClick={() => inputRef.current?.click()}>
-              {importing ? (
-                <LoaderCircle
-                  className="size-4 animate-spin motion-reduce:animate-none"
-                  aria-hidden="true"
-                />
-              ) : (
-                <Upload className="size-4" aria-hidden="true" />
-              )}
-              {importing ? t('Importing…') : t('Import CSL')}
+            <Button
+              type="button"
+              disabled={mutating}
+              onClick={() => inputRef.current?.click()}
+              aria-busy={Boolean(importing)}
+            >
+              <span key={String(importing)} className="button-feedback">
+                {importing ? (
+                  <LoaderCircle
+                    className="size-4 animate-spin motion-reduce:animate-none"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <Upload className="size-4" aria-hidden="true" />
+                )}
+                {importing ? t('Importing…') : t('Import CSL')}
+              </span>
             </Button>
           </div>
         </div>
 
         {error ? (
-          <p
+          <ErrorNotice
+            inline
             role="alert"
-            className="mt-5 rounded-lg bg-danger-900 px-3 py-2 text-sm text-danger-000"
-          >
-            {errorMessage()}
-          </p>
+            tone="amber"
+            className="mt-5"
+            description={errorMessage()}
+          />
         ) : null}
 
         {loading && styles === undefined ? (

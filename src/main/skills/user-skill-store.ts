@@ -2,7 +2,10 @@ import { cp, lstat, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises
 import { dirname, join, relative } from 'node:path'
 
 import { isSafeSkillReferenceName } from '../../shared/skill-reference-name'
-import { isAppOwnedSkillRootFile } from '../../shared/skill-import-limits'
+import {
+  isAppOwnedSkillRootFile,
+  isSkillPackageIgnoredPath
+} from '../../shared/skill-import-limits'
 import type { SkillReference, SkillSource } from '../../shared/settings'
 import {
   frontmatterBlock,
@@ -34,6 +37,12 @@ export const USER_SOURCES: ReadonlyArray<Extract<SkillSource, 'imported' | 'pers
 ]
 
 export type UserSkillSource = (typeof USER_SOURCES)[number]
+
+const assertUserSkillSource = (source: unknown): void => {
+  if (!USER_SOURCES.includes(source as UserSkillSource)) {
+    throw new Error('Invalid user Skill source.')
+  }
+}
 
 export const SAFE_SKILL_DIRECTORY_NAME = /^[a-z0-9-]+$/
 
@@ -121,7 +130,12 @@ export class UserSkillStore {
   ) {}
 
   sourceDir(source: UserSkillSource): string {
+    assertUserSkillSource(source)
     return join(this.storageRoot, 'skills', source)
+  }
+
+  runtimeStorageRoot(): string {
+    return this.storageRoot
   }
 
   skillDirectory(source: UserSkillSource, directoryName: string): string {
@@ -226,10 +240,29 @@ export class UserSkillStore {
     return skills
   }
 
-  async resolveSkillId(id: string): Promise<{ source: UserSkillSource; directoryName: string }> {
+  async resolveSkillId(
+    id: string,
+    sourceFilter?: UserSkillSource,
+    directoryName?: string
+  ): Promise<{ source: UserSkillSource; directoryName: string }> {
+    if (sourceFilter !== undefined) assertUserSkillSource(sourceFilter)
+    if (directoryName !== undefined && !SAFE_SKILL_DIRECTORY_NAME.test(directoryName)) {
+      throw new Error('Invalid user Skill directory name.')
+    }
+    if (sourceFilter !== undefined && directoryName !== undefined) {
+      const conventional = parseUserSkillId(id)
+      if (conventional?.source === sourceFilter && conventional.directoryName === directoryName) {
+        return conventional
+      }
+      const metadata = await readSpecialistPackageSkillMetadata(
+        this.skillDirectory(sourceFilter, directoryName)
+      )
+      if (metadata?.id === id) return { source: sourceFilter, directoryName }
+      throw new Error(`Not a user skill id: ${id}`)
+    }
     const conventional = parseUserSkillId(id)
-    if (conventional) return conventional
-    for (const source of USER_SOURCES) {
+    if (conventional && (!sourceFilter || conventional.source === sourceFilter)) return conventional
+    for (const source of sourceFilter ? [sourceFilter] : USER_SOURCES) {
       for (const directoryName of await this.listDirectoryNames(source)) {
         const metadata = await readSpecialistPackageSkillMetadata(
           this.skillDirectory(source, directoryName)
@@ -263,7 +296,7 @@ export class UserSkillStore {
       const staged = await this.transactions.stage('personal', name, async (staging) => {
         await mkdir(staging, { recursive: true })
         await this.writeSkillDirectory(staging, prepared)
-        await inspectSkillPackage(staging)
+        await inspectSkillPackage(staging, { storageRoot: this.storageRoot })
       })
       await this.transactions.promote(staged)
       return `personal-${name}`
@@ -300,6 +333,9 @@ export class UserSkillStore {
           force: false,
           errorOnExist: true,
           filter: async (entry) => {
+            if (isSkillPackageIgnoredPath(relative(sourcePath, entry).replaceAll('\\', '/'))) {
+              return false
+            }
             if ((await lstat(entry)).isSymbolicLink()) {
               throw new Error('Refusing to publish a Skill containing a symbolic link.')
             }
@@ -337,6 +373,9 @@ export class UserSkillStore {
           force: false,
           errorOnExist: true,
           filter: async (entry) => {
+            if (isSkillPackageIgnoredPath(relative(live, entry).replaceAll('\\', '/'))) {
+              return false
+            }
             if ((await lstat(entry)).isSymbolicLink()) {
               throw new Error('Refusing to update a Skill containing a symbolic link.')
             }
@@ -359,16 +398,21 @@ export class UserSkillStore {
         )
         const prepared = prepareSkillWrite(input, existingReferences)
         await this.writeSkillDirectory(staging, prepared)
-        await inspectSkillPackage(staging)
+        await inspectSkillPackage(staging, { storageRoot: this.storageRoot })
       })
       await this.transactions.promote(staged)
     }, ['personal'])
   }
 
-  async delete(id: string, guard?: (skillId: string) => Promise<void>): Promise<void> {
+  async delete(
+    id: string,
+    source?: UserSkillSource,
+    directoryName?: string,
+    guard?: (skillId: string) => Promise<void>
+  ): Promise<void> {
     return this.transactions.runMutationRecovered(async () => {
       await guard?.(id)
-      const parsed = await this.resolveSkillId(id)
+      const parsed = await this.resolveSkillId(id, source, directoryName)
       const metadata = await readSpecialistPackageSkillMetadata(
         this.skillDirectory(parsed.source, parsed.directoryName)
       )

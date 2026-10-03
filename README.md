@@ -1,6 +1,8 @@
 # EconoMind · 团队协作指南
 
-这是华北五省智能体大赛团队的源码仓库。EconoMind 是面向经济学、管理学、金融学与会计学研究的 Electron 桌面软件，基于 AIPOCH Open Science 定制。
+这是华北五省智能体大赛团队的源码仓库。EconoMind 是面向经济学、管理学、金融学与会计学研究的 Electron 桌面软件，基于 [AIPOCH Open Science](https://github.com/aipoch/open-science) 修改和扩展，并沿用 Apache-2.0 许可证。
+
+上游代码版权归 AIPOCH 及其贡献者；EconoMind 修改部分版权归相应贡献者。完整许可见 [LICENSE](LICENSE)，二次开发署名见 [NOTICE](NOTICE)，来源与修改范围见 [UPSTREAM.md](UPSTREAM.md) 和 [开源与第三方说明](docs/OPEN_SOURCE.md)。
 
 **参与流程：获得仓库权限 → 克隆 → 安装依赖 → 启动独立开发环境 → 从最新 `main` 建任务分支 → 修改、验证 → 推送分支并提交 PR → 审查合并。**
 
@@ -11,13 +13,13 @@
 | 工具                           | 要求                                                       | 检查                              |
 | ------------------------------ | ---------------------------------------------------------- | --------------------------------- |
 | Git                            | Git for Windows，可通过 Git Credential Manager 登录 GitHub | `git --version`                   |
-| Node.js                        | **22.x**，与 `.nvmrc` 一致；本仓库验证使用 npm **10.x**    | `node --version`、`npm --version` |
+| Node.js                        | **24.x**，与 `.nvmrc` 一致；本次验证使用 npm **11.x**      | `node --version`、`npm --version` |
 | Python                         | 本机模块编译需要 Python 3，建议 3.12                       | `py -3 --version`                 |
 | Visual Studio Build Tools 2022 | 勾选“使用 C++ 的桌面开发”，包括 MSVC v143 与 Windows SDK   | 安装后重新打开终端                |
 
 依赖安装会下载 Electron、生成 Prisma Client、应用仓库补丁并编译本机模块。需要能访问 npm、GitHub 和相关依赖下载服务，首次安装可能需要几分钟。
 
-先检查两个版本。如果曾安装全局 npm，切换 Node 后 npm 仍可能从用户目录加载另一版本；用 `Get-Command npm -All` 检查入口。完整验证环境为 Node 22.23.3 / npm 10.9.9，其他组合需另行验证。
+先检查两个版本。如果曾安装全局 npm，切换 Node 后 npm 仍可能从用户目录加载另一版本；用 `Get-Command npm -All` 检查入口。完整验证环境为 Node 24.15.0 / npm 11.12.1，其他组合需另行验证。
 
 在打算保存源码的目录打开 PowerShell：
 
@@ -53,16 +55,16 @@ npm run dev:isolated
 
 以下按分工图整理，属于待推进任务，不表示相关新功能已经完成。每项任务先建 Issue，说明范围、预期效果与验收方法。
 
-| 任务                         | 负责人 | 建议查看的源码                                                                                         | 交付与验收                                                                                                |
-| ---------------------------- | ------ | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
-| 新版 Open Science 新功能增加 | 陈     | `UPSTREAM.md`、`src/main/`、`src/renderer/`                                                            | 先列出具体功能与上游版本；逐项适配并提供操作示例和测试结果，避免整仓覆盖                                  |
-| AI 生图、UI 设计方案选择     | 林     | `docs/design.md`、`src/renderer/src/pages/`                                                            | 选定方案、页面效果与交互说明，交接给 UI 实现                                                              |
-| UI 修改与实现                | 王     | `src/renderer/src/pages/`、`src/renderer/src/components/`                                              | 实现方案；附截图，检查缩放、中文显示与主要交互                                                            |
-| 专家完善                     | 许     | `resources/specialists/`、`resources/skills/`、`src/main/specialist/`                                  | 完善专家角色与能力，给出可运行示例及输出核验说明                                                          |
-| 专家引导式介绍               | 王     | `src/renderer/src/pages/onboarding/`、`src/renderer/src/pages/settings/`                               | 用户理解专家用途并能进入示例；引导与实际能力一致                                                          |
-| 文献库、工作流板块放置区域   | 陈     | `src/renderer/src/pages/literature/`、`src/renderer/src/pages/research-tools/`、`src/main/literature/` | 明确入口、位置与跳转关系；已有文献与工作流仍可正常使用                                                    |
-| 链接知网、一键下载           | 李     | `src/main/literature/`、`resources/skills/`                                                            | 先确认登录与可用入口；验证有权限时下载、无权限/失败时的反馈，保留来源                                     |
-| 模型/API 方案测试            | 许、陈 | 软件“设置 → 模型”、`src/shared/provider-registry.ts`                                                   | 测试图中“step plan”或其他免费 API 方案，平台名称待确认；记录模型、配置、限额和成功/失败案例，凭据仅存本地 |
+| 任务                       | 负责人 | 建议查看的源码                                                                                         | 交付与验收                                                                                                |
+| -------------------------- | ------ | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| 新版 EconoMind 新功能增加  | 陈     | `UPSTREAM.md`、`src/main/`、`src/renderer/`                                                            | 先列出具体功能与上游版本；逐项适配并提供操作示例和测试结果，避免整仓覆盖                                  |
+| AI 生图、UI 设计方案选择   | 林     | `docs/design.md`、`src/renderer/src/pages/`                                                            | 选定方案、页面效果与交互说明，交接给 UI 实现                                                              |
+| UI 修改与实现              | 王     | `src/renderer/src/pages/`、`src/renderer/src/components/`                                              | 实现方案；附截图，检查缩放、中文显示与主要交互                                                            |
+| 专家完善                   | 许     | `resources/specialists/`、`resources/skills/`、`src/main/specialist/`                                  | 完善专家角色与能力，给出可运行示例及输出核验说明                                                          |
+| 专家引导式介绍             | 王     | `src/renderer/src/pages/onboarding/`、`src/renderer/src/pages/settings/`                               | 用户理解专家用途并能进入示例；引导与实际能力一致                                                          |
+| 文献库、工作流板块放置区域 | 陈     | `src/renderer/src/pages/literature/`、`src/renderer/src/pages/research-tools/`、`src/main/literature/` | 明确入口、位置与跳转关系；已有文献与工作流仍可正常使用                                                    |
+| 链接知网、一键下载         | 李     | `src/main/literature/`、`resources/skills/`                                                            | 先确认登录与可用入口；验证有权限时下载、无权限/失败时的反馈，保留来源                                     |
+| 模型/API 方案测试          | 许、陈 | 软件“设置 → 模型”、`src/shared/provider-registry.ts`                                                   | 测试图中“step plan”或其他免费 API 方案，平台名称待确认；记录模型、配置、限额和成功/失败案例，凭据仅存本地 |
 
 目录是定位入口，不是各人独占区域。多人修改同一文件时先协调，尤其 UI、专家引导与工作流入口可能同时修改导航。**一个分支处理一个任务。**
 
@@ -162,4 +164,4 @@ GitHub 只保存已提交并推送的源码，不会自动同步软件里的聊�
 - [开发约定](CONTRIBUTING.md) · [运行与打包](docs/DEPLOY.md) · [设计规范](docs/design.md)
 - [文档索引](docs/README.md) · [安全反馈](SECURITY.md) · [上游来源](UPSTREAM.md)
 
-源码版本以 `package.json` 为准，目前为 `0.27.2`；既有安装包标签 `3.0.0` 属于另一份版本记录。项目沿用 [Apache-2.0](LICENSE)，保留 AIPOCH / Open Science 与依赖代码的署名和许可。
+源码版本以 `package.json` 为准，目前为 `0.34.1`；既有安装包标签 `3.0.0` 属于另一份版本记录。项目沿用 [Apache-2.0](LICENSE)，保留 AIPOCH / Open Science 与依赖代码的署名和许可。

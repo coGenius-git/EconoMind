@@ -420,6 +420,143 @@ describe('ParserEngine declarative path', () => {
     expect(out).toEqual({ data: { ok: true } })
   })
 
+  it.each([undefined, false] as const)(
+    'fetchText retry=%s preserves the default and supports one-shot GET',
+    async (retry) => {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response('', { status: 503 }))
+        .mockResolvedValueOnce(new Response('ready'))
+      const descriptor: ToolDescriptor = {
+        id: 't',
+        connector: 'c',
+        description: '',
+        input: {},
+        run: (ctx) =>
+          ctx.fetchText(
+            'https://example.test/status',
+            undefined,
+            retry === false ? { retry: false } : undefined
+          )
+      }
+      const pending = new ParserEngine({ fetchImpl, retryBackoffMs: 0 }).call(descriptor, {}, {})
+      if (retry === false) {
+        await expect(pending).rejects.toThrow('HTTP 503')
+        expect(fetchImpl).toHaveBeenCalledOnce()
+      } else {
+        await expect(pending).resolves.toBe('ready')
+        expect(fetchImpl).toHaveBeenCalledTimes(2)
+      }
+    }
+  )
+
+  it('postForm lets fetch serialize multipart boundaries and preserves the uploaded sequence', async () => {
+    const body = new FormData()
+    body.append('sequence_file', new Blob(['AGUUCC'], { type: 'text/plain' }), 'query.seq')
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(url, init)
+      expect(request.headers.get('content-type')).toMatch(/^multipart\/form-data; boundary=/)
+      expect(request.headers.get('accept')).toBe('application/json')
+      const file = (await request.formData()).get('sequence_file') as File
+      expect(file.name).toBe('query.seq')
+      expect(await file.text()).toBe('AGUUCC')
+      return Response.json({ jobId: 'job-1' })
+    })
+    const descriptor: ToolDescriptor = {
+      id: 't',
+      connector: 'c',
+      description: '',
+      input: {},
+      run: (ctx) => ctx.postForm('https://batch.test/submit', body)
+    }
+    await expect(new ParserEngine({ fetchImpl }).call(descriptor, {}, {})).resolves.toEqual({
+      jobId: 'job-1'
+    })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('postFormText exposes non-standard JSON responses without parsing them', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response('{"score":Infinity}', {
+        headers: { 'content-type': 'application/json' }
+      })
+    )
+    const descriptor: ToolDescriptor = {
+      id: 't',
+      connector: 'c',
+      description: '',
+      input: {},
+      run: async (ctx) => ctx.postFormText?.('https://batch.test/submit', new FormData())
+    }
+    await expect(new ParserEngine({ fetchImpl }).call(descriptor, {}, {})).resolves.toBe(
+      '{"score":Infinity}'
+    )
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('postUrlEncodedText sends a single URL-encoded submission', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(url, init)
+      expect(request.method).toBe('POST')
+      expect(request.headers.get('content-type')).toBe('application/x-www-form-urlencoded')
+      expect(await request.text()).toBe('background=TP53%0AEGFR')
+      return new Response('{"backgroundid":"bg-1"}', {
+        headers: { 'content-type': 'application/json' }
+      })
+    })
+    const descriptor: ToolDescriptor = {
+      id: 't',
+      connector: 'c',
+      description: '',
+      input: {},
+      run: async (ctx) =>
+        ctx.postUrlEncodedText?.(
+          'https://batch.test/background',
+          new URLSearchParams({ background: 'TP53\nEGFR' })
+        )
+    }
+    await expect(new ParserEngine({ fetchImpl }).call(descriptor, {}, {})).resolves.toBe(
+      '{"backgroundid":"bg-1"}'
+    )
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['http', 'network'])(
+    'does not retry a multipart job submission after a %s failure',
+    async (failure) => {
+      const fetchImpl = vi.fn(async () => {
+        if (failure === 'network') throw new TypeError('connection lost')
+        return new Response('', { status: 503 })
+      })
+      const descriptor: ToolDescriptor = {
+        id: 't',
+        connector: 'c',
+        description: '',
+        input: {},
+        run: (ctx) => ctx.postForm('https://batch.test/submit', new FormData())
+      }
+      await expect(
+        new ParserEngine({ fetchImpl, retryBackoffMs: 0 }).call(descriptor, {}, {})
+      ).rejects.toThrow()
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it('applies the response body cap to multipart submissions', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(Response.json({ oversized: '1234567890' }))
+    const descriptor: ToolDescriptor = {
+      id: 't',
+      connector: 'c',
+      description: '',
+      input: {},
+      run: (ctx) => ctx.postForm('https://batch.test/submit', new FormData())
+    }
+    await expect(
+      new ParserEngine({ fetchImpl, maxResponseBytes: 8 }).call(descriptor, {}, {})
+    ).rejects.toMatchObject({ name: 'ConnectorResponseTooLargeError' })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
   it('sends a User-Agent header (some APIs 403 without one)', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ ok: 1 }))
     const engine = new ParserEngine({ fetchImpl })
@@ -433,7 +570,7 @@ describe('ParserEngine declarative path', () => {
     }
     await engine.call(desc, {}, {})
     const headers = (fetchImpl.mock.calls[0][1] as { headers: Record<string, string> }).headers
-    expect(headers['user-agent']).toMatch(/OpenScience/)
+    expect(headers['user-agent']).toMatch(/EconoMind/)
   })
 
   it('redacts credentials from the URL in error messages', async () => {
@@ -709,4 +846,87 @@ describe('ParserEngine body cleanup edge cases', () => {
       }
     }
   )
+})
+
+describe('ParserEngine opt-in HTTP JSON bodies', () => {
+  const descriptor: ToolDescriptor = {
+    id: 't',
+    connector: 'c',
+    description: '',
+    input: {},
+    run: (ctx) =>
+      ctx.fetchJsonWithHeaders('https://example.test/data', { allowHttpStatuses: [400] })
+  }
+
+  it('reads opted-in JSON errors once without changing default HTTP handling', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockImplementation(async () => Response.json({ error: 'missing' }, { status: 400 }))
+    const engine = new ParserEngine({ fetchImpl })
+    await expect(engine.call(descriptor, {}, {})).resolves.toMatchObject({
+      body: { error: 'missing' },
+      status: 400,
+      headers: expect.any(Headers)
+    })
+    await expect(
+      engine.call(
+        { ...descriptor, run: (ctx) => ctx.fetchJson('https://example.test/data') },
+        {},
+        {}
+      )
+    ).rejects.toThrow('HTTP 400')
+    await expect(
+      engine.call(
+        { ...descriptor, run: (ctx) => ctx.fetchJsonWithHeaders('https://example.test/data') },
+        {},
+        {}
+      )
+    ).rejects.toThrow('HTTP 400')
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+  })
+
+  it('retains success status and headers with an error-status opt-in', async () => {
+    const engine = new ParserEngine({
+      fetchImpl: async () => Response.json({ id: 'record' }, { headers: { 'x-total': '1' } })
+    })
+    const result = (await engine.call(descriptor, {}, {})) as {
+      body: unknown
+      status: number
+      headers: Headers
+    }
+    expect(result.body).toEqual({ id: 'record' })
+    expect(result.status).toBe(200)
+    expect(result.headers.get('x-total')).toBe('1')
+  })
+
+  it('still rejects unlisted statuses', async () => {
+    const engine = new ParserEngine({
+      fetchImpl: async () => Response.json({ error: 'bad' }, { status: 401 }),
+      retries: 0
+    })
+    await expect(engine.call(descriptor, {}, {})).rejects.toThrow('HTTP 401')
+  })
+
+  it('bounds opted-in error bodies and cancels their streams', async () => {
+    const response = Response.json({ error: 'x'.repeat(100) }, { status: 400 })
+    const engine = new ParserEngine({ fetchImpl: async () => response, maxResponseBytes: 20 })
+    await expect(engine.call(descriptor, {}, {})).rejects.toThrow('20-byte limit')
+    expect(response.body?.locked).toBe(false)
+  })
+
+  it('times out stalled opted-in error bodies', async () => {
+    const cancel = vi.fn()
+    const response = new Response(
+      new ReadableStream({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('{'))
+        },
+        cancel
+      }),
+      { status: 400 }
+    )
+    const engine = new ParserEngine({ fetchImpl: async () => response, timeoutMs: 20, retries: 0 })
+    await expect(engine.call(descriptor, {}, {})).rejects.toThrow('timed out')
+    expect(cancel).toHaveBeenCalled()
+  })
 })

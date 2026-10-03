@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { DelegatedProcessOwnership } from './process-ownership'
 
 import type {
   AcpAgentRuntimeUpdate,
@@ -36,6 +37,7 @@ import {
   type RootDelegatePermissionEvent,
   type RootDelegatePermissionRequest
 } from './durable-delegated-work'
+import { DelegateExecutionCleanupError } from './execution-port'
 
 import { createProductionFrameWorkspace, type ResolvedImmutableInput } from './frame-workspace'
 import { createSessionDelegatedWorkRecords } from './session-record-adapter'
@@ -60,7 +62,10 @@ type ProductionDelegatedWorkOptions = Readonly<{
   }>
   resolveInput(identity: string, session: SessionKey): Promise<ResolvedImmutableInput>
   frameworks: Readonly<{
-    forSession(session: PersistedChatSession): Promise<CertifiedSessionFramework>
+    forSession(
+      session: PersistedChatSession,
+      ownership?: DelegatedProcessOwnership
+    ): Promise<CertifiedSessionFramework>
   }>
   resolveSpecialist?(
     profileId: string
@@ -74,6 +79,7 @@ type ProductionDelegatedWorkOptions = Readonly<{
     deliver(delivery: ParentMessageDelivery): Promise<DelegateMessageAcceptanceEvidence>
   }>
   onAgentRuntimeUpdate?(update: AcpAgentRuntimeUpdate): void
+  resolvePermissionPrompts?(sessionId: string): 'none' | undefined
   resolveExecutionModel(session: PersistedChatSession): Promise<DelegatedExecutionModelAdmission>
   settlementContinuations?: Readonly<{
     dispatch(request: DelegationSettlementDispatch): Promise<void> | void
@@ -108,6 +114,7 @@ type RootDelegatedWorkControl = Readonly<{
     }>
   ): Promise<void>
   wakeMessages?(sessionId: string): Promise<void>
+  rootExecutionStarted?(sessionId: string, originatingPromptId: string, executionId: string): void
   rootTurnStarted?(
     input: Readonly<{
       sessionId: string
@@ -126,6 +133,8 @@ type RootDelegatedWorkControl = Readonly<{
   // Cancel current work and notifications while retaining the ability to observe future turns.
   stopAll(): Promise<void>
   shutdown(): Promise<void>
+  shutdownForQuit(): Promise<void>
+  shutdownForUpdateGate(): Promise<void>
   deleteSession(sessionId: string): Promise<void>
   deleteProject(projectId: string): Promise<void>
 }>
@@ -211,7 +220,9 @@ const settlementSnapshot = (
 const createProductionDelegatedWorkComposition = (
   options: ProductionDelegatedWorkOptions
 ): ProductionDelegatedWorkComposition => {
+  const ownership = new DelegatedProcessOwnership(options.dataRoot)
   const workspace = createProductionFrameWorkspace({
+    ownership,
     root: join(options.dataRoot, 'delegation'),
     resolveInput: options.resolveInput
   })
@@ -222,6 +233,11 @@ const createProductionDelegatedWorkComposition = (
   >()
   const listeners = new Set<(event: RootDelegatedWorkEvent) => void>()
   const unavailableReasons = new Map<string, DelegatedWorkUnavailableReason>()
+  // The logical prompt survives Resume, but only the newly admitted runtime execution can
+  // create work. Cancelled capabilities remain revoked forever, including across async waits.
+  const rootExecutions = new Map<string, string>()
+  const cancellingTurns = new Map<string, number>()
+  const cancelledExecutions = new Set<string>()
   const cancelledTurns = new Set<string>()
   const cancelledSessionTurns = new Set<string>()
   const cancelledTurnKey = (key: SessionKey, messageId: string): string =>
@@ -254,6 +270,9 @@ const createProductionDelegatedWorkComposition = (
     sessionId: key.sessionId,
     toolCallId: request.frameId,
     title: request.action,
+    providerToolName: request.providerToolName,
+    isMcp: request.isMcp,
+    toolKind: request.toolKind,
     options: request.options.map((option) => ({ ...option })),
     delegated: {
       frameId: request.frameId,
@@ -280,7 +299,7 @@ const createProductionDelegatedWorkComposition = (
     if (!session.agentFrameworkId) {
       throw new Error('Delegated Work requires a durable Session framework identity.')
     }
-    const framework = await options.frameworks.forSession(session)
+    const framework = await options.frameworks.forSession(session, ownership)
     if (framework.frameworkId !== session.agentFrameworkId) {
       throw new Error('Delegated Work framework composition does not match the durable Session.')
     }
@@ -297,7 +316,7 @@ const createProductionDelegatedWorkComposition = (
       key
     )
     const work = createDurableDelegatedWork({
-      execution: framework.execution,
+      execution: ownership.protectExecution(framework.execution, key, framework.frameworkId),
       records,
       resolveExecutionModel: async () => {
         try {
@@ -320,8 +339,18 @@ const createProductionDelegatedWorkComposition = (
       deliverToParent: options.parentMessages?.deliver,
       onRootPermissionEvent: (event) => observePermission(key, event),
       onAgentRuntimeUpdate: options.onAgentRuntimeUpdate,
-      assertTurnOpen: (session, messageId) => {
+      assertTurnOpen: (session, messageId, executionId) => {
+        const identity = `${session.sessionId}\u0000${messageId}`
         if (
+          executionId &&
+          rootExecutions.get(identity) === executionId &&
+          !cancelledExecutions.has(executionId) &&
+          !cancellingTurns.has(identity)
+        )
+          return
+        if (
+          Boolean(executionId) ||
+          cancellingTurns.has(identity) ||
           cancelledTurns.has(cancelledTurnKey(session, messageId)) ||
           cancelledSessionTurns.has(`${session.sessionId}\u0000${messageId}`)
         ) {
@@ -365,6 +394,10 @@ const createProductionDelegatedWorkComposition = (
       return (await options.sessions.readSession(session))?.delegationPolicy !== 'deny'
     },
     async delegate(caller, request, delegateOptions) {
+      caller = {
+        ...caller,
+        permissionPrompts: options.resolvePermissionPrompts?.(caller.session.sessionId)
+      }
       try {
         const policySession = await options.sessions.readSession(caller.session)
         if (policySession?.delegationPolicy === 'deny') {
@@ -381,7 +414,13 @@ const createProductionDelegatedWorkComposition = (
                   ({ status }) => status === 'running' || status === 'awaiting_user'
                 )
               : []
-        if (unobserved.length > 0) {
+        if (
+          unobserved.length > 0 &&
+          (!caller.rootExecutionId ||
+            (rootExecutions.get(`${caller.session.sessionId}\u0000${caller.originMessageId}`) ===
+              caller.rootExecutionId &&
+              !cancelledExecutions.has(caller.rootExecutionId)))
+        ) {
           settlementWake?.trackUnobservedAttempts({
             sessionId: caller.session.sessionId,
             originatingPromptId: caller.originMessageId,
@@ -440,6 +479,13 @@ const createProductionDelegatedWorkComposition = (
       return (await workFor(caller.session)).work.stopChildren(caller, frameIds)
     },
     async sendMessage(caller, targetFrameId, message, messageOptions) {
+      caller = {
+        ...caller,
+        permissionPrompts:
+          caller.role === 'main'
+            ? options.resolvePermissionPrompts?.(caller.session.sessionId)
+            : caller.permissionPrompts
+      }
       return (await workFor(caller.session)).work.sendMessage(
         caller,
         targetFrameId,
@@ -458,9 +504,77 @@ const createProductionDelegatedWorkComposition = (
     }
   })
 
-  const stopScopedWork = async (): Promise<void> => {
+  // Returns true when every error in an AggregateError from recover() is a cleanup-confirmation
+  // error, i.e. all affected receipts are blocked but no unexpected failure occurred. Storage-read
+  // failures (corrupt receipts, permission denied) have a cause and must propagate even during
+  // quit/update; only suppress per-receipt cleanup-pending errors (no cause).
+  const isOnlyCleanupPending = (error: unknown): boolean => {
+    if (error instanceof DelegateExecutionCleanupError) {
+      // DelegateExecutionCleanupError with a cause: recursively check if the cause itself is
+      // cleanup-pending. This handles wrapping by the execution layer where real cleanup failures
+      // are wrapped with context but the root cause is still a cleanup-pending error.
+      if (error.cause !== undefined) {
+        return isOnlyCleanupPending(error.cause)
+      }
+      // Without a cause, distinguish between legitimate cleanup-pending (suppressible during
+      // quit/update) and storage errors (must always propagate). Storage validation/read errors
+      // use specific messages that indicate corruption rather than unconfirmed process cleanup.
+      const message = error.message || ''
+      const isStorageError =
+        message.includes('Invalid delegated process ownership scope') ||
+        message.includes('could not be read')
+      if (isStorageError) {
+        return false // Storage corruption must propagate
+      }
+      return true // Cleanup-pending without storage error
+    }
+    if (error instanceof AggregateError && error.errors.length > 0) {
+      return error.errors.every((e) => isOnlyCleanupPending(e))
+    }
+    return false
+  }
+
+  const stopScopedWork = async (
+    suppressCleanupPending = false,
+    log?: { warn(msg: string, err: unknown): void }
+  ): Promise<void> => {
     const scoped = await Promise.all([...works.values()])
-    await Promise.all(scoped.map(({ key, work }) => work.stopSession(key)))
+    const results = await Promise.allSettled(scoped.map(({ key, work }) => work.stopSession(key)))
+    // Recover ownership receipts for all live scoped work. When suppressCleanupPending is true
+    // (only at the global quit/update reaping gate), blocked receipts (process cleanup unconfirmed)
+    // are not propagated into the shutdown aggregate: one unprovable workspace must not silently
+    // block app quit. Workspace files remain protected — deletion and prepare still block until
+    // recovery succeeds. For ordinary stopAll/shutdown, cleanup failures propagate normally.
+    try {
+      await ownership.recover({}, true)
+    } catch (error) {
+      if (suppressCleanupPending && isOnlyCleanupPending(error)) {
+        log?.warn(
+          'Delegated process cleanup is unconfirmed; affected workspace remains protected.',
+          error
+        )
+      } else {
+        throw error
+      }
+    }
+    const failures = results.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason] : []
+    )
+    // When suppressing cleanup-pending errors, filter them from work.stopSession failures too.
+    // Each work.stopSession can internally call recoverCleanup() and reject with cleanup errors.
+    const filteredFailures = suppressCleanupPending
+      ? failures.filter((error) => !isOnlyCleanupPending(error))
+      : failures
+    if (filteredFailures.length) {
+      throw new AggregateError(filteredFailures, 'Delegated work shutdown failed.')
+    }
+    // Log suppressed cleanup failures from work.stopSession if any
+    if (suppressCleanupPending && filteredFailures.length < failures.length) {
+      log?.warn(
+        'Work-level process cleanup is unconfirmed; affected workspace remains protected.',
+        failures.filter((e) => isOnlyCleanupPending(e))
+      )
+    }
   }
 
   const root: RootDelegatedWorkControl = Object.freeze({
@@ -506,7 +620,11 @@ const createProductionDelegatedWorkComposition = (
         sessionId,
         initiatingTurnMessageId
       )
-      cancelledSessionTurns.add(`${sessionId}\u0000${initiatingTurnMessageId}`)
+      const turnKey = `${sessionId}\u0000${initiatingTurnMessageId}`
+      const executionId = rootExecutions.get(turnKey)
+      if (executionId) cancelledExecutions.add(executionId)
+      cancellingTurns.set(turnKey, (cancellingTurns.get(turnKey) ?? 0) + 1)
+      cancelledSessionTurns.add(turnKey)
       const pendingScoped = [...works.entries()].filter(([identity]) =>
         identity.endsWith(`\u0000${sessionId}`)
       )
@@ -515,11 +633,21 @@ const createProductionDelegatedWorkComposition = (
       for (const [identity] of pendingScoped) {
         cancelledTurns.add(`${identity}\u0000${initiatingTurnMessageId}`)
       }
-      const scoped = await Promise.all(pendingScoped.map(([, work]) => work))
-      await Promise.all([
-        settlementInvalidation,
-        ...scoped.map(({ key, work }) => work.cancelTurn(key, initiatingTurnMessageId))
-      ])
+      try {
+        const scoped = await Promise.all(pendingScoped.map(([, work]) => work))
+        const results = await Promise.allSettled([
+          settlementInvalidation,
+          ...scoped.map(({ key, work }) =>
+            work.cancelTurn(key, initiatingTurnMessageId, executionId)
+          )
+        ])
+        const failure = results.find((result) => result.status === 'rejected')
+        if (failure?.status === 'rejected') throw failure.reason
+      } finally {
+        const remaining = (cancellingTurns.get(turnKey) ?? 1) - 1
+        if (remaining) cancellingTurns.set(turnKey, remaining)
+        else cancellingTurns.delete(turnKey)
+      }
     },
     async stopActiveBranch(sessionId) {
       const scoped = await worksForSession(sessionId)
@@ -536,7 +664,14 @@ const createProductionDelegatedWorkComposition = (
     async stopSession(sessionId) {
       settlementWake?.invalidateSession(sessionId)
       const scoped = await worksForSession(sessionId)
-      await Promise.all(scoped.map(({ key, work }) => work.stopSession(key)))
+      const results = await Promise.allSettled(scoped.map(({ key, work }) => work.stopSession(key)))
+      // Attempt recovery but propagate cleanup-pending errors. Unlike quit/update gates, ordinary
+      // stopSession must surface unresolved ownership so the caller knows cleanup is unconfirmed.
+      await ownership.recover({ sessionId })
+      const failures = results.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : []
+      )
+      if (failures.length) throw new AggregateError(failures, 'Delegated Session stop failed.')
     },
     async respondQuestion(input) {
       const key = { projectId: input.projectId, sessionId: input.sessionId }
@@ -581,6 +716,9 @@ const createProductionDelegatedWorkComposition = (
     async rootTurnEnded(input) {
       await settlementWake?.onRootTurnEnded(input)
     },
+    rootExecutionStarted(sessionId, originatingPromptId, executionId) {
+      rootExecutions.set(`${sessionId}\u0000${originatingPromptId}`, executionId)
+    },
     async rootTurnStarted(input) {
       return settlementWake?.onRootTurnStarted(input)
     },
@@ -589,11 +727,19 @@ const createProductionDelegatedWorkComposition = (
     },
     async stopAll() {
       settlementWake?.invalidateAll()
-      await stopScopedWork()
+      await stopScopedWork(false) // Do not suppress cleanup errors in ordinary stopAll
     },
     async shutdown() {
       settlementWake?.shutdown()
-      await stopScopedWork()
+      await stopScopedWork(false) // Do not suppress cleanup errors in ordinary shutdown
+    },
+    async shutdownForQuit() {
+      settlementWake?.shutdown()
+      await stopScopedWork(true, console) // Suppress cleanup-pending at quit gate
+    },
+    async shutdownForUpdateGate() {
+      settlementWake?.invalidateAll() // Invalidate current work without latching to stopped
+      await stopScopedWork(true, console) // Suppress cleanup-pending at update gate
     },
     async deleteSession(sessionId) {
       settlementWake?.invalidateSession(sessionId)
@@ -610,9 +756,14 @@ const createProductionDelegatedWorkComposition = (
       const workDeletion = await Promise.allSettled(
         scoped.map(({ key, work }) => work.deleteSession(key))
       )
-      // Workspace deletion is an independent durable cleanup boundary. Repeat it for every Session
-      // identity so a restart (with an empty work cache) and a failed work teardown both remove the
-      // stable Frame subtree.
+      const workFailures = workDeletion.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : []
+      )
+      if (workFailures.length > 0) {
+        throw new AggregateError(workFailures, `Delegated Session cleanup failed: ${sessionId}`)
+      }
+      // Cover dormant workspaces only after every live owner has stopped successfully.
+      // Retain failed owners so a retry cannot forget an unconfirmed process teardown.
       const workspaceDeletion = await Promise.allSettled(
         [...keys.values()].map((key) => workspace.deleteSession(key))
       )
@@ -634,6 +785,12 @@ const createProductionDelegatedWorkComposition = (
       const workDeletion = await Promise.allSettled(
         scoped.map(({ key, work }) => work.deleteSession(key))
       )
+      const workFailures = workDeletion.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : []
+      )
+      if (workFailures.length > 0) {
+        throw new AggregateError(workFailures, `Delegated Project cleanup failed: ${projectId}`)
+      }
       // The stable Project directory is authoritative for dormant workspaces. Removing it directly
       // covers Sessions that have no in-memory work after restart as well as every cached Session
       // settled above.

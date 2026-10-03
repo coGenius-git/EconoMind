@@ -33,10 +33,11 @@ describe('SessionPersistenceAlert', () => {
 
     expect(alert?.textContent).toContain('Storage unavailable')
     expect(alert?.textContent).toContain('Retry after reconnecting.')
-    expect(alert?.className).toContain('fixed')
-    expect(alert?.className).toContain('bg-card')
-    expect(alert?.className).toContain('border-destructive/40')
-    expect(alert?.className).not.toContain('border-border')
+    expect(
+      container.querySelector('[data-testid="session-persistence-alert"]')?.className
+    ).toContain('fixed')
+    expect(alert?.closest('section')?.className).toContain('bg-card')
+    expect(alert?.closest('section')?.className).toContain('border-border')
     expect(container.querySelector('[data-testid="session-persistence-retry"]')).toBeNull()
   })
 
@@ -59,12 +60,14 @@ describe('SessionPersistenceAlert', () => {
       '[data-testid="session-persistence-retry"]'
     )
 
-    expect(alert?.className).toContain('w-full max-w-md')
-    expect(alert?.className).toContain('border-border')
+    expect(
+      container.querySelector('[data-testid="session-persistence-alert"]')?.className
+    ).toContain('w-full')
+    expect(alert?.closest('section')?.className).toContain('border-border')
     expect(alert?.className).not.toContain('fixed')
     expect(alert?.className).not.toContain('border-destructive/40')
     expect(retry?.dataset.slot).toBe('button')
-    expect(retry?.className).toContain('focus-visible:ring-3')
+    expect(retry?.className).toContain('focus-visible:keyboard-focus')
     expect(retry?.className).toContain('disabled:pointer-events-none')
 
     act(() => retry?.click())
@@ -90,7 +93,7 @@ describe('SessionPersistenceAlert', () => {
 
     expect(dismiss?.dataset.slot).toBe('button')
     expect(dismiss?.getAttribute('aria-label')).toBe('Dismiss storage warning')
-    expect(dismiss?.className).toContain('focus-visible:ring-3')
+    expect(dismiss?.className).toContain('focus-visible:keyboard-focus')
     act(() => dismiss?.click())
     expect(onDismiss).toHaveBeenCalledOnce()
   })
@@ -120,4 +123,31 @@ describe('SessionPersistenceAlert', () => {
     expect(action?.parentElement).not.toBe(alert)
     expect(dismiss?.parentElement).not.toBe(action?.parentElement)
   })
+})
+
+it('dismisses a floating failure without changing its owner and keeps local recovery available', () => {
+  const retry = vi.fn()
+  const render = (message = 'unavailable', inline = false): void =>
+    root.render(
+      <SessionPersistenceAlert title="Storage" message={message} inline={inline} onRetry={retry} />
+    )
+  act(() => render())
+  act(() =>
+    container
+      .querySelector<HTMLButtonElement>('[data-testid="session-persistence-dismiss"]')!
+      .click()
+  )
+  expect(container.querySelector('[role="alert"]')).toBeNull()
+  act(() => render())
+  expect(container.querySelector('[role="alert"]')).toBeNull()
+  expect(retry).not.toHaveBeenCalled()
+  act(() => render('unavailable', true))
+  expect(container.querySelector('[role="alert"]')).not.toBeNull()
+  expect(container.querySelector('[data-testid="session-persistence-dismiss"]')).toBeNull()
+  act(() =>
+    container.querySelector<HTMLButtonElement>('[data-testid="session-persistence-retry"]')!.click()
+  )
+  expect(retry).toHaveBeenCalledOnce()
+  act(() => render('different failure'))
+  expect(container.querySelector('[role="alert"]')).not.toBeNull()
 })

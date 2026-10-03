@@ -1,5 +1,12 @@
+import { journalAttributesMigration } from './migrations/0047-journal-attributes'
+import { sessionReplayMigration } from './migrations/0048-session-replay'
+import { literatureSmartCollectionsMigration } from './migrations/0045-literature-smart-collections'
+import { literatureSmartPauseRunMigration } from './migrations/0046-literature-smart-pause-run'
+import { classificationUsageMigration } from './migrations/0043-classification-usage'
 import { literatureCollectionRevisionMigration } from './migrations/0040-literature-collection-revision'
 import { projectCategoryMigration } from './migrations/0041-project-category'
+import { bookmarksMigration } from './migrations/0042-bookmarks'
+import { pdfAnnotationsMigration } from './migrations/0044-pdf-annotations'
 import {
   literatureSearchTextMigration,
   backfillLiteratureSearchText
@@ -80,6 +87,10 @@ import {
   applySqliteMigrationOperations,
   type SqliteMigrationOperation
 } from './sqlite-schema-migrations'
+
+// Schema work can exceed Prisma's 5-second default under disk/scanner contention.
+// Keep the existing heavy-migration budget for every atomic migration, including baseline adoption.
+const MIGRATION_TRANSACTION_TIMEOUT_MS = 120_000
 
 type MigrationVerifierDescriptor =
   | {
@@ -422,6 +433,12 @@ const COMPUTE_JOB_OPERATION_CHECKSUM = checksumMigrationPayload(
   computeJobOperationMigration.verifiers,
   computeJobOperationMigration.operations
 )
+const LITERATURE_SMART_PAUSE_RUN_CHECKSUM = checksumMigrationPayload(
+  literatureSmartPauseRunMigration.id,
+  literatureSmartPauseRunMigration.statements,
+  literatureSmartPauseRunMigration.verifiers,
+  literatureSmartPauseRunMigration.operations
+)
 const DATABASE_DOMAIN_ALLOWED_SUFFIX_CHECKS: AllowedSuffixCheckConstraints = Object.fromEntries(
   databaseDomainConstraintsMigration.verifiers[0].tables.map(({ table, constraints }) => [
     table,
@@ -511,6 +528,11 @@ const NUMERIC_AND_NULL_ALLOWED_SUFFIX_CHECKS: AllowedSuffixCheckConstraints = Ob
     Object.fromEntries(constraints.map(({ name, expression }) => [name, expression]))
   ])
 )
+const CLASSIFICATION_ALLOWED_SUFFIX_CHECKS: AllowedSuffixCheckConstraints = {
+  SessionAuxiliaryTurnUsage: {
+    SessionAuxiliaryTurnUsage_source_check: `"source" IN ('reviewer', 'side-chat', 'vision', 'session-details', 'host-llm', 'artifact-code-reconstruction', 'context-compaction', 'classification')`
+  }
+}
 const mergeAllowedSuffixChecks = (
   ...contracts: readonly AllowedSuffixCheckConstraints[]
 ): AllowedSuffixCheckConstraints => {
@@ -816,6 +838,78 @@ const MIGRATION_MANIFEST = [
     ),
     backupOnApply: 'required',
     backupRetention: 'retain'
+  },
+  {
+    ...bookmarksMigration,
+    checksum: checksumMigrationPayload(
+      bookmarksMigration.id,
+      bookmarksMigration.statements,
+      bookmarksMigration.verifiers,
+      bookmarksMigration.operations
+    ),
+    backupOnApply: 'required',
+    backupRetention: 'retain'
+  },
+  {
+    ...classificationUsageMigration,
+    checksum: checksumMigrationPayload(
+      classificationUsageMigration.id,
+      classificationUsageMigration.statements,
+      classificationUsageMigration.verifiers,
+      classificationUsageMigration.operations
+    ),
+    backupOnApply: 'required',
+    backupRetention: 'retain'
+  },
+  {
+    ...pdfAnnotationsMigration,
+    checksum: checksumMigrationPayload(
+      pdfAnnotationsMigration.id,
+      pdfAnnotationsMigration.statements,
+      pdfAnnotationsMigration.verifiers,
+      pdfAnnotationsMigration.operations
+    ),
+    backupOnApply: 'required',
+    backupRetention: 'retain'
+  },
+  {
+    ...literatureSmartCollectionsMigration,
+    checksum: checksumMigrationPayload(
+      literatureSmartCollectionsMigration.id,
+      literatureSmartCollectionsMigration.statements,
+      literatureSmartCollectionsMigration.verifiers,
+      literatureSmartCollectionsMigration.operations
+    ),
+    backupOnApply: 'required',
+    backupRetention: 'retain'
+  },
+  {
+    ...literatureSmartPauseRunMigration,
+    checksum: LITERATURE_SMART_PAUSE_RUN_CHECKSUM,
+    backupOnApply: 'required',
+    backupRetention: 'retain'
+  },
+  {
+    ...journalAttributesMigration,
+    checksum: checksumMigrationPayload(
+      journalAttributesMigration.id,
+      journalAttributesMigration.statements,
+      journalAttributesMigration.verifiers,
+      journalAttributesMigration.operations
+    ),
+    backupOnApply: 'required',
+    backupRetention: 'retain'
+  },
+  {
+    ...sessionReplayMigration,
+    checksum: checksumMigrationPayload(
+      sessionReplayMigration.id,
+      sessionReplayMigration.statements,
+      sessionReplayMigration.verifiers,
+      sessionReplayMigration.operations
+    ),
+    backupOnApply: 'required',
+    backupRetention: 'retain'
   }
 ] as const satisfies readonly MigrationManifestEntry[]
 // schema-locality: begin frozen-0001-repairs
@@ -921,6 +1015,8 @@ const verifyForeignKeyIntegrity = async (client: PrismaClient): Promise<void> =>
 
 const verifyManagedFileVersionDomain = async (client: PrismaClient): Promise<void> => {
   await verifyForeignKeyIntegrity(client)
+  // Repeated saves can durably reference a pending revision before the turn finalizes. Accept
+  // that ancestry only within the same unfinished Agent ownership context, including crash staging.
   const violations = await migrationSqlExecutor.query<Array<{ kind: string; id: string }>>(
     client,
     `
@@ -951,8 +1047,22 @@ const verifyManagedFileVersionDomain = async (client: PrismaClient): Promise<voi
         SELECT 1 FROM "ArtifactVersion" AS "parent"
         WHERE "parent"."id" = "version"."basedOnVersionId"
           AND "parent"."artifactId" = "version"."artifactId"
-          AND "parent"."state" = 'finalized'
           AND "parent"."versionNumber" < "version"."versionNumber"
+          AND (
+            "parent"."state" = 'finalized'
+            OR (
+              "parent"."state" = 'pending'
+              AND "version"."state" IN ('staging', 'pending')
+              AND "parent"."originKind" = 'agent_generated'
+              AND "version"."originKind" = 'agent_generated'
+              AND "parent"."artifactRunId" = "version"."artifactRunId"
+              AND "parent"."rootFrameId" = "version"."rootFrameId"
+              AND "parent"."agentFrameId" = "version"."agentFrameId"
+              AND "parent"."messageBranchId" = "version"."messageBranchId"
+              AND "parent"."runtimeSegmentId" = "version"."runtimeSegmentId"
+              AND "parent"."promptMessageId" = "version"."promptMessageId"
+            )
+          )
       )
     UNION ALL
     SELECT 'upload-based-on', "version"."id"
@@ -1212,7 +1322,10 @@ const verifyCurrentApplicationSchema = async (client: PrismaClient): Promise<voi
   await runMigrationVerifiers(
     client,
     sessionAuxiliaryTurnUsageMigration.verifiers,
-    NUMERIC_AND_NULL_ALLOWED_SUFFIX_CHECKS
+    mergeAllowedSuffixChecks(
+      NUMERIC_AND_NULL_ALLOWED_SUFFIX_CHECKS,
+      CLASSIFICATION_ALLOWED_SUFFIX_CHECKS
+    )
   )
   await runMigrationVerifiers(client, sessionUsageAttributionMigration.verifiers)
   await runMigrationVerifiers(client, computeJobAnalysisStateMigration.verifiers)
@@ -1699,24 +1812,27 @@ const applyBaselineMigration = async (
   try {
     foreignKeysWereEnabled = disableForeignKeys && (await readForeignKeyState(client)) === 1
     if (foreignKeysWereEnabled) await setForeignKeys(client, false)
-    await client.$transaction(async (transaction) => {
-      const transactionClient = transaction as unknown as PrismaClient
-      try {
-        await applyRuntimeSchemaBaseline(transactionClient, prepared)
-      } catch (error) {
-        if (
-          !deferPreviewStateForeignKeyViolations ||
-          !(await hasOnlyDeferredPreviewStateForeignKeyViolations(transactionClient, error))
-        ) {
-          throw error
+    await client.$transaction(
+      async (transaction) => {
+        const transactionClient = transaction as unknown as PrismaClient
+        try {
+          await applyRuntimeSchemaBaseline(transactionClient, prepared)
+        } catch (error) {
+          if (
+            !deferPreviewStateForeignKeyViolations ||
+            !(await hasOnlyDeferredPreviewStateForeignKeyViolations(transactionClient, error))
+          ) {
+            throw error
+          }
+          // The pinned 0005 suffix owns pruning these rows before the migration run completes.
         }
-        // The pinned 0005 suffix owns pruning these rows before the migration run completes.
-      }
-      if (prepared.verificationTarget === 'baseline') {
-        await runMigrationVerifiers(transactionClient, migration.verifiers, allowedSuffixChecks)
-      }
-      await insertLedgerRow(transactionClient, migration)
-    })
+        if (prepared.verificationTarget === 'baseline') {
+          await runMigrationVerifiers(transactionClient, migration.verifiers, allowedSuffixChecks)
+        }
+        await insertLedgerRow(transactionClient, migration)
+      },
+      { timeout: MIGRATION_TRANSACTION_TIMEOUT_MS }
+    )
   } catch (error) {
     migrationFailure = error
   }
@@ -1768,10 +1884,12 @@ const applyManifestMigration = async (
   const currentTableNames = new Set(adapted.currentTableNames)
   // An unledgered current schema can already carry 0028's stronger CHECKs. Accept that exact
   // immutable suffix while verifying older steps, so their ALTERs are not replayed over it.
-  const allowedCheckUpgrades =
+  const allowedCheckUpgrades = mergeAllowedSuffixChecks(
     migration.id < numericAndNullConstraintsMigration.id
       ? NUMERIC_AND_NULL_ALLOWED_SUFFIX_CHECKS
-      : {}
+      : {},
+    migration.id < classificationUsageMigration.id ? CLASSIFICATION_ALLOWED_SUFFIX_CHECKS : {}
+  )
   const verifyMigrationTarget = async (targetClient: PrismaClient): Promise<void> => {
     if (
       migration.id === literatureFoundationMigration.id &&
@@ -1921,7 +2039,7 @@ const applyManifestMigration = async (
         }
         await insertLedgerRow(transactionClient, migration)
       },
-      migration.id === literatureSearchTextMigration.id ? { timeout: 120_000 } : undefined
+      { timeout: MIGRATION_TRANSACTION_TIMEOUT_MS }
     )
   } catch (error) {
     migrationFailure = error
@@ -2143,7 +2261,10 @@ const migrateApplicationDatabaseWithManifest = async (
     adoptsCrossResourceTags ? CROSS_RESOURCE_TAGS_ALLOWED_SUFFIX_CHECKS : {},
     adoptsAgentMemoryProjectScope ? AGENT_MEMORY_PROJECT_SCOPE_ALLOWED_SUFFIX_CHECKS : {},
     adoptsSessionAuxiliaryTurnUsage ? SESSION_AUXILIARY_TURN_USAGE_ALLOWED_SUFFIX_CHECKS : {},
-    adoptsComputeJobOperation ? COMPUTE_JOB_OPERATION_ALLOWED_SUFFIX_CHECKS : {}
+    adoptsComputeJobOperation ? COMPUTE_JOB_OPERATION_ALLOWED_SUFFIX_CHECKS : {},
+    manifest.some((entry) => entry.id === classificationUsageMigration.id)
+      ? CLASSIFICATION_ALLOWED_SUFFIX_CHECKS
+      : {}
   )
 
   let nextIndex = appliedCount

@@ -1,7 +1,9 @@
 import { defineConfig } from '@playwright/test'
+import { resolve } from 'node:path'
 
 export default defineConfig({
   testDir: './e2e',
+  forbidOnly: Boolean(process.env.CI),
   tag: process.env.CI ? `@${process.platform}` : undefined,
   testIgnore: ['**/browser/**'],
   outputDir: 'test-results/electron',
@@ -21,6 +23,9 @@ export default defineConfig({
   },
   reporter: process.env.CI
     ? [
+        ...(process.platform === 'win32'
+          ? [[resolve(__dirname, 'e2e/windows-shard-reporter.ts')] as [string]]
+          : []),
         ['line'],
         ['blob'],
         [

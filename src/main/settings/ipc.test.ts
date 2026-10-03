@@ -51,6 +51,7 @@ type FakeSettingsService = Record<
   | 'installCodeBuddy'
   | 'installOpencode'
   | 'installCodex'
+  | 'installMissingWslDependencies'
   | 'uninstallClaude'
   | 'uninstallOpencode'
   | 'uninstallCodeBuddy'
@@ -71,6 +72,7 @@ type FakeSettingsService = Record<
   | 'setDefaultPermissionProfile'
   | 'setAppIconVariant'
   | 'upsertProvider'
+  | 'saveValidatedProvider'
   | 'deleteProvider'
   | 'setActiveProvider'
   | 'validateProvider'
@@ -90,6 +92,10 @@ type FakeSettingsService = Record<
   | 'logoutXaiOAuth'
   | 'refreshProviderModels'
   | 'markOnboardingComplete'
+  | 'switchLocalShellToPowerShell'
+  | 'useWsl2Bash'
+  | 'getLocalShellRuntimePreference'
+  | 'restoreLocalShellRuntimePreference'
   | 'getPackageMirror'
   | 'setPackageMirror'
   | 'setNetworkProxy'
@@ -136,6 +142,11 @@ const createFakeService = (): FakeSettingsService => ({
   installCodeBuddy: vi.fn().mockResolvedValue({ installId: 'cb', ok: true }),
   installOpencode: vi.fn().mockResolvedValue({ installId: 'oc', ok: true }),
   installCodex: vi.fn().mockResolvedValue({ installId: 'cx', ok: true }),
+  installMissingWslDependencies: vi.fn().mockResolvedValue({
+    state: 'ready',
+    distros: [],
+    operationReference: 'dependencies-1'
+  }),
   uninstallClaude: vi.fn().mockResolvedValue({
     snapshot: { claude: {}, providers: [], agentFrameworkId: 'claude-code' },
     activeBackendAffected: true
@@ -197,6 +208,9 @@ const createFakeService = (): FakeSettingsService => ({
     .fn()
     .mockResolvedValue({ claude: {}, providers: [], appIconVariant: 'dark' }),
   upsertProvider: vi.fn().mockResolvedValue({ claude: {}, providers: [] }),
+  saveValidatedProvider: vi
+    .fn()
+    .mockResolvedValue({ validation: { ok: true, category: 'ok' }, providerId: 'p1' }),
   deleteProvider: vi.fn().mockResolvedValue({ claude: {}, providers: [] }),
   setActiveProvider: vi.fn().mockResolvedValue({ claude: {}, providers: [] }),
   validateProvider: vi.fn().mockResolvedValue({ ok: true, category: 'ok' }),
@@ -218,6 +232,24 @@ const createFakeService = (): FakeSettingsService => ({
   logoutXaiOAuth: vi.fn().mockResolvedValue({ claude: {}, providers: [] }),
   refreshProviderModels: vi.fn().mockResolvedValue({ ok: true, models: [] }),
   markOnboardingComplete: vi.fn().mockResolvedValue({ claude: {}, providers: [] }),
+  switchLocalShellToPowerShell: vi.fn().mockResolvedValue({
+    result: {
+      runtimeBinding: { kind: 'powershell', version: '7.6' },
+      appliesTo: 'subsequent-executions',
+      wslProfilePreserved: true
+    },
+    mutation: { revision: 1, runtime: 'powershell', previous: undefined }
+  }),
+  useWsl2Bash: vi.fn().mockResolvedValue({
+    result: {
+      runtime: 'wsl2-bash',
+      selection: { distro: 'Ubuntu-24.04', user: 'scientist' },
+      appliesTo: 'subsequent-executions'
+    },
+    mutation: { revision: 2, runtime: 'wsl2-bash', previous: 'powershell' }
+  }),
+  getLocalShellRuntimePreference: vi.fn().mockResolvedValue(undefined),
+  restoreLocalShellRuntimePreference: vi.fn().mockResolvedValue(true),
   getPackageMirror: vi.fn().mockResolvedValue({}),
   setPackageMirror: vi.fn().mockResolvedValue({}),
   setNetworkProxy: vi.fn().mockResolvedValue({ mode: 'system' }),
@@ -227,6 +259,7 @@ const createFakeService = (): FakeSettingsService => ({
     disabledOpenScienceDomains: []
   }),
   listSkills: vi.fn().mockResolvedValue([]),
+
   getSkillDetail: vi.fn().mockResolvedValue({
     id: 'demo',
     name: 'Demo',
@@ -295,6 +328,7 @@ const asService = (fake: FakeSettingsService): SettingsService => fake as unknow
 type TestSettingsIpcOptions = {
   service: SettingsService
   onActiveProviderChanged?: () => void
+  onShellRuntimeRefresh?: () => void
   onAgentFrameworkChanged?: SettingsWorkflowEffects['runtime']['requestAgentFrameworkSwitch']
   onSkillsChanged?: () => void
   onConnectorsChanged?: () => void
@@ -310,6 +344,7 @@ type TestSettingsIpcOptions = {
 const registerTestSettingsIpcHandlers = ({
   service,
   onActiveProviderChanged,
+  onShellRuntimeRefresh,
   onAgentFrameworkChanged,
   onSkillsChanged,
   onConnectorsChanged,
@@ -329,6 +364,9 @@ const registerTestSettingsIpcHandlers = ({
       runtime: {
         requestProviderReconnect: onActiveProviderChanged ?? (() => undefined),
         requestAgentFrameworkSwitch: onAgentFrameworkChanged ?? (() => undefined)
+      },
+      localShell: {
+        requestShellRuntimeRefresh: async () => onShellRuntimeRefresh?.()
       },
       skills: {
         requestSkillsReload: onSkillsChanged ?? (() => undefined),
@@ -395,6 +433,7 @@ describe('settings IPC handlers', () => {
       'settings:cancel-isolated-claude-login',
       'settings:logout-isolated-claude',
       'settings:mark-onboarding-complete',
+      'settings:install-missing-wsl-dependencies',
       'settings:export-skill',
       'settings:preview-custom-server-template-export',
       'settings:select-custom-server-template',
@@ -482,6 +521,15 @@ describe('settings IPC handlers', () => {
 
     await invoke('settings:upsert-provider', { type: 'custom', name: 'G' })
     expect(service.upsertProvider).toHaveBeenCalledWith({ type: 'custom', name: 'G' })
+
+    await expect(
+      invoke('settings:save-validated-provider', { id: 'p1', type: 'custom', name: 'G' })
+    ).resolves.toMatchObject({ providerId: 'p1' })
+    expect(service.saveValidatedProvider).toHaveBeenCalledWith({
+      id: 'p1',
+      type: 'custom',
+      name: 'G'
+    })
 
     await invoke('settings:delete-provider', { id: 'p1', scenarioModelHandling: 'inherit' })
     expect(service.deleteProvider).toHaveBeenCalledWith('p1', 'inherit')
@@ -605,6 +653,50 @@ describe('settings IPC handlers', () => {
     await invoke('settings:mark-onboarding-complete')
 
     expect(service.markOnboardingComplete).toHaveBeenCalledTimes(1)
+  })
+
+  it('persists a PowerShell switch before refreshing subsequent Shell sessions', async () => {
+    handlers.clear()
+    const service = createFakeService()
+    const onShellRuntimeRefresh = vi.fn()
+    registerTestSettingsIpcHandlers({
+      service: asService(service),
+      onShellRuntimeRefresh
+    })
+
+    await invoke('settings:switch-local-shell-to-powershell')
+
+    expect(service.switchLocalShellToPowerShell).toHaveBeenCalledOnce()
+    expect(onShellRuntimeRefresh).toHaveBeenCalledOnce()
+    expect(service.switchLocalShellToPowerShell.mock.invocationCallOrder[0]).toBeLessThan(
+      onShellRuntimeRefresh.mock.invocationCallOrder[0]
+    )
+  })
+
+  it('routes explicit WSL2 Bash enablement through the same awaited capability refresh', async () => {
+    handlers.clear()
+    const service = createFakeService()
+    const onShellRuntimeRefresh = vi.fn()
+    registerTestSettingsIpcHandlers({
+      service: asService(service),
+      onShellRuntimeRefresh
+    })
+
+    await invoke('settings:use-wsl2-bash')
+
+    expect(service.useWsl2Bash).toHaveBeenCalledOnce()
+    expect(onShellRuntimeRefresh).toHaveBeenCalledOnce()
+  })
+
+  it('forwards the revision-bound WSL dependency install request unchanged', async () => {
+    handlers.clear()
+    const service = createFakeService()
+    const request = { expectedRevision: 17 }
+    registerTestSettingsIpcHandlers({ service: asService(service) })
+
+    await invoke('settings:install-missing-wsl-dependencies', request)
+
+    expect(service.installMissingWslDependencies).toHaveBeenCalledWith(request)
   })
 
   it('fires onConnectorsChanged after a connector is toggled', async () => {

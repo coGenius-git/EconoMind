@@ -1,3 +1,9 @@
+import { usePreviewWorkbenchStore } from '@/stores/preview-workbench-store'
+import { useNavigationStore } from '@/stores/navigation-store'
+import { createSessionReplayItem, loadSessionDiscussionContext } from './workspace-session-actions'
+import { SessionDiscussionDialog } from './SessionDiscussionDialog'
+import type { SessionDiscussionCapture } from './replay/replay-context'
+import { SessionPackageImportMenu } from '@/components/SessionPackageImportMenu'
 import {
   BookOpen,
   ChevronDown,
@@ -5,6 +11,7 @@ import {
   Download,
   Files,
   Cpu,
+  Lock,
   MoreVertical,
   PanelLeft,
   Plus,
@@ -13,7 +20,7 @@ import {
   Toolbox,
   X
 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   DropdownMenu,
@@ -22,10 +29,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { packageOperationActive, usePackageOperationStore } from '@/stores/package-operation-store'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 
 import { cn } from '@/lib/utils'
+import { GitHubStarBadge } from '@/components/GitHubStarBadge'
 import { NetworkStatusIndicator } from '@/components/NetworkStatusIndicator'
 import { UpdateCapsule } from '@/components/UpdateCapsule'
 import { sessionWaitReasonLabelKeys } from '@/lib/session-wait-reason-labels'
@@ -55,6 +64,7 @@ import {
 } from './session-action-menu'
 
 type WorkspaceSidebarProps = {
+  importProjectId?: string
   projectName: string
   otherProjects?: ReadonlyArray<{
     id: string
@@ -72,6 +82,7 @@ type WorkspaceSidebarProps = {
   onNewConversation: () => void
   isFilesOpen: boolean
   onOpenFiles: () => void
+  isLibraryOpen?: boolean
   onOpenLiterature?: () => void
   isComputeOpen?: boolean
   onOpenCompute?: () => void
@@ -87,8 +98,12 @@ type WorkspaceSidebarProps = {
   ) => Promise<boolean> | void
   canDownloadArtifacts: boolean
   onDownloadArtifacts: (session: ChatSession) => void
+  onCheckArtifacts?: (session: ChatSession) => void
   onViewNotebook: (session: ChatSession) => void
   onExportSession?: (session: ChatSession) => void
+  onForkSession?: (session: ChatSession) => Promise<void>
+  onExportPackage?: (session: ChatSession) => Promise<void>
+  onExportDiagnostics?: (session: ChatSession) => void
   onTogglePin: (session: ChatSession) => void
   canArchiveSession?: (session: ChatSession) => boolean
   onArchiveSession?: (session: ChatSession) => void
@@ -116,7 +131,11 @@ type WorkspaceSidebarProps = {
 }
 
 type WorkspaceSidebarViewProps = WorkspaceSidebarProps & {
+  onViewReplay?: (session: ChatSession) => void
+  onDiscussSession?: (session: ChatSession) => Promise<void>
+  rowActions?: SessionRowCallbacks
   now: number
+  packageBusy?: boolean
   showSessionShortcuts?: boolean
   openSessionActionsId?: string | null
   onSessionActionsOpenChange?: (sessionId: string, open: boolean) => void
@@ -127,6 +146,65 @@ type WorkspaceSidebarViewProps = WorkspaceSidebarProps & {
   projectMatches?: ProjectMenuMatch[]
   onProjectMenuOpenChange?: (open: boolean) => void
 }
+
+type SessionRowCallbacks = Pick<
+  WorkspaceSidebarViewProps,
+  | 'onOpenSession'
+  | 'onPreviewSession'
+  | 'onRenameSession'
+  | 'onRenameSessionTitle'
+  | 'onDownloadArtifacts'
+  | 'onCheckArtifacts'
+  | 'onViewNotebook'
+  | 'onViewReplay'
+  | 'onDiscussSession'
+  | 'onExportSession'
+  | 'onForkSession'
+  | 'onExportPackage'
+  | 'onExportDiagnostics'
+  | 'onTogglePin'
+  | 'onArchiveSession'
+  | 'onDeleteSession'
+  | 'onSessionActionsOpenChange'
+>
+
+const sessionRowCallbacks = ({
+  onOpenSession,
+  onPreviewSession,
+  onRenameSession,
+  onRenameSessionTitle,
+  onDownloadArtifacts,
+  onCheckArtifacts,
+  onViewNotebook,
+  onViewReplay,
+  onDiscussSession,
+  onExportSession,
+  onForkSession,
+  onExportPackage,
+  onExportDiagnostics,
+  onTogglePin,
+  onArchiveSession,
+  onDeleteSession,
+  onSessionActionsOpenChange
+}: WorkspaceSidebarViewProps): SessionRowCallbacks => ({
+  onOpenSession,
+  onPreviewSession,
+  onRenameSession,
+  onRenameSessionTitle,
+  onDownloadArtifacts,
+  onCheckArtifacts,
+  onViewNotebook,
+  onViewReplay,
+  onDiscussSession,
+  onExportSession,
+  onForkSession,
+  onExportPackage,
+  onExportDiagnostics,
+  onTogglePin,
+  onArchiveSession,
+  onDeleteSession,
+  onSessionActionsOpenChange
+})
 
 // Maps each session status to the left-side indicator dot using emitted theme colors.
 const sessionStatusDotClassName: Record<SessionStatus, string> = {
@@ -255,7 +333,7 @@ const sessionRowClassName = cn(
 )
 
 const sessionRowActionClassName =
-  'absolute right-1.5 top-1/2 z-10 -translate-y-1/2 rounded p-0.5 text-text-100 opacity-0 transition-opacity duration-200 ease-out hover:!opacity-100 hover:bg-bg-400 hover:text-text-000 focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100'
+  'absolute right-1.5 top-1/2 z-10 inline-flex size-7 -translate-y-1/2 items-center justify-center rounded text-text-100 opacity-0 transition-opacity duration-200 ease-out hover:!opacity-100 hover:bg-bg-400 hover:text-text-000 focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 data-[state=open]:opacity-100'
 
 const SESSION_ACTION_TARGET_PREFIX = 'session:'
 const sessionActionDangerClassName =
@@ -364,58 +442,313 @@ const matchProjects = (
   return [...titleMatches, ...descriptionMatches]
 }
 
-// Left navigation owns session selection, creation entry, and workspace settings.
-const WorkspaceSidebarView = ({
-  projectName,
-  otherProjects = [],
-  onOpenProject,
-  sessions,
-  credentialPendingSessionIds = EMPTY_CREDENTIAL_SESSION_IDS,
-  activeSessionId,
-  canCreateConversation,
+type SessionRowProps = {
+  t: ReturnType<typeof useTranslation>['t']
+  session: ChatSession
+  sectionLabel: string
+  isActive: boolean
+  imported: boolean
+  shortcutNumber?: number
+  presentedStatus: SessionStatus
+  archiveAvailable: boolean
+  mobileMode: boolean
+  isMac: boolean
+  showSessionShortcuts: boolean
+  previewSuppressed: boolean
+  canMutateConversations: boolean
+  canDeleteConversations: boolean
+  canDownloadArtifacts: boolean
+  packageBusy: boolean
+  canPreviewSession: boolean
+  canRenameTitle: boolean
+  canCheckArtifacts: boolean
+  canExportSession: boolean
+  canForkSession: boolean
+  canExportPackage: boolean
+  canExportDiagnostics: boolean
+  canArchiveAction: boolean
+  actions: SessionRowCallbacks
+}
+
+// Keep the costly action-menu and hover-preview subtree stable when the page rerenders for a
+// draft edit, or when selection moves between two otherwise unchanged Sessions. The full Session
+// object is a prop so a stream, status, title, permission, or preview update still refreshes it.
+const SessionRow = memo(function SessionRow({
+  t,
+  session,
+  sectionLabel,
+  isActive,
+  imported,
+  shortcutNumber,
+  presentedStatus,
+  archiveAvailable,
+  mobileMode,
+  isMac,
+  showSessionShortcuts,
+  previewSuppressed,
   canMutateConversations,
   canDeleteConversations,
-  onGoHome,
-  onNewConversation,
-  isFilesOpen,
-  onOpenFiles,
-  onOpenLiterature,
-  isComputeOpen = false,
-  onOpenCompute,
-  onOpenSession,
-  onPreviewSession,
-  onRenameSession,
-  onRenameSessionTitle,
   canDownloadArtifacts,
-  onDownloadArtifacts,
-  onViewNotebook,
-  onExportSession,
-  onTogglePin,
-  canArchiveSession,
-  onArchiveSession,
-  onDeleteSession,
-  onOpenSettings,
-  onOpenProjectSettings,
-  onNewProject,
-  canDownloadProjectArtifacts = false,
-  onDownloadProjectArtifacts,
-  sidebarToggle,
-  sidebarToggleButtonRef,
-  mobileMode = false,
-  isMobileOpen = false,
-  onMobileClose,
-  now,
-  showSessionShortcuts = false,
-  openSessionActionsId = null,
-  onSessionActionsOpenChange,
-  showAllProjects = false,
-  onShowAllProjectsChange,
-  projectQuery = '',
-  onProjectQueryChange,
-  projectMatches: providedProjectMatches,
-  onProjectMenuOpenChange
-}: WorkspaceSidebarViewProps): React.JSX.Element => {
+  packageBusy,
+  canPreviewSession,
+  canRenameTitle,
+  canCheckArtifacts,
+  canExportSession,
+  canForkSession,
+  canExportPackage,
+  canExportDiagnostics,
+  canArchiveAction,
+  actions
+}: SessionRowProps): React.JSX.Element {
+  const sessionActionInvocation: SessionActionInvocation = { session, presentedStatus }
+  const sessionActionBindings = createSessionActionBindings({
+    canMutateConversations,
+    canDeleteConversations,
+    canDownloadArtifacts,
+    canArchiveSession: () => archiveAvailable,
+    onTogglePin: (target) => actions.onTogglePin(target),
+    onRenameSession: (target) => actions.onRenameSession(target),
+    onDownloadArtifacts: (target) => actions.onDownloadArtifacts(target),
+    onCheckArtifacts: canCheckArtifacts
+      ? (target) => actions.onCheckArtifacts?.(target)
+      : undefined,
+    onViewNotebook: (target) => actions.onViewNotebook(target),
+    onViewReplay: actions.onViewReplay,
+    onDiscussSession: actions.onDiscussSession,
+    onExportSession: canExportSession ? (target) => actions.onExportSession?.(target) : undefined,
+    onForkSession: canForkSession
+      ? async (target) => {
+          await actions.onForkSession?.(target)
+        }
+      : undefined,
+    onExportPackage: canExportPackage
+      ? async (target) => {
+          await actions.onExportPackage?.(target)
+        }
+      : undefined,
+    onExportDiagnostics: canExportDiagnostics
+      ? (target) => actions.onExportDiagnostics?.(target)
+      : undefined,
+    packageBusy,
+    onArchiveSession: canArchiveAction ? (target) => actions.onArchiveSession?.(target) : undefined,
+    onDeleteSession: (target) => actions.onDeleteSession(target)
+  })
+  const sessionActionIdentityKey = JSON.stringify([
+    session.id,
+    session.updatedAt,
+    session.pinned ?? false,
+    presentedStatus,
+    session.status,
+    session.runtimeContext?.permission?.state,
+    session.runtimeContext?.plan?.approval,
+    session.activeMessageCount ?? session.messages.length,
+    canMutateConversations,
+    canDeleteConversations,
+    canDownloadArtifacts,
+    canExportSession,
+    canForkSession,
+    canExportPackage,
+    canExportDiagnostics,
+    packageBusy,
+    archiveAvailable
+  ])
+  const openSessionButton = (
+    <button
+      type="button"
+      data-slot="session-open-button"
+      title={imported ? t('Read-only') : undefined}
+      className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left after:absolute after:inset-0 after:rounded-[inherit]"
+      aria-current={isActive ? 'page' : undefined}
+      aria-keyshortcuts={
+        [
+          shortcutNumber ? `${isMac ? 'Meta' : 'Control'}+${shortcutNumber}` : undefined,
+          !mobileMode ? 'ArrowRight' : undefined
+        ]
+          .filter(Boolean)
+          .join(' ') || undefined
+      }
+      onClick={() => actions.onOpenSession(session.id)}
+    >
+      <span className="inline-flex size-3 shrink-0 items-center justify-center" aria-hidden="true">
+        <span
+          className={cn(
+            'size-[7px] shrink-0 rounded-full',
+            sessionStatusDotClassName[presentedStatus]
+          )}
+        />
+      </span>
+      <span className="sr-only">
+        {t('Session status: {{status}}', { status: t(sessionStatusLabelKeys[presentedStatus]) })}
+      </span>
+      <span
+        className={cn(
+          'min-w-0 flex-1 truncate',
+          sectionLabel === 'Active' && presentedStatus !== 'idle' && 'font-semibold'
+        )}
+      >
+        {session.title}
+      </span>
+      {showSessionShortcuts && shortcutNumber ? (
+        <kbd
+          aria-hidden="true"
+          className="relative z-[2] mr-5 shrink-0 rounded-full bg-bg-300 px-1.5 py-0.5 font-sans text-[11px] font-medium leading-none tabular-nums text-text-100"
+        >
+          {isMac ? `⌘${shortcutNumber}` : `Ctrl+${shortcutNumber}`}
+        </kbd>
+      ) : null}
+      {imported ? (
+        <span
+          role="img"
+          aria-label={t('Read-only')}
+          className={cn(
+            'relative z-[2] inline-flex size-4 shrink-0 items-center justify-center text-text-200 transition-opacity motion-reduce:transition-none',
+            mobileMode ? 'mr-5' : 'group-hover:opacity-0 group-focus-within:opacity-0',
+            !mobileMode && previewSuppressed && 'opacity-0'
+          )}
+        >
+          <Lock className="size-3.5" strokeWidth={1.75} aria-hidden="true" />
+        </span>
+      ) : null}
+    </button>
+  )
+  const row = (
+    <ActionMenuTarget<SessionActionId, SessionActionInvocation>
+      targetId={`${SESSION_ACTION_TARGET_PREFIX}${session.id}`}
+      identityKey={sessionActionIdentityKey}
+      catalog={SESSION_ACTION_CATALOG}
+      recipe={SESSION_ACTION_RECIPE}
+      bindings={sessionActionBindings}
+      invocation={sessionActionInvocation}
+      compact={false}
+      dangerClassName={sessionActionDangerClassName}
+      renderLabel={(entry, translatedLabel) =>
+        entry.action === 'archive' ? t('Archive', { context: 'verb' }) : translatedLabel
+      }
+      asChild
+    >
+      <div
+        data-session-id={session.id}
+        className={cn(sessionRowClassName, isActive && 'bg-bg-300 text-text-000')}
+        title={mobileMode ? session.title : undefined}
+      >
+        <div className="flex w-full min-w-0 items-center">
+          {openSessionButton}
+          <span
+            aria-hidden="true"
+            className={cn(
+              'pointer-events-none absolute inset-y-0 right-0 z-[1] w-12 rounded-r-md bg-gradient-to-r from-transparent via-rail-card-bg to-rail-card-bg group-hover:via-bg-300 group-hover:to-bg-300',
+              isActive && 'via-bg-300 to-bg-300'
+            )}
+          />
+          <SessionActionDropdown
+            session={session}
+            mobileMode={mobileMode}
+            onOpenChange={(open) => actions.onSessionActionsOpenChange?.(session.id, open)}
+          />
+        </div>
+      </div>
+    </ActionMenuTarget>
+  )
+
+  return mobileMode ? (
+    row
+  ) : (
+    <SessionHoverPreview
+      session={session}
+      onPreviewRequest={
+        canPreviewSession ? (sessionId) => actions.onPreviewSession?.(sessionId) : undefined
+      }
+      canRename={canMutateConversations && canRenameTitle}
+      previewSuppressed={previewSuppressed}
+      onRenameTitle={
+        canRenameTitle
+          ? (title, expectedTitle) => actions.onRenameSessionTitle?.(session, title, expectedTitle)
+          : undefined
+      }
+    >
+      {row}
+    </SessionHoverPreview>
+  )
+})
+
+const SessionList = ({
+  activeSessionId,
+  visible,
+  children
+}: {
+  activeSessionId: string | undefined
+  visible: boolean
+  children: React.ReactNode
+}): React.JSX.Element => {
+  const listRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!visible) return
+    listRef.current
+      ?.querySelector<HTMLElement>('[aria-current="page"]')
+      ?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+  }, [activeSessionId, visible])
+  return (
+    <div ref={listRef} className="scrollbar-auto-hide min-h-0 flex-1 overflow-y-auto py-1">
+      {children}
+    </div>
+  )
+}
+
+// Left navigation owns session selection, creation entry, and workspace settings.
+const WorkspaceSidebarView = (props: WorkspaceSidebarViewProps): React.JSX.Element => {
+  const {
+    importProjectId,
+    projectName,
+    otherProjects = [],
+    onOpenProject,
+    sessions,
+    credentialPendingSessionIds = EMPTY_CREDENTIAL_SESSION_IDS,
+    activeSessionId,
+    canCreateConversation,
+    canMutateConversations,
+    canDeleteConversations,
+    onGoHome,
+    onNewConversation,
+    isFilesOpen,
+    onOpenFiles,
+    isLibraryOpen = false,
+    onOpenLiterature,
+    isComputeOpen = false,
+    onOpenCompute,
+    onPreviewSession,
+    onRenameSessionTitle,
+    canDownloadArtifacts,
+    onCheckArtifacts,
+    onExportSession,
+    onForkSession,
+    onExportPackage,
+    onExportDiagnostics,
+    packageBusy = false,
+    canArchiveSession,
+    onArchiveSession,
+    onOpenSettings,
+    onOpenProjectSettings,
+    onNewProject,
+    canDownloadProjectArtifacts = false,
+    onDownloadProjectArtifacts,
+    sidebarToggle,
+    sidebarToggleButtonRef,
+    mobileMode = false,
+    isMobileOpen = false,
+    onMobileClose,
+    now,
+    showSessionShortcuts = false,
+    openSessionActionsId = null,
+    onSessionActionsOpenChange,
+    showAllProjects = false,
+    onShowAllProjectsChange,
+    projectQuery = '',
+    onProjectQueryChange,
+    projectMatches: providedProjectMatches,
+    onProjectMenuOpenChange
+  } = props
   const { t } = useTranslation()
+  const rowActions = props.rowActions ?? sessionRowCallbacks(props)
   const sections = getSessionSections(sessions, now, credentialPendingSessionIds)
   const shortcutNumberBySessionId = new Map(
     sections
@@ -443,7 +776,7 @@ const WorkspaceSidebarView = ({
         mobileMode && (isMobileOpen ? 'translate-x-0' : '-translate-x-full')
       )}
     >
-      <div className="flex min-h-0 flex-1 flex-col border-r border-border bg-card">
+      <div className="m-[0.7px] flex min-h-0 flex-1 flex-col rounded-lg bg-rail-card-bg shadow-card">
         <div className="px-3 pt-3">
           <div className="flex items-center">
             <button
@@ -518,6 +851,7 @@ const WorkspaceSidebarView = ({
                   </span>
                   {t('Download artifacts…')}
                 </DropdownMenuItem>
+                {importProjectId ? <SessionPackageImportMenu projectId={importProjectId} /> : null}
                 <DropdownMenuSeparator />
                 {otherProjects.length > INITIAL_PROJECT_MENU_LIMIT ? (
                   // Keep the input outside the Radix item collection so typing never selects a row.
@@ -851,8 +1185,11 @@ const WorkspaceSidebarView = ({
               type="button"
               className={cn(
                 'flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm text-text-000 hover:bg-bg-300 disabled:cursor-not-allowed disabled:opacity-50',
+                isLibraryOpen && 'bg-bg-300',
                 sidebarInteractiveTransitionClassName
               )}
+              aria-controls="right-panel"
+              aria-pressed={isLibraryOpen}
               disabled={!onOpenLiterature}
               onClick={onOpenLiterature}
             >
@@ -880,179 +1217,61 @@ const WorkspaceSidebarView = ({
                 )
               }}
             >
-              <div className="min-h-0 flex-1 overflow-y-auto py-1">
+              <SessionList
+                activeSessionId={activeSessionId}
+                visible={
+                  (!mobileMode || isMobileOpen) &&
+                  sessions.some((session) => session.id === activeSessionId)
+                }
+              >
                 {sections.map((section) => (
                   <div key={section.label}>
                     <div className="px-2 pb-[5px] pt-3.5 text-[11px] font-medium text-muted-foreground">
                       {t(section.label)}
                     </div>
                     {section.items.map((session) => {
-                      const isActive = session.id === activeSessionId
-                      const shortcutNumber = shortcutNumberBySessionId.get(session.id)
                       const presentedStatus = getPresentedSessionStatus(
                         session,
                         credentialPendingSessionIds
                       )
-                      const archiveAvailable = canArchiveSession?.(session) ?? false
-                      const sessionActionInvocation: SessionActionInvocation = {
-                        session,
-                        presentedStatus
-                      }
-                      const sessionActionBindings = createSessionActionBindings({
-                        canMutateConversations,
-                        canDeleteConversations,
-                        canDownloadArtifacts,
-                        canArchiveSession: () => archiveAvailable,
-                        onTogglePin,
-                        onRenameSession,
-                        onDownloadArtifacts,
-                        onViewNotebook,
-                        onExportSession,
-                        onArchiveSession,
-                        onDeleteSession
-                      })
-                      const sessionActionIdentityKey = JSON.stringify([
-                        session.id,
-                        session.updatedAt,
-                        session.pinned ?? false,
-                        presentedStatus,
-                        session.activeMessageCount ?? session.messages.length,
-                        canMutateConversations,
-                        canDeleteConversations,
-                        canDownloadArtifacts,
-                        Boolean(onExportSession),
-                        archiveAvailable
-                      ])
-                      const openSessionButton = (
-                        <button
-                          type="button"
-                          data-slot="session-open-button"
-                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
-                          aria-current={isActive ? 'page' : undefined}
-                          aria-keyshortcuts={
-                            [
-                              shortcutNumber
-                                ? `${isMac ? 'Meta' : 'Control'}+${shortcutNumber}`
-                                : undefined,
-                              !mobileMode ? 'ArrowRight' : undefined
-                            ]
-                              .filter(Boolean)
-                              .join(' ') || undefined
-                          }
-                          onClick={() => onOpenSession(session.id)}
-                        >
-                          <span
-                            className="inline-flex size-3 shrink-0 items-center justify-center"
-                            aria-hidden="true"
-                          >
-                            <span
-                              className={cn(
-                                'size-[7px] shrink-0 rounded-full',
-                                sessionStatusDotClassName[presentedStatus]
-                              )}
-                            />
-                          </span>
-                          <span className="sr-only">
-                            {t('Session status: {{status}}', {
-                              status: t(sessionStatusLabelKeys[presentedStatus])
-                            })}
-                          </span>
-                          <span
-                            className={cn(
-                              'min-w-0 flex-1 truncate',
-                              section.label === 'Active' &&
-                                presentedStatus !== 'idle' &&
-                                'font-semibold'
-                            )}
-                          >
-                            {session.title}
-                          </span>
-                          {showSessionShortcuts && shortcutNumber ? (
-                            <kbd
-                              aria-hidden="true"
-                              className="relative z-[2] mr-5 shrink-0 rounded-full bg-bg-300 px-1.5 py-0.5 font-sans text-[11px] font-medium leading-none tabular-nums text-text-100"
-                            >
-                              {isMac ? `⌘${shortcutNumber}` : `Ctrl+${shortcutNumber}`}
-                            </kbd>
-                          ) : null}
-                        </button>
-                      )
-
-                      // The hover-preview trigger is the whole row, not only the open button: the
-                      // card is anchored to the row's top edge and the pointer can cross from
-                      // anywhere in the row straight onto the card without hitting a dead zone.
-                      const row = (
-                        <ActionMenuTarget<SessionActionId, SessionActionInvocation>
+                      return (
+                        <SessionRow
                           key={session.id}
-                          targetId={`${SESSION_ACTION_TARGET_PREFIX}${session.id}`}
-                          identityKey={sessionActionIdentityKey}
-                          catalog={SESSION_ACTION_CATALOG}
-                          recipe={SESSION_ACTION_RECIPE}
-                          bindings={sessionActionBindings}
-                          invocation={sessionActionInvocation}
-                          compact={false}
-                          dangerClassName={sessionActionDangerClassName}
-                          renderLabel={(entry, translatedLabel) =>
-                            entry.action === 'archive'
-                              ? t('Archive', { context: 'verb' })
-                              : translatedLabel
-                          }
-                          asChild
-                        >
-                          <div
-                            data-session-id={session.id}
-                            className={cn(
-                              sessionRowClassName,
-                              isActive && 'bg-bg-300 text-text-000'
-                            )}
-                            title={mobileMode ? session.title : undefined}
-                          >
-                            <div className="flex w-full min-w-0 items-center">
-                              {openSessionButton}
-
-                              <span
-                                aria-hidden="true"
-                                className={cn(
-                                  'pointer-events-none absolute inset-y-0 right-0 z-[1] w-12 rounded-r-md bg-gradient-to-r from-transparent via-rail-card-bg to-rail-card-bg group-hover:via-bg-300 group-hover:to-bg-300',
-                                  isActive && 'via-bg-300 to-bg-300'
-                                )}
-                              />
-
-                              <SessionActionDropdown
-                                session={session}
-                                mobileMode={mobileMode}
-                                onOpenChange={(menuOpen) =>
-                                  onSessionActionsOpenChange?.(session.id, menuOpen)
-                                }
-                              />
-                            </div>
-                          </div>
-                        </ActionMenuTarget>
-                      )
-
-                      return mobileMode ? (
-                        row
-                      ) : (
-                        <SessionHoverPreview
-                          key={session.id}
+                          t={t}
                           session={session}
-                          onPreviewRequest={onPreviewSession}
-                          canRename={canMutateConversations && onRenameSessionTitle !== undefined}
-                          previewSuppressed={openSessionActionsId === session.id}
-                          onRenameTitle={
-                            onRenameSessionTitle
-                              ? (title, expectedTitle) =>
-                                  onRenameSessionTitle(session, title, expectedTitle)
-                              : undefined
+                          sectionLabel={section.label}
+                          isActive={session.id === activeSessionId}
+                          imported={
+                            session.contentLoaded === false
+                              ? session.id.startsWith('import-')
+                              : Boolean(session.packageOrigin)
                           }
-                        >
-                          {row}
-                        </SessionHoverPreview>
+                          shortcutNumber={shortcutNumberBySessionId.get(session.id)}
+                          presentedStatus={presentedStatus}
+                          archiveAvailable={canArchiveSession?.(session) ?? false}
+                          mobileMode={mobileMode}
+                          isMac={isMac}
+                          showSessionShortcuts={showSessionShortcuts}
+                          previewSuppressed={openSessionActionsId === session.id}
+                          canMutateConversations={canMutateConversations}
+                          canDeleteConversations={canDeleteConversations}
+                          canDownloadArtifacts={canDownloadArtifacts}
+                          packageBusy={packageBusy}
+                          canPreviewSession={onPreviewSession !== undefined}
+                          canRenameTitle={onRenameSessionTitle !== undefined}
+                          canCheckArtifacts={onCheckArtifacts !== undefined}
+                          canExportSession={onExportSession !== undefined}
+                          canForkSession={onForkSession !== undefined}
+                          canExportPackage={onExportPackage !== undefined}
+                          canExportDiagnostics={onExportDiagnostics !== undefined}
+                          canArchiveAction={onArchiveSession !== undefined}
+                          actions={rowActions}
+                        />
                       )
                     })}
                   </div>
                 ))}
-              </div>
+              </SessionList>
             </ActionMenuProvider>
           </SessionHoverPreviewProvider>
 
@@ -1080,6 +1299,7 @@ const WorkspaceSidebarView = ({
                 className="size-8 rounded-md"
                 onOpen={mobileMode ? onMobileClose : undefined}
               />
+              <GitHubStarBadge variant="workspace" />
               <NetworkStatusIndicator variant="icon" />
             </div>
           </div>
@@ -1089,7 +1309,91 @@ const WorkspaceSidebarView = ({
   )
 }
 
+const WorkspaceSidebarConnectedView = (props: WorkspaceSidebarViewProps): React.JSX.Element => {
+  const { t } = useTranslation()
+  const [discussionCapture, setDiscussionCapture] = useState<SessionDiscussionCapture>()
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  const callbacks: SessionRowCallbacks = {
+    ...sessionRowCallbacks(props),
+    onViewReplay: (session) => {
+      usePreviewWorkbenchStore
+        .getState()
+        .upsertAndActivateItem(
+          createSessionReplayItem(
+            session.projectId,
+            session.id,
+            session.title,
+            useNavigationStore.getState().activeProjectId ?? session.projectId
+          )
+        )
+    },
+    onDiscussSession: async (session) => {
+      const navigationRevision = useNavigationStore.getState().explicitNavigationRevision
+      const context = await loadSessionDiscussionContext(session.projectId, session.id)
+      if (
+        !mounted.current ||
+        useNavigationStore.getState().explicitNavigationRevision !== navigationRevision
+      )
+        return
+      if (!context) throw new Error(t('No recorded steps are available.'))
+      setDiscussionCapture(context)
+    }
+  }
+  const latestCallbacks = useRef(callbacks)
+  useLayoutEffect(() => {
+    latestCallbacks.current = callbacks
+  })
+  const rowActions = useMemo<SessionRowCallbacks>(
+    () => ({
+      onOpenSession: (sessionId) => latestCallbacks.current.onOpenSession(sessionId),
+      onPreviewSession: (sessionId) => latestCallbacks.current.onPreviewSession?.(sessionId),
+      onRenameSession: (session) => latestCallbacks.current.onRenameSession(session),
+      onRenameSessionTitle: (session, title, expectedTitle) =>
+        latestCallbacks.current.onRenameSessionTitle?.(session, title, expectedTitle),
+      onDownloadArtifacts: (session) => latestCallbacks.current.onDownloadArtifacts(session),
+      onCheckArtifacts: (session) => latestCallbacks.current.onCheckArtifacts?.(session),
+      onViewNotebook: (session) => latestCallbacks.current.onViewNotebook(session),
+      onViewReplay: (session) => latestCallbacks.current.onViewReplay?.(session),
+      onDiscussSession: async (session) => {
+        await latestCallbacks.current.onDiscussSession?.(session)
+      },
+      onExportSession: (session) => latestCallbacks.current.onExportSession?.(session),
+      onForkSession: async (session) => {
+        await latestCallbacks.current.onForkSession?.(session)
+      },
+      onExportPackage: async (session) => {
+        await latestCallbacks.current.onExportPackage?.(session)
+      },
+      onExportDiagnostics: (session) => latestCallbacks.current.onExportDiagnostics?.(session),
+      onTogglePin: (session) => latestCallbacks.current.onTogglePin(session),
+      onArchiveSession: (session) => latestCallbacks.current.onArchiveSession?.(session),
+      onDeleteSession: (session) => latestCallbacks.current.onDeleteSession(session),
+      onSessionActionsOpenChange: (sessionId, open) =>
+        latestCallbacks.current.onSessionActionsOpenChange?.(sessionId, open)
+    }),
+    []
+  )
+  return (
+    <>
+      <WorkspaceSidebarView {...props} rowActions={rowActions} />
+      {discussionCapture ? (
+        <SessionDiscussionDialog
+          context={discussionCapture}
+          onClose={() => setDiscussionCapture(undefined)}
+        />
+      ) : null}
+    </>
+  )
+}
+
 const WorkspaceSidebar = (props: WorkspaceSidebarProps): React.JSX.Element => {
+  const packageBusy = usePackageOperationStore((state) => packageOperationActive(state.operation))
   const {
     credentialPendingSessionIds = EMPTY_CREDENTIAL_SESSION_IDS,
     onOpenSession,
@@ -1175,8 +1479,9 @@ const WorkspaceSidebar = (props: WorkspaceSidebarProps): React.JSX.Element => {
   }, [credentialPendingSessionIds, isMac, now, onOpenSession, sessions])
 
   return (
-    <WorkspaceSidebarView
+    <WorkspaceSidebarConnectedView
       {...props}
+      packageBusy={packageBusy}
       now={now}
       showSessionShortcuts={showSessionShortcuts}
       openSessionActionsId={openSessionActionsId}
@@ -1205,3 +1510,4 @@ const WorkspaceSidebar = (props: WorkspaceSidebarProps): React.JSX.Element => {
 
 export { WorkspaceSidebar }
 export { WorkspaceSidebarView }
+export { SessionRow }

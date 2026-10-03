@@ -1,3 +1,5 @@
+import { prepareDiscussionSendAnnotations } from '../../pages/workspace/discussion-send-context'
+import type { SessionDiscussionCapture } from '../../pages/workspace/replay/replay-context'
 import { i18next } from '../../i18n'
 import type { AcpMessageImage, AcpRuntimeEvent } from '../../../../shared/acp'
 import type { FileReference } from '../../../../shared/artifacts'
@@ -33,6 +35,8 @@ import {
 import { getActiveConversationContext } from '../../../../shared/conversation-graph'
 import {
   confirmPendingDelegationPolicyAuthority,
+  flushSessionPersistence,
+  isSessionPersistenceDeferredError,
   saveSessionInOrder,
   toPersistedSessionForAuthorityMaterialization
 } from '../session-persistence/session-persistence'
@@ -62,6 +66,8 @@ type SendWorkspaceMessageIntent = {
   sessionId?: string
   // Optional durable caller identity for restart-safe application-owned prompts.
   messageId?: string
+  // Renderer-only notification: the real message now replaces the composer's pending preview.
+  onMessageAppended?: (message: SendWorkspaceMessageResult) => void
   branchSourceSessionId?: string
   branchSourceMessageId?: string
   text: string
@@ -70,6 +76,7 @@ type SendWorkspaceMessageIntent = {
   turnIntent?: 'plan-first'
   attachments?: UploadedAttachment[]
   annotations?: annotationProtocol.Annotation[]
+  discussionFocus?: SessionDiscussionCapture
   cwd?: string
   projectId?: string
   permissionProfile?: PermissionProfileId
@@ -86,8 +93,10 @@ type SendWorkspaceMessageIntent = {
   selectedComputeHosts?: string[]
   agentConfiguration?: SessionAgentConfiguration
   memoryEnabled?: boolean
+  autoReviewEnabled?: boolean
   delegationPolicy?: DelegationPolicy
   preserveSelection?: boolean
+  setupSessionToken?: string
 }
 type SendWorkspaceMessageCommand = SendWorkspaceMessageIntent & {
   agentFrameworkId?: AgentFrameworkId
@@ -105,6 +114,7 @@ type WorkspaceCommandLifecycle = {
   // Ownership of asynchronous admission, before the command establishes its own prompt run.
   isCurrent?: () => boolean
   awaitPendingPreparation?: boolean
+  flushPersistence?: (target?: string) => Promise<void>
   onSendPreparationStateChange?: (sessionId: string, inFlight: boolean) => void
   drainRuntimeEvents?: (sessionId?: string) => Promise<void>
   onSessionBound?: (pendingSessionId: string, sessionId: string) => void
@@ -114,6 +124,7 @@ type WorkspaceCommandLifecycle = {
 type ResendEditedMessageInput = {
   expectedFrameworkId?: AgentFrameworkId
   agentConfiguration?: SessionAgentConfiguration
+  onMessageAppended?: (message: SendWorkspaceMessageResult) => void
   text: string
   annotations?: annotationProtocol.Annotation[]
   parts?: MessagePart[]
@@ -525,10 +536,10 @@ const startPendingPrompt = (
   onSessionBound?: (pendingSessionId: string, sessionId: string) => void,
   onPdfContextLinked?: (sessionId: string, pdfContext: MessagePdfContextSnapshot) => void,
   onSessionSizeLimit?: (sessionId: string) => void
-): Promise<boolean> => {
+): Promise<SendWorkspaceMessageResult | undefined> => {
   return (async () => {
     const pending = request.pending
-    if (!ownsPrompt(pending.sessionId, pending.messageId)) return false
+    if (!ownsPrompt(pending.sessionId, pending.messageId)) return undefined
     let created
     let eligiblePendingPdfContext: Awaited<ReturnType<typeof filterPendingPdfContext>>
     try {
@@ -550,25 +561,25 @@ const startPendingPrompt = (
         request.memoryEnabled !== false
       ] as const
       created = literatureContext
-        ? await runtime.createSession(...createSessionArgs, true)
-        : await runtime.createSession(...createSessionArgs)
+        ? await runtime.createSession(...createSessionArgs, true, request.setupSessionToken)
+        : await runtime.createSession(...createSessionArgs, undefined, request.setupSessionToken)
     } catch (error) {
       if (ownsPrompt(pending.sessionId, pending.messageId)) {
         useSessionStore.getState().failRun(pending.sessionId, createSessionFailureMessage(error))
       }
-      return false
+      return undefined
     }
-    if (!ownsPrompt(pending.sessionId, pending.messageId)) return false
+    if (!ownsPrompt(pending.sessionId, pending.messageId)) return undefined
     if (!created?.sessionId) {
       useSessionStore.getState().failRun(pending.sessionId, 'Agent session could not be created.')
-      return false
+      return undefined
     }
     const cwd = created.cwd ?? request.cwd
     if (!cwd) {
       useSessionStore
         .getState()
         .failRun(pending.sessionId, 'Agent session did not return a workspace.')
-      return false
+      return undefined
     }
     const bound = useSessionStore.getState().bindPendingSession({
       pendingSessionId: pending.sessionId,
@@ -577,11 +588,12 @@ const startPendingPrompt = (
       agentFrameworkId: created.frameworkId,
       agentBackendId: created.backendId,
       providerSessionId: created.providerSessionId,
-      providerContinuityToken: created.providerContinuityToken
+      providerContinuityToken: created.providerContinuityToken,
+      wslSetup: created.wslSetup
     })
     onSessionBound?.(pending.sessionId, created.sessionId)
     const boundMessageId = bound?.messageId
-    if (!boundMessageId || !ownsPrompt(created.sessionId, boundMessageId)) return false
+    if (!boundMessageId || !ownsPrompt(created.sessionId, boundMessageId)) return undefined
 
     const boundSession = useSessionStore
       .getState()
@@ -619,9 +631,9 @@ const startPendingPrompt = (
         if (ownsPrompt(created.sessionId, boundMessageId)) {
           useSessionStore.getState().failRun(created.sessionId, errorMessage(error))
         }
-        return false
+        return undefined
       }
-      if (!ownsPrompt(created.sessionId, boundMessageId)) return false
+      if (!ownsPrompt(created.sessionId, boundMessageId)) return undefined
     }
 
     let attachments = request.attachments
@@ -667,9 +679,9 @@ const startPendingPrompt = (
     } catch (error) {
       if (isSessionSizeLimitError(error)) onSessionSizeLimit?.(created.sessionId)
       useSessionStore.getState().failRun(created.sessionId, errorMessage(error))
-      return false
+      return undefined
     }
-    if (!ownsPrompt(created.sessionId, boundMessageId)) return false
+    if (!ownsPrompt(created.sessionId, boundMessageId)) return undefined
 
     dispatchPrompt(runtime, {
       sessionId: created.sessionId,
@@ -681,12 +693,16 @@ const startPendingPrompt = (
       referencedArtifacts: withPdf(request.projectId, request.referencedArtifacts, pdfContext),
       referencedSessions: collectSessionReferences(request.parts),
       parts: request.parts,
-      replay: { ...request.replay, contextReset: Boolean(request.contextReset) },
+      replay: {
+        ...request.replay,
+        ...(request.specialistId ? { resumeFallback: request.replay } : {}),
+        contextReset: Boolean(request.contextReset)
+      },
       turnIntent: request.turnIntent,
       accepted: () =>
         useSessionStore.getState().clearPendingContextReplay(created.sessionId, boundMessageId)
     })
-    return true
+    return { sessionId: created.sessionId, messageId: boundMessageId }
   })()
 }
 
@@ -735,7 +751,12 @@ const sendWorkspaceMessage = async (
         }
       : input.pdfContext
   const attachments = input.attachments ?? []
-  const annotations = input.annotations ?? []
+  const annotations =
+    input.discussionFocus && !replayPrompt
+      ? await prepareDiscussionSendAnnotations(input.annotations ?? [], input.discussionFocus)
+      : (input.annotations ?? [])
+  if (lifecycle.isCurrent?.() === false) return undefined
+  input = { ...input, annotations }
   if (annotationProtocol.validateAnnotations(annotations, content)) return undefined
   if (
     input.supportsImageInput !== true &&
@@ -792,6 +813,7 @@ const sendWorkspaceMessage = async (
     })
     if (!pending?.messageId) return undefined
     const pendingPrompt = { sessionId: pending.sessionId, messageId: pending.messageId }
+    input.onMessageAppended?.(pendingPrompt)
     const session = useSessionStore
       .getState()
       .sessions.find((item) => item.id === pending.sessionId)
@@ -854,7 +876,7 @@ const sendWorkspaceMessage = async (
       lifecycle.onSessionSizeLimit
     )
     if (lifecycle.awaitPendingPreparation) {
-      return (await preparation) ? pendingPrompt : undefined
+      return preparation
     }
     void preparation
     return pendingPrompt
@@ -946,6 +968,7 @@ const sendWorkspaceMessage = async (
         preserveSelection: input.preserveSelection
       })
       if (!appended) return undefined
+      input.onMessageAppended?.(appended)
       const preparation = startPendingPrompt(
         runtime,
         {
@@ -966,10 +989,26 @@ const sendWorkspaceMessage = async (
         lifecycle.onSessionSizeLimit
       )
       if (lifecycle.awaitPendingPreparation) {
-        return (await preparation) ? appended : undefined
+        return preparation
       }
       void preparation
       return appended
+    }
+
+    // An unresolved earlier save must not append another unsent user Message on every retry.
+    // Stable application-owned messages already have identity-based retry handling below.
+    if (!stableMessageId) {
+      try {
+        await (lifecycle.flushPersistence ?? flushSessionPersistence)(`session:${sessionId}`)
+      } catch (error) {
+        if (lifecycle.isCurrent?.() === false) return undefined
+        if (isSessionPersistenceDeferredError(error)) return undefined
+        if (isSessionSizeLimitError(error)) lifecycle.onSessionSizeLimit?.(sessionId)
+        useSessionStore.getState().failRun(sessionId, errorMessage(error))
+        return undefined
+      }
+      if (lifecycle.isCurrent?.() === false) return undefined
+      if (!canAdmitExistingWorkspacePrompt(runtime.state, input)) return undefined
     }
 
     const prepared = await prepareExistingWorkspacePrompt(runtime, {
@@ -991,7 +1030,7 @@ const sendWorkspaceMessage = async (
         cutMessageId: input.truncateFromMessageId,
         excludeMessageId: rearmExistingStableMessage ? existingStableMessage?.id : undefined,
         force: input.forceHistoryReplay,
-        includeResumeFallback: Boolean(input.forcedSkillIds?.length)
+        includeResumeFallback: Boolean(input.forcedSkillIds?.length || session?.specialistId)
       },
       onPreparationStateChange: lifecycle.onSendPreparationStateChange,
       drainRuntimeEvents: lifecycle.drainRuntimeEvents,
@@ -1084,9 +1123,21 @@ const sendWorkspaceMessage = async (
       preserveSelection: input.preserveSelection
     })
     if (!appended) return undefined
-    // Recovery rearms an existing Message; its normal store saver already owns persistence.
-    // Keep the explicit durability barrier for new application-authored stable identities.
-    if (stableMessageId && !(input.allowCompactionRecovery && rearmExistingStableMessage)) {
+    input.onMessageAppended?.(appended)
+    // Application-owned stable identities need an explicit save because they may be dispatched
+    // outside the mounted store saver. Ordinary user Messages are already queued by that saver;
+    // drain it before provider dispatch so Delegation cannot authenticate against a stale root
+    // conversation snapshot. Main-owned recovery also persists its new start-run command before
+    // dispatch, even though the user Message already exists in the durable transcript.
+    const mainOwnedRecovery =
+      input.allowCompactionRecovery &&
+      rearmExistingStableMessage &&
+      useSessionStore.getState().sessions.find((candidate) => candidate.id === sessionId)
+        ?.runtimeTranscriptOwner === 'main'
+    if (
+      stableMessageId &&
+      (!(input.allowCompactionRecovery && rearmExistingStableMessage) || mainOwnedRecovery)
+    ) {
       const durableSession = useSessionStore
         .getState()
         .sessions.find((candidate) => candidate.id === sessionId)
@@ -1094,6 +1145,17 @@ const sendWorkspaceMessage = async (
       try {
         await saveSessionInOrder(toPersistedSession(durableSession))
       } catch (error) {
+        if (isSessionPersistenceDeferredError(error)) return undefined
+        if (isSessionSizeLimitError(error)) lifecycle.onSessionSizeLimit?.(sessionId)
+        useSessionStore.getState().failRun(sessionId, errorMessage(error))
+        return undefined
+      }
+      if (!ownsPrompt(sessionId, appended.messageId)) return undefined
+    } else if (!rearmExistingStableMessage) {
+      try {
+        await (lifecycle.flushPersistence ?? flushSessionPersistence)(`session:${sessionId}`)
+      } catch (error) {
+        if (isSessionPersistenceDeferredError(error)) return undefined
         if (isSessionSizeLimitError(error)) lifecycle.onSessionSizeLimit?.(sessionId)
         useSessionStore.getState().failRun(sessionId, errorMessage(error))
         return undefined
@@ -1156,6 +1218,7 @@ const sendWorkspaceMessage = async (
     agentModel: input.agentModel,
     agentConfiguration: input.agentConfiguration,
     memoryEnabled: input.memoryEnabled,
+    autoReviewEnabled: input.autoReviewEnabled,
     agentTarget: resolveSendAgentTarget(input),
     specialistId: input.specialistId ?? undefined,
     delegationPolicy: input.delegationPolicy,
@@ -1163,6 +1226,7 @@ const sendWorkspaceMessage = async (
     selectedComputeHosts: input.selectedComputeHosts
   })
   if (!pending) return undefined
+  input.onMessageAppended?.(pending)
   const preparation = startPendingPrompt(
     runtime,
     {
@@ -1182,7 +1246,7 @@ const sendWorkspaceMessage = async (
     lifecycle.onSessionSizeLimit
   )
   if (lifecycle.awaitPendingPreparation) {
-    return (await preparation) ? pending : undefined
+    return preparation
   }
   void preparation
   return pending
@@ -1235,6 +1299,7 @@ const resendEditedWorkspaceMessage = async (
         agentBackendId: options.agentBackendId,
         agentModel: options.agentModel,
         agentConfiguration: options.agentConfiguration,
+        onMessageAppended: input.onMessageAppended,
         historyReplayDescriptor: options.historyReplayDescriptor,
         truncateFromMessageId: input.messageId,
         supportsImageInput: options.supportsImageInput,

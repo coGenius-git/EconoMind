@@ -1,3 +1,6 @@
+import type { RuntimeWriterOwner } from './runtime-writer'
+import { createMessageSearch } from './message-search'
+import type { MessageSearchRequest, MessageSearchPage } from '../../shared/message-search'
 import { ipcMainHandle } from '../ipc-handler-registry'
 
 import type { ApplicationCommandOutcome } from '../../shared/application-command-contract'
@@ -57,6 +60,7 @@ type SessionPersistenceBackend = {
 }
 
 type SessionPersistenceHandlers = {
+  searchMessages: (request: MessageSearchRequest) => Promise<MessageSearchPage>
   loadAll: () => Promise<LoadAllSessionsResult>
   list: () => Promise<ListSessionSummariesResult>
   loadUsage: () => Promise<SessionUsageProjection>
@@ -174,6 +178,15 @@ const createSessionPersistenceHandlersWithAttributionAuthority = (
   // call it because Reviews belong to retained provenance.
   void reviewRepository
   return {
+    searchMessages: createMessageSearch({
+      list: async () => {
+        if (!repository.list) throw new Error('Session summary projection is unavailable.')
+        // Search must observe recovered queue limits before consuming the Session catalog too.
+        await beforeCatalogRead?.()
+        return repository.list()
+      },
+      loadOne: (request) => repository.loadOne(request)
+    }),
     loadAll: async () => {
       await beforeCatalogRead?.()
       return repository.loadAll()
@@ -313,7 +326,8 @@ const registerSessionPersistenceIpcHandlers = (
     reviewRepository
   ),
   onSessionSaved?: (session: PersistedChatSession) => Promise<void> | void,
-  openRecoveryFolder?: (request: OpenSessionRecoveryFolderRequest) => Promise<void>
+  openRecoveryFolder?: (request: OpenSessionRecoveryFolderRequest) => Promise<void>,
+  runtimeWriter?: Pick<RuntimeWriterOwner, 'commit'>
 ): void => {
   // Keep persistence IPC separate from ACP runtime commands; it owns durable UI state only.
   // loadAll can replay pending deletions and every mutation can materialize provenance/upload bytes.
@@ -331,6 +345,9 @@ const registerSessionPersistenceIpcHandlers = (
       return handlers.loadUsage()
     })
   )
+  ipcMainHandle('sessions:search-messages', (_event, request: MessageSearchRequest) =>
+    withDataRootWrite(() => handlers.searchMessages(request))
+  )
   ipcMainHandle('sessions:load-one', (_event, request: LoadSessionRequest) =>
     withDataRootWrite(() => handlers.loadOne(request))
   )
@@ -344,8 +361,8 @@ const registerSessionPersistenceIpcHandlers = (
       const originClientId = getLifecycleClientId(event)
       let durable: PersistedChatSession
       try {
-        durable = await withDataRootWrite(async () => {
-          const rendererOptions = sanitizeRendererSaveSessionOptions(options)
+        const persist = async (): Promise<PersistedChatSession> => {
+          const rendererOptions = sanitizeRendererSaveSessionOptions(options, session)
           const result = rendererOptions
             ? await handlers.saveSession(session, rendererOptions)
             : await handlers.saveSession(session)
@@ -357,7 +374,12 @@ const registerSessionPersistenceIpcHandlers = (
             }
           )
           return result.session
-        })
+        }
+        durable = await withDataRootWrite(() =>
+          options?.runtimeWriterToken && runtimeWriter
+            ? runtimeWriter.commit(originClientId, options.runtimeWriterToken, persist)
+            : persist()
+        )
       } catch (error) {
         if (!isSessionRevisionConflictError(error) && !isSessionSizeLimitError(error)) throw error
         const sizeLimit = isSessionSizeLimitError(error)

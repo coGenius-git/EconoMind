@@ -14,11 +14,14 @@ vi.mock('electron', () => ({
 }))
 
 import { SkillRegistry } from '../skills/registry'
+import { AcpTurnSkillOwner } from '../acp/turn-skill-owner'
 import { loadSkillDocument } from '../skills/runtime-mcp-server'
 import type { FetchLike } from '../skills/github-import'
-import type { UserSkillRepository } from '../skills/user-skill-repository'
+import { UserSkillRepository } from '../skills/user-skill-repository'
 import { SPECIALIST_PACKAGE_SKILL_METADATA } from '../skills/specialist-package-adapter'
+
 import { SettingsRepository } from './repository'
+
 import { SkillCatalogModule } from './skill-catalog'
 
 const roots: string[] = []
@@ -81,6 +84,87 @@ const userSkillSourceDir = (catalog: SkillCatalogModule, source: 'personal' | 'i
   join(catalogStorageRoots.get(catalog)!, 'skills', source)
 
 describe('SkillCatalogModule', () => {
+  it.each(['fresh conversation', 'existing Main conversation', 'explicit chip control'])(
+    'loads a Main-disabled Specialist Skill in a %s',
+    async (scenario) => {
+      const catalog = await createCatalog()
+      await catalog.createSkill({
+        name: 'methods-section-writer',
+        description: 'Write methods.',
+        body: 'METHODS_DOCUMENT_SENTINEL'
+      })
+      const skillId = 'personal-methods-section-writer'
+      await catalog.setSkillEnabled({ id: skillId, enabled: false })
+      await catalog.setSkillEnabled({ id: 'demo', enabled: false })
+      const runtimeRoot = join(catalogStorageRoots.get(catalog)!, 'codex-subscription')
+      const owner = new AcpTurnSkillOwner({
+        resolveSpecialistSkills: async () => ({
+          kind: 'specialist',
+          skillIds: [skillId],
+          frameworkNames: ['methods-section-writer'],
+          missingSkillIds: []
+        }),
+        skills: {
+          needForceLoad: (ids) => catalog.skillsNeedingForceLoad(ids),
+          namesForIds: (ids) => catalog.skillNudgeNamesForIds(ids)
+        },
+        requestSkillsReload: () => {}
+      })
+      const prepare = (): Promise<void> =>
+        catalog.materializeSkills(
+          runtimeRoot,
+          ['demo', skillId],
+          new Set(owner.backendPreparation().forcedSkillIds)
+        )
+      if (scenario === 'existing Main conversation') {
+        const main = await owner.authorize({})
+        await prepare()
+        main.close('completed')
+      }
+      const specialist = await owner.authorize({
+        specialistId: 'auto-research-specialist',
+        ...(scenario === 'explicit chip control' ? { selectedSkillIds: [skillId] } : {})
+      })
+      try {
+        await prepare()
+        await expect(
+          loadSkillDocument(
+            {
+              root: runtimeRoot,
+              skillsDirectory: join(runtimeRoot, 'skills'),
+              allowedNames: new Set(['methods-section-writer'])
+            },
+            'methods-section-writer'
+          )
+        ).resolves.toContain('METHODS_DOCUMENT_SENTINEL')
+        await expect(
+          loadSkillDocument(
+            { root: runtimeRoot, skillsDirectory: join(runtimeRoot, 'skills') },
+            'demo'
+          )
+        ).rejects.toThrow('Unknown skill: demo')
+        expect((await catalog.listSkills()).find((skill) => skill.id === skillId)?.enabled).toBe(
+          false
+        )
+      } finally {
+        specialist.close('completed')
+        // Remove read-only generated packages through the existing materializer.
+        await catalog.materializeSkills(runtimeRoot, ['demo', skillId])
+      }
+      expect(owner.backendPreparation().forcedSkillIds).toEqual([])
+      await prepare()
+      await expect(
+        loadSkillDocument(
+          { root: runtimeRoot, skillsDirectory: join(runtimeRoot, 'skills') },
+          'methods-section-writer'
+        )
+      ).rejects.toThrow('Unknown skill: methods-section-writer')
+      await expect(owner.authorize({ selectedSkillIds: [skillId] })).rejects.toThrow(
+        `Skill "${skillId}" is not available to Main Agent.`
+      )
+    }
+  )
+
   it('lists bundled Specialist dependencies without consulting user Skills', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'settings-skill-catalog-'))
     roots.push(storageRoot)
@@ -374,6 +458,8 @@ describe('SkillCatalogModule', () => {
       await expect(
         readFile(join(runtimeRoot, 'skills', 'os-demo', 'SKILL.md'), 'utf8')
       ).resolves.toContain('demo body')
+      await catalog.deleteSkill({ id: 'demo', source })
+      await expect(readFile(join(userDir, 'SKILL.md'))).rejects.toMatchObject({ code: 'ENOENT' })
       await chmod(join(runtimeRoot, 'skills', 'os-demo'), 0o755)
     }
   )
@@ -422,6 +508,7 @@ describe('SkillCatalogModule', () => {
   it('surfaces every duplicate user Skill id in the Settings catalog', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'settings-skill-catalog-'))
     roots.push(storageRoot)
+    const deleteSkill = vi.fn()
     const catalog = new SkillCatalogModule({
       repository: new SettingsRepository(storageRoot),
       storageRoot,
@@ -446,7 +533,8 @@ describe('SkillCatalogModule', () => {
             updatedAt: '2026-03-01T00:00:00.000Z',
             sourceDir: storageRoot
           }
-        ]
+        ],
+        delete: deleteSkill
       } as unknown as UserSkillRepository
     })
 
@@ -462,6 +550,18 @@ describe('SkillCatalogModule', () => {
       ])
     )
     expect(new Set(skills.map((skill) => skill.catalogEntryKey)).size).toBe(2)
+
+    await catalog.deleteSkill({
+      id: 'shared-sidecar-id',
+      source: 'personal',
+      directoryName: 'personal-copy'
+    })
+    expect(deleteSkill).toHaveBeenCalledWith(
+      'shared-sidecar-id',
+      'personal',
+      'personal-copy',
+      undefined
+    )
   })
 
   it('ignores an unsafe Personal sidecar id instead of materializing outside the Skills root', async () => {
@@ -973,6 +1073,9 @@ describe('SkillCatalogModule', () => {
     expect(
       (await catalog.deleteSkill({ id: 'personal-my-skill' })).map((skill) => skill.id)
     ).toEqual(['demo'])
+    await expect(catalog.deleteSkill({ id: 'demo' })).rejects.toThrow(
+      'Built-in Skills cannot be deleted.'
+    )
   })
 
   it.each(['personal', 'imported'] as const)(

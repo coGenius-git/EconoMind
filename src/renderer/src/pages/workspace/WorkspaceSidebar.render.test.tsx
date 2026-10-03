@@ -16,6 +16,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createI18nTestStub } from '../../../../../test/i18n-test-stub'
 import { clickRadixMenuItem, openRadixMenu } from '../settings/test-utils'
 import type { SessionActionId, SessionActionInvocation } from './session-action-menu'
+import { SessionRow } from './WorkspaceSidebar'
 
 vi.mock('react-i18next', () => createI18nTestStub())
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -198,25 +199,30 @@ const mountProjectSidebar = async (
   otherProjects: readonly SidebarProject[],
   onOpenProject: (projectId: string) => void = vi.fn()
 ): Promise<{
+  container: HTMLElement
   cleanup: () => void
   openMenu: () => void
   rerenderProjects: (projects: readonly SidebarProject[]) => Promise<void>
   rerenderSessions: (sessions: ChatSession[]) => Promise<void>
+  selectSession: (sessionId: string) => Promise<void>
+  setArchivePredicate: (predicate: (session: ChatSession) => boolean) => Promise<void>
 }> => {
   const { WorkspaceSidebar } = await import('./WorkspaceSidebar')
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
 
+  let selectedSessionId = 'session-a'
   let renderedProjects = otherProjects
   let renderedSessions = [createSession({ id: 'session-a' })]
+  let archivePredicate: ((session: ChatSession) => boolean) | undefined
   const render = (): void => {
     root.render(
       <WorkspaceSidebar
         projectName="Example project"
         otherProjects={renderedProjects}
         sessions={renderedSessions}
-        activeSessionId="session-a"
+        activeSessionId={selectedSessionId}
         canCreateConversation
         canMutateConversations
         canDeleteConversations
@@ -231,6 +237,7 @@ const mountProjectSidebar = async (
         onDownloadArtifacts={vi.fn()}
         onViewNotebook={vi.fn()}
         onTogglePin={vi.fn()}
+        canArchiveSession={archivePredicate}
         onDeleteSession={vi.fn()}
         onOpenSettings={vi.fn()}
         onOpenProjectSettings={vi.fn()}
@@ -244,6 +251,7 @@ const mountProjectSidebar = async (
   })
 
   return {
+    container,
     cleanup: () => {
       act(() => root.unmount())
       container.remove()
@@ -254,8 +262,16 @@ const mountProjectSidebar = async (
       renderedProjects = projects
       await act(async () => render())
     },
+    selectSession: async (sessionId) => {
+      selectedSessionId = sessionId
+      await act(async () => render())
+    },
     rerenderSessions: async (sessions) => {
       renderedSessions = sessions
+      await act(async () => render())
+    },
+    setArchivePredicate: async (predicate) => {
+      archivePredicate = predicate
       await act(async () => render())
     }
   }
@@ -272,6 +288,14 @@ const collectElements = (node: ReactNode): ElementWithProps[] => {
 
       const element = child as ElementWithProps
       elements.push(element)
+      if (element.type === SessionRow) {
+        const renderRow = (
+          SessionRow as unknown as {
+            type: (props: Record<string, unknown>) => ReactNode
+          }
+        ).type
+        visit(renderRow(element.props))
+      }
       visit(element.props.children as ReactNode)
     })
   }
@@ -325,10 +349,183 @@ const waitForPreviewDwell = async (): Promise<void> => {
 }
 
 describe('WorkspaceSidebar accessible render', () => {
-  it('separates the full-height sidebar from the conversation with a border', async () => {
+  it('renders only affected rows when fresh page callbacks accompany selection and Session updates', async () => {
+    const rowComponent = SessionRow as unknown as {
+      type: (props: Record<string, unknown>) => ReactElement
+    }
+    const originalRender = rowComponent.type
+    const renderRow = vi.fn(originalRender)
+    rowComponent.type = renderRow
+    const sidebar = await mountProjectSidebar([])
+    const sessions = Array.from({ length: 30 }, (_, index) =>
+      createSession({ id: `session-${index}`, title: `Session ${index}` })
+    )
+
+    try {
+      renderRow.mockClear()
+      await sidebar.rerenderSessions(sessions)
+      expect(renderRow).toHaveBeenCalledTimes(30)
+
+      await sidebar.selectSession('session-0')
+      renderRow.mockClear()
+      await sidebar.selectSession('session-29')
+      expect(renderRow).toHaveBeenCalledTimes(2)
+
+      renderRow.mockClear()
+      await sidebar.rerenderProjects([])
+      expect(renderRow).not.toHaveBeenCalled()
+
+      renderRow.mockClear()
+      const renamedSessions = sessions.map((session, index) =>
+        index === 5
+          ? { ...session, title: 'Updated title', updatedAt: session.updatedAt + 1 }
+          : session
+      )
+      await sidebar.rerenderSessions(renamedSessions)
+      expect(renderRow).toHaveBeenCalledTimes(1)
+
+      renderRow.mockClear()
+      await sidebar.rerenderSessions(
+        renamedSessions.map((session, index) =>
+          index === 7 ? { ...session, status: 'waiting-permission' } : session
+        )
+      )
+      expect(renderRow).toHaveBeenCalledTimes(1)
+      expect(renderRow.mock.calls[0]?.[0].presentedStatus).toBe('waiting-permission')
+    } finally {
+      sidebar.cleanup()
+      rowComponent.type = originalRender
+    }
+  })
+
+  it('uses a changed archive predicate for Sessions added after existing rows agreed', async () => {
+    const rowComponent = SessionRow as unknown as {
+      type: (props: Record<string, unknown>) => ReactElement
+    }
+    const originalRender = rowComponent.type
+    const renderRow = vi.fn(originalRender)
+    rowComponent.type = renderRow
+    const sidebar = await mountProjectSidebar([])
+
+    try {
+      await sidebar.setArchivePredicate(() => false)
+      renderRow.mockClear()
+      await sidebar.setArchivePredicate((session) => session.id === 'future-session')
+      expect(renderRow).not.toHaveBeenCalled()
+
+      await sidebar.rerenderSessions([
+        createSession({ id: 'session-a' }),
+        createSession({ id: 'future-session' })
+      ])
+      const newRow = renderRow.mock.calls.find(
+        ([props]) => (props.session as ChatSession).id === 'future-session'
+      )?.[0]
+      expect(newRow?.archiveAvailable).toBe(true)
+    } finally {
+      sidebar.cleanup()
+      rowComponent.type = originalRender
+    }
+  })
+
+  it('reveals the selected session without resetting scroll on session updates', async () => {
+    const previous = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView')
+    const revealed: HTMLElement[] = []
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: function (this: HTMLElement) {
+        revealed.push(this)
+      }
+    })
+    const sidebar = await mountProjectSidebar([])
+    try {
+      const sessions = Array.from({ length: 60 }, (_, index) =>
+        createSession({ id: `session-${index}`, title: `Session ${index}` })
+      )
+      await sidebar.rerenderSessions(sessions)
+      revealed.length = 0
+      await sidebar.selectSession('session-59')
+      expect(revealed).toHaveLength(1)
+      expect(revealed[0].closest('[data-session-id]')?.getAttribute('data-session-id')).toBe(
+        'session-59'
+      )
+      await sidebar.rerenderSessions(
+        sessions.map((session) => ({ ...session, updatedAt: session.updatedAt + 1 }))
+      )
+      expect(revealed).toHaveLength(1)
+      await sidebar.selectSession('session-0')
+      expect(revealed).toHaveLength(2)
+      expect(revealed[1].closest('[data-session-id]')?.getAttribute('data-session-id')).toBe(
+        'session-0'
+      )
+    } finally {
+      sidebar.cleanup()
+      if (previous) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', previous)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
+    }
+  })
+
+  it.each([true, false])(
+    'marks imported sessions with an accessible read-only icon (details loaded: %s)',
+    async (loaded) => {
+      const html = await renderSidebar([
+        createSession({
+          id: 'import-session',
+          contentLoaded: loaded ? undefined : false,
+          title: 'Literature comparison',
+          status: 'idle',
+          packageOrigin: loaded
+            ? {
+                importId: 'import-1',
+                sourceProjectId: 'source-project',
+                sourceSessionId: 'source-session',
+                importedAt: 1,
+                manifestChecksum: 'a'.repeat(64)
+              }
+            : undefined
+        }),
+        createSession({ id: 'local', title: 'New analysis', status: 'idle' })
+      ])
+      const container = document.createElement('div')
+      container.innerHTML = html
+      const imported = container.querySelector('[data-session-id="import-session"]')
+      const icon = imported?.querySelector('[role="img"][aria-label="Read-only"]')
+      expect(icon).not.toBeNull()
+      expect(icon?.textContent).toBe('')
+      expect(
+        imported?.querySelector('[data-slot="session-open-button"]')?.getAttribute('title')
+      ).toBe('Read-only')
+      expect(container.querySelector('[data-session-id="local"] [role="img"]')).toBeNull()
+    }
+  )
+
+  it.each([true, false])('leaves forked imports unlocked (details loaded: %s)', async (loaded) => {
+    const container = document.createElement('div')
+    container.innerHTML = await renderSidebar([
+      createSession({
+        id: '2a32189d-c609-4f99-aeb2-5a7cf7f65bb7',
+        contentLoaded: loaded ? undefined : false,
+        status: 'idle',
+        forkOrigin: loaded
+          ? {
+              importId: 'fork-receipt',
+              sourceProjectId: 'source-project',
+              sourceSessionId: 'source-session',
+              importedAt: 1,
+              manifestChecksum: 'a'.repeat(64)
+            }
+          : undefined
+      })
+    ])
+    expect(container.querySelector('[aria-label="Read-only"]')).toBeNull()
+    expect(
+      container.querySelector('[data-slot="session-open-button"]')?.getAttribute('title')
+    ).not.toBe('Read-only')
+  })
+
+  it('keeps the sidebar card inset even on both sides', async () => {
     const html = await renderSidebar([createSession({ id: 'session-a' })])
 
-    expect(html).toContain('flex min-h-0 flex-1 flex-col border-r border-border bg-card')
+    expect(html).toContain('m-[0.7px] flex min-h-0 flex-1 flex-col rounded-lg')
     expect(html).not.toContain('mr-0')
     expect(html).toContain('aria-label="Messages, no unread messages"')
   })
@@ -561,7 +758,6 @@ describe('WorkspaceSidebar accessible render', () => {
 
       expect(document.body.querySelector('[data-slot="dropdown-menu-content"]')).toBeNull()
       expect(document.body.querySelector('[data-slot="session-hover-preview"]')).toBeNull()
-
       await act(async () =>
         actionsTrigger.dispatchEvent(
           new FocusEvent('focusin', { bubbles: true, relatedTarget: actionsMenu })
@@ -650,12 +846,16 @@ describe('WorkspaceSidebar accessible render', () => {
       ).toEqual([
         'toggle-pin',
         'edit',
+        'discuss',
+        'view-replay',
         'download-artifacts',
         'view-notebook',
-        'export',
         'archive',
         'delete'
       ])
+      expect(menu?.querySelector('[data-slot="dropdown-menu-sub-trigger"]')?.textContent).toBe(
+        'Export'
+      )
       expect(document.body.querySelector('[data-slot="session-hover-preview"]')).toBeNull()
       expect(onOpenSession).not.toHaveBeenCalled()
 
@@ -665,9 +865,10 @@ describe('WorkspaceSidebar accessible render', () => {
       expect(onRenameSession).toHaveBeenCalledWith(sessions[1])
       expect(onOpenSession).not.toHaveBeenCalled()
 
-      openRadixMenu(
-        container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Context target"]')
+      const actionsButton = container.querySelector<HTMLButtonElement>(
+        '[aria-label="Open actions for Context target"]'
       )
+      await openRadixMenu(actionsButton)
       const dropdown = document.body.querySelector<HTMLElement>('[aria-label="Session actions"]')
       expect(
         Array.from(dropdown?.querySelectorAll<HTMLElement>('[data-action-id]') ?? []).map(
@@ -676,9 +877,10 @@ describe('WorkspaceSidebar accessible render', () => {
       ).toEqual([
         'toggle-pin',
         'edit',
+        'discuss',
+        'view-replay',
         'download-artifacts',
         'view-notebook',
-        'export',
         'archive',
         'delete'
       ])
@@ -744,6 +946,8 @@ describe('WorkspaceSidebar accessible render', () => {
       expect(actions.map((item) => item.dataset.actionId)).toEqual([
         'toggle-pin',
         'edit',
+        'discuss',
+        'view-replay',
         'view-notebook',
         'archive',
         'delete'
@@ -1504,7 +1708,7 @@ describe('WorkspaceSidebar accessible render', () => {
       expect(clearButton?.getAttribute('data-size')).toBe('icon-xs')
       expect(clearButton?.className).toContain('text-text-100')
       expect(clearButton?.className).toContain('hover:bg-bg-200')
-      expect(clearButton?.className).toContain('focus-visible:ring-3')
+      expect(clearButton?.className).toContain('focus-visible:keyboard-focus')
 
       const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
       await act(async () => {
@@ -2337,6 +2541,7 @@ describe('WorkspaceSidebar accessible render', () => {
       isFilesOpen: true,
       onOpenFiles,
       onOpenLiterature,
+      isLibraryOpen: true,
       isComputeOpen: false,
       onOpenCompute,
       onOpenSession: vi.fn(),
@@ -2381,6 +2586,8 @@ describe('WorkspaceSidebar accessible render', () => {
     ;(computeButton?.props.onClick as () => void)()
     expect(onOpenCompute).toHaveBeenCalledTimes(1)
 
+    expect(literatureButton?.props['aria-controls']).toBe('right-panel')
+    expect(literatureButton?.props['aria-pressed']).toBe(true)
     expect(literatureButton?.props.onClick).toBeTypeOf('function')
     ;(literatureButton?.props.onClick as () => void)()
     expect(onOpenLiterature).toHaveBeenCalledTimes(1)

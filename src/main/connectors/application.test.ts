@@ -1,9 +1,17 @@
-import { describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { composeApplicationRuntime } from '../application-runtime'
 import { createConnectorApplicationModule, type ConnectorApplicationDeps } from './application'
 
 type TestDoubles = Record<string, ReturnType<typeof vi.fn>>
+
+const temporaryRoots: string[] = []
+afterEach(() => {
+  for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
 
 interface ConnectorApplicationHarness {
   settings: TestDoubles
@@ -14,6 +22,8 @@ interface ConnectorApplicationHarness {
 }
 
 const createHarness = (): ConnectorApplicationHarness => {
+  const skillsDir = mkdtempSync(join(tmpdir(), 'connector-application-skills-'))
+  temporaryRoots.push(skillsDir)
   const settings = {
     getConnectors: vi.fn().mockResolvedValue({ customMcpServers: [] }),
     saveCustomServerOAuthState: vi.fn().mockResolvedValue(undefined),
@@ -59,7 +69,7 @@ const createHarness = (): ConnectorApplicationHarness => {
   }
   const deps: ConnectorApplicationDeps = {
     settings: settings as unknown as ConnectorApplicationDeps['settings'],
-    skillsDir: '/tmp/skills',
+    skillsDir,
     openExternal: vi.fn(),
     notifyStatusChanged: vi.fn(),
     broadcastConnectorApproval: vi.fn(),
@@ -300,9 +310,14 @@ describe('Connector application composition', () => {
     await runtime.dispose()
   })
 
-  it('fails closed when no local credential owner is available', async () => {
+  it('runs anonymous OpenAlex calls when no local credential owner is available', async () => {
     const { deps } = createHarness()
     vi.mocked(deps.canRequestCredential).mockReturnValue(false)
+    vi.mocked(deps.fetchImpl).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ meta: { count: 0 }, results: [] })
+    } as Response)
     const module = await createConnectorApplicationModule(deps)
 
     await expect(
@@ -312,9 +327,9 @@ describe('Connector application composition', () => {
         { query: 'CRISPR', max_records: 1 },
         { origin: 'internal' }
       )
-    ).rejects.toThrow(/credential_required/)
+    ).resolves.toMatchObject({ n_records_returned: 0 })
     expect(deps.broadcastCredentialRequest).not.toHaveBeenCalled()
-    expect(deps.fetchImpl).not.toHaveBeenCalled()
+    expect(deps.fetchImpl).toHaveBeenCalledOnce()
 
     await module.dispose?.()
   })

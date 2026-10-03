@@ -10,6 +10,7 @@ import {
   isCodexSubscriptionProviderId,
   resolveCodexSubscriptionType
 } from '../../shared/settings'
+import { customProviderRequiresKey } from '../../shared/provider-base-url'
 import { codexSubscriptionStorageDir } from '../agent-framework/codex'
 import {
   clearAppOwnedCodexAuthentication,
@@ -17,6 +18,7 @@ import {
   CodexAuthController,
   ensureCodexAuthHome,
   importCodexAuthentication,
+  inspectAppOwnedCodexAuthentication,
   openCodexAuthSession,
   resolveEffectiveCodexSubscriptionTransport,
   type CodexAuthControllerPort,
@@ -524,12 +526,21 @@ class ProviderAuthLifecycleOwner {
   }
 
   async isProviderKeyUsable(provider: StoredProvider): Promise<boolean> {
-    if (isCodexSubscriptionProvider(provider.type)) return true
+    if (isCodexSubscriptionProvider(provider.type)) {
+      return (
+        (await inspectAppOwnedCodexAuthentication(this.options.storageRoot)).state === 'present'
+      )
+    }
     if (provider.type === 'claude-shared') {
       if (provider.disconnectedAt !== undefined) return false
       return this.getClaudeSharedAuthStatus()
     }
 
+    // A loopback custom gateway (local model server) serves without a key, so an absent key stays
+    // usable and preflight does not block the spawn on a credential it will never have.
+    if (provider.type === 'custom' && !provider.keyRef) {
+      return !customProviderRequiresKey(provider.baseUrl)
+    }
     return Boolean(provider.keyRef) && tryDecryptKey(provider.keyRef) !== undefined
   }
 

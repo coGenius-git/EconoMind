@@ -15,8 +15,17 @@ import type {
 } from '../../shared/permission-grants'
 import type { SessionPermissionRuntimeContext } from '../../shared/session-persistence'
 import type { CommandShellDialect } from '../agent-framework/types'
+import { createLogger } from '../logger'
+import {
+  logPermissionDiagnostic,
+  type PermissionDiagnostic
+} from '../permission-grants/diagnostics'
 import { extractProviderToolName } from './runtime-events'
 import {
+  isManagedSkillPermission,
+  resolveAutomaticPermissionReason,
+  isNativeWebFetchPermission,
+  isNativeWebSearchPermission,
   isMcpToolName,
   resolveMcpProviderLeafIdentity,
   resolveAutomaticPermission,
@@ -31,7 +40,8 @@ import {
   capabilityFromLegacyCategory,
   categoryFromTrustedToolName,
   commandPrefixPermissionCategory,
-  containsSecretBearingMaterial
+  containsSecretBearingMaterial,
+  notebookPermissionRuntimeQualifier
 } from '../permission-grants/capability'
 import { projectPermissionGrantSnapshot } from '../permission-grants/catalog'
 import type { PermissionGrantRegistry } from '../permission-grants/registry'
@@ -39,6 +49,7 @@ import type { PermissionGrantRegistry } from '../permission-grants/registry'
 type PendingPermission = {
   request: AcpPermissionRequest
   appOwned?: true
+  decisionAuthority?: PermissionDiagnostic['authority']
   automaticRequest?: RequestPermissionRequest
   policyContext?: PermissionPolicyContext
   categoryKey?: string
@@ -63,6 +74,7 @@ type AppPermissionRequest = Readonly<{
   rawInput: unknown
   options: ReadonlyArray<AcpPermissionRequest['options'][number]>
   signal?: AbortSignal
+  permissionPrompts?: 'none'
 }>
 
 type DurablePermissionWaitCandidate = Readonly<{
@@ -72,7 +84,26 @@ type DurablePermissionWaitCandidate = Readonly<{
   fingerprint: string
   categoryKey?: string
   capability?: PermissionCapability
+  restoredContinuation?: RestoredPermissionContinuation
 }>
+
+// Main-only authority for handing a consumed restored wait to the next wait of the same Attempt.
+// It never crosses IPC or persistence; the existing `continuing` record is the durable fence.
+type RestoredPermissionContinuation = {
+  readonly projectId: string
+  readonly sessionId: string
+  readonly requestId: string
+  readonly promptMessageId: string
+  readonly fingerprint: string
+  interactionSequence?: number
+  agentFrameId?: string
+  messageBranchId?: string
+  isCurrent?: () => boolean
+  released: boolean
+  handoffStarted: boolean
+  handedOff: boolean
+  cancellationRequested?: boolean
+}
 
 type PermissionWaitHooks = Readonly<{
   persist: (candidate: DurablePermissionWaitCandidate) => Promise<boolean>
@@ -125,7 +156,9 @@ const SESSION_ALLOW_OPTION_ID_PREFIX = 'open-science:allow-session:'
 const PROJECT_ALLOW_OPTION_ID_PREFIX = 'open-science:allow-project:'
 const GLOBAL_ALLOW_OPTION_ID_PREFIX = 'open-science:allow-global:'
 const FILE_TOOL_KINDS = new Set(['read', 'edit', 'delete', 'move'])
-const FILE_PROVIDER_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
+// ACP kinds are not all provider tool names: e.g. an arbitrary native `move` must not become file
+// authority solely because the Registry also supports the ACP move operation.
+const FILE_PROVIDER_TOOLS = new Set(['read', 'write', 'edit', 'multiedit', 'notebookedit'])
 const NOTEBOOK_SERVER = 'open-science-notebook'
 const NOTEBOOK_EXECUTION_TOOLS = new Set(['notebook_execute', 'repl_execute', 'bash_execute'])
 // Depends on the codex-acp option-ID contract: persistent exec/network policy amendments are the only
@@ -483,25 +516,36 @@ const resolveNotebookRuntime = (tool: string, rawInput: unknown): string | undef
   return tool === 'notebook_execute' ? 'python' : undefined
 }
 
+const resolveNotebookPermissionRuntime = (
+  tool: string,
+  rawInput: unknown,
+  shellRuntime?: string
+): string | undefined =>
+  tool === 'bash_execute'
+    ? notebookPermissionRuntimeQualifier(shellRuntime ?? 'bash')
+    : resolveNotebookRuntime(tool, rawInput)
+
 const resolveNotebookPermissionContext = (
   name: string | null | undefined,
   rawInput: unknown,
-  mcpServerNames: readonly string[]
+  mcpServerNames: readonly string[],
+  shellRuntime?: string
 ): { runtime?: string } | undefined => {
   const identity = resolveMcpToolIdentity(name, mcpServerNames)
   if (!identity) return undefined
 
-  return resolveNotebookPermissionContextForIdentity(identity, rawInput)
+  return resolveNotebookPermissionContextForIdentity(identity, rawInput, shellRuntime)
 }
 
 const resolveNotebookPermissionContextForIdentity = (
   identity: string,
-  rawInput: unknown
+  rawInput: unknown,
+  shellRuntime?: string
 ): { runtime?: string } | undefined => {
   const tool = resolveNotebookExecutionTool(identity)
   if (!tool) return undefined
 
-  return { runtime: resolveNotebookRuntime(tool, rawInput) }
+  return { runtime: resolveNotebookPermissionRuntime(tool, rawInput, shellRuntime) }
 }
 
 const isMcpPermission = (
@@ -563,7 +607,8 @@ const projectPermissionOptions = (
 const resolveCategoryKey = (
   params: RequestPermissionRequest,
   mcpServerNames: readonly string[] = [],
-  allowLegacyReportedMcp = false
+  allowLegacyReportedMcp = false,
+  shellRuntime?: string
 ): string | undefined => {
   const { toolCall } = params
   const providerToolName = extractProviderToolName(toolCall)
@@ -583,12 +628,23 @@ const resolveCategoryKey = (
 
     const notebookContext =
       (trustedIdentity
-        ? resolveNotebookPermissionContextForIdentity(trustedIdentity, toolCall.rawInput)
-        : resolveNotebookPermissionContext(providerToolName, toolCall.rawInput, mcpServerNames)) ??
+        ? resolveNotebookPermissionContextForIdentity(
+            trustedIdentity,
+            toolCall.rawInput,
+            shellRuntime
+          )
+        : resolveNotebookPermissionContext(
+            providerToolName,
+            toolCall.rawInput,
+            mcpServerNames,
+            shellRuntime
+          )) ??
       (allowLegacyReportedMcp
         ? (() => {
             const tool = resolveNotebookExecutionTool(identity)
-            return tool ? { runtime: resolveNotebookRuntime(tool, toolCall.rawInput) } : undefined
+            return tool
+              ? { runtime: resolveNotebookPermissionRuntime(tool, toolCall.rawInput, shellRuntime) }
+              : undefined
           })()
         : undefined)
     if (notebookContext) {
@@ -605,7 +661,7 @@ const resolveCategoryKey = (
 
   if (isSkillPermission(params, allowLegacyReportedMcp)) return 'skill'
 
-  // V1 provider-native web tools are always one-shot, including the legacy in-memory broker path.
+  // Without the verified framework contract handled by requestPermission, web names stay Once-only.
   if (providerToolName === 'WebFetch' || providerToolName === 'WebSearch') return undefined
 
   if (providerToolName === 'Bash' || toolCall.kind === 'execute') {
@@ -616,13 +672,43 @@ const resolveCategoryKey = (
   if (
     toolCall.locations?.length ||
     (toolCall.kind && FILE_TOOL_KINDS.has(toolCall.kind)) ||
-    (providerToolName && FILE_PROVIDER_TOOLS.has(providerToolName))
+    (providerToolName && FILE_PROVIDER_TOOLS.has(providerToolName.toLowerCase()))
   ) {
     const operation = providerToolName ?? toolCall.kind
     return operation ? `file:${operation}` : undefined
   }
 
   return providerToolName ? `tool:${providerToolName}` : undefined
+}
+
+// Explain why a request cannot enter the Registry without treating display text as authority.
+// These fixed diagnostic codes do not introduce new capabilities or remembered grant scopes.
+const unmappedPermissionReason = (
+  params: RequestPermissionRequest,
+  categoryKey: string | undefined,
+  mcpServerNames: readonly string[]
+): string => {
+  if (categoryKey?.startsWith('shell:')) return 'command_not_rememberable'
+  if (categoryKey?.startsWith('tool:')) return 'native_tool_unsupported'
+  if (categoryKey) return 'capability_not_registered'
+
+  const name = extractProviderToolName(params.toolCall)
+  if (isMcpPermission(params, mcpServerNames)) {
+    const identity =
+      resolveTrustedMcpToolIdentity(params, mcpServerNames) ??
+      resolveMcpToolIdentity(name, mcpServerNames)
+    return identity && resolveNotebookExecutionTool(identity)
+      ? 'execution_runtime_unresolved'
+      : 'mcp_identity_unverified'
+  }
+  if (name === 'Bash' || params.toolCall.kind === 'execute')
+    return resolveShellCommand(params) ? 'command_group_unverifiable' : 'command_input_unavailable'
+  if (name === 'WebFetch' || name === 'WebSearch' || params.toolCall.kind === 'fetch')
+    return 'native_web_unverified'
+  if (name) return 'native_tool_unsupported'
+  return !params.toolCall.kind || params.toolCall.kind === 'other'
+    ? 'tool_identity_missing'
+    : 'tool_kind_unsupported'
 }
 
 // Projects an opaque category key into the display grant shown in the composer.
@@ -652,7 +738,7 @@ const describeGrant = (categoryKey: string): AcpPermissionGrant => {
           ? 'R'
           : runtime === 'javascript'
             ? 'JavaScript'
-            : runtime === 'bash'
+            : runtime === 'bash' || runtime === 'wsl2-bash' || runtime?.startsWith('wsl2-bash@')
               ? 'Bash'
               : undefined
     const [server, tool] = identity.split('/')
@@ -737,7 +823,11 @@ const projectRegistrySessionGrants = (
 class AcpPermissionBroker {
   private pendingRequests = new Map<string, PendingPermission>()
   private readonly respondingRequests = new Map<string, PendingPermission>()
-  private readonly restoredAllowOnceBySession = new Map<string, string>()
+  private readonly restoredAllowOnceBySession = new Map<
+    string,
+    Readonly<{ fingerprint: string; categoryKey?: string }>
+  >()
+  private readonly restoredContinuations = new Map<string, RestoredPermissionContinuation>()
   private readonly durableRequestQueues = new Map<string, string[]>()
   private readonly activeDurableRequestBySession = new Map<string, string>()
   private cancellationGeneration = 0
@@ -846,9 +936,90 @@ class AcpPermissionBroker {
       if (!optionId) continue
       if (!isCurrent()) break
 
+      pending.decisionAuthority = 'automatic_policy'
       if (await this.respond({ requestId, optionId })) resolvedRequestIds.push(requestId)
     }
     return resolvedRequestIds
+  }
+
+  // Registry notifications also reach sibling delegated runtimes. Recheck every mapped capability
+  // through the same lookup as new calls; each provider still receives only a one-shot response.
+  async releaseGrantedRequests(): Promise<void> {
+    if (!this.permissionGrantRegistry) return
+    for (const [requestId, pending] of Array.from(this.pendingRequests)) {
+      if (pending.appOwned || !pending.capability || !pending.providerAllowOnceOptionId) continue
+      try {
+        const match = await this.resolveGrant(
+          pending.capability,
+          pending.categoryKey,
+          pending.request.sessionId,
+          pending.policyContext
+        )
+        if (
+          match &&
+          this.pendingRequests.get(requestId) === pending &&
+          this.isPendingCurrent(pending)
+        ) {
+          pending.decisionAuthority = 'registry_grant'
+          await this.respond({ requestId, optionId: pending.providerAllowOnceOptionId })
+        }
+      } catch (error) {
+        createLogger('acp-permission').warn('Could not recheck pending permission authorization', {
+          errorType: error instanceof Error ? error.name : 'unknown'
+        })
+      }
+    }
+  }
+
+  private isPendingCurrent(pending: PendingPermission): boolean {
+    const live = this.livePermissionProfiles.get(pending.request.sessionId)
+    return (
+      (!live || live.isCurrent()) &&
+      (!pending.durableCandidate?.restoredContinuation ||
+        pending.durableCandidate.restoredContinuation.isCurrent?.() === true)
+    )
+  }
+
+  private async resolveGrant(
+    capability: PermissionCapability,
+    categoryKey: string | undefined,
+    sessionId: string,
+    context?: PermissionPolicyContext
+  ): Promise<Awaited<ReturnType<PermissionGrantRegistry['resolve']>>> {
+    const scope = {
+      projectId: context?.projectId,
+      sessionId: context?.permissionGrantSessionId ?? sessionId
+    }
+    const match = await this.permissionGrantRegistry?.resolve(capability, scope)
+    if (match) return match
+    // Preserve old exact MCP loader grants only on their original verified loader path. Never
+    // turn that historical authority into a grant for another framework's native Skill tool.
+    if (capability.key === 'skill:invoke' && categoryKey === 'mcp:skills/load_skill') {
+      return this.permissionGrantRegistry?.resolve({ kind: 'mcp_tool', key: categoryKey }, scope)
+    }
+    return undefined
+  }
+
+  private trace(
+    pending: Pick<PendingPermission, 'request' | 'policyContext' | 'capability'>,
+    details: Omit<PermissionDiagnostic, 'sessionId' | 'toolCallId' | 'requestId' | 'capability'>
+  ): void {
+    logPermissionDiagnostic({
+      sessionId: pending.request.sessionId,
+      toolCallId: pending.request.toolCallId,
+      requestId: pending.request.requestId,
+      frameworkId: pending.policyContext?.frameworkId,
+      modelRoute: pending.policyContext?.modelRoute,
+      profile:
+        this.livePermissionProfiles.get(pending.request.sessionId)?.profile.selectedProfile ??
+        pending.policyContext?.profile,
+      capability: pending.capability,
+      toolKind: pending.request.toolKind,
+      hasReportedToolName: Boolean(pending.request.providerToolName),
+      hasRawInput: pending.request.rawInput != null,
+      hasLocations: Boolean(pending.request.toolLocations?.length),
+      ...details
+    })
   }
 
   // Lists the app conversation's grants so the composer can show and revoke them.
@@ -890,6 +1061,7 @@ class AcpPermissionBroker {
     title: string
     rawInput: unknown
     signal?: AbortSignal
+    permissionPrompts?: 'none'
   }): Promise<boolean> {
     const requestId = randomUUID()
     const approveOptionId = `${requestId}:approve`
@@ -918,8 +1090,15 @@ class AcpPermissionBroker {
       options: input.options.map((option) => ({ ...option }))
     }
 
-    const response = this.enqueuePermissionRequest({ requestId, request, appOwned: true }).then(
-      (result) => (result.outcome.outcome === 'selected' ? result.outcome.optionId : undefined)
+    const response = this.enqueuePermissionRequest({
+      requestId,
+      request,
+      appOwned: true,
+      ...(input.permissionPrompts
+        ? { policyContext: { profile: 'ask', permissionPrompts: input.permissionPrompts } }
+        : {})
+    }).then((result) =>
+      result.outcome.outcome === 'selected' ? result.outcome.optionId : undefined
     )
     const abort = (): void => {
       void this.respond({ requestId, cancelled: true }).catch(() => undefined)
@@ -938,17 +1117,36 @@ class AcpPermissionBroker {
     const requestId = randomUUID()
     const mcpServerNames = policyContext?.mcpServerNames ?? []
     const isMcp = isMcpPermission(params, mcpServerNames)
+    const isWebSearch = !isMcp && isNativeWebSearchPermission(params, policyContext)
+    const isWebFetch = !isMcp && isNativeWebFetchPermission(params, policyContext)
     const codexGroupMatch =
       policyContext?.frameworkId === 'codex' && !isMcp
         ? codexCommandGroup(params, policyContext.shellDialect)
         : undefined
     const codexGroup = codexGroupMatch?.kind === 'group' ? codexGroupMatch.group : undefined
+    const managedSkill = isManagedSkillPermission(params, policyContext)
     const categoryKey =
-      codexGroup?.categoryKey ??
-      (codexGroupMatch?.kind === 'unsafe'
-        ? undefined
-        : resolveCategoryKey(params, mcpServerNames, !this.permissionGrantRegistry))
-    const capability = categoryKey ? capabilityFromLegacyCategory(categoryKey) : undefined
+      managedSkill && !isMcp
+        ? 'skill'
+        : isWebSearch
+          ? 'builtin:web_search'
+          : isWebFetch
+            ? 'builtin:web_fetch'
+            : (codexGroup?.categoryKey ??
+              (codexGroupMatch?.kind === 'unsafe'
+                ? undefined
+                : resolveCategoryKey(
+                    params,
+                    mcpServerNames,
+                    !this.permissionGrantRegistry,
+                    policyContext?.notebookShellRuntimeQualifier ??
+                      policyContext?.notebookShellRuntime
+                  )))
+    const capability: PermissionCapability | undefined = managedSkill
+      ? { kind: 'skill_operation', key: 'skill:invoke' }
+      : categoryKey
+        ? capabilityFromLegacyCategory(categoryKey)
+        : undefined
     const mcpIdentity = isMcp
       ? (resolveTrustedMcpToolIdentity(params, mcpServerNames) ??
         resolveMcpToolIdentity(params.toolCall.title, mcpServerNames) ??
@@ -966,6 +1164,18 @@ class AcpPermissionBroker {
     // Remembered scopes are app-owned, but every released call must still select a provider-native
     // one-call option. Without one there is no safe positive response, so fail closed immediately.
     if (!providerAllowOnceOption) {
+      logPermissionDiagnostic({
+        stage: 'decision',
+        sessionId: params.sessionId,
+        toolCallId: params.toolCall.toolCallId,
+        requestId,
+        frameworkId: policyContext?.frameworkId,
+        modelRoute: policyContext?.modelRoute,
+        capability,
+        fallback: true,
+        reason: 'allow_once_unavailable',
+        outcome: 'cancelled'
+      })
       return Promise.resolve({ outcome: { outcome: 'cancelled' } })
     }
     const permissionOptions: AcpPermissionRequest['options'] = providerPermissionOptions.map(
@@ -978,26 +1188,28 @@ class AcpPermissionBroker {
     )
     if (categoryKey) {
       if (this.permissionGrantRegistry && capability && policyContext?.projectId) {
-        permissionOptions.push(
-          {
-            optionId: `${SESSION_ALLOW_OPTION_ID_PREFIX}${requestId}`,
-            name: 'This session',
-            kind: ALLOW_ALWAYS_OPTION_KIND,
-            scope: 'session'
-          },
-          {
-            optionId: `${PROJECT_ALLOW_OPTION_ID_PREFIX}${requestId}`,
-            name: 'This project',
-            kind: ALLOW_ALWAYS_OPTION_KIND,
-            scope: 'project'
-          },
-          {
-            optionId: `${GLOBAL_ALLOW_OPTION_ID_PREFIX}${requestId}`,
-            name: 'Always',
-            kind: ALLOW_ALWAYS_OPTION_KIND,
-            scope: 'global'
-          }
-        )
+        permissionOptions.push({
+          optionId: `${SESSION_ALLOW_OPTION_ID_PREFIX}${requestId}`,
+          name: 'This session',
+          kind: ALLOW_ALWAYS_OPTION_KIND,
+          scope: 'session'
+        })
+        // Web reading is deliberately conversation-scoped, including delegated children.
+        if (!isWebFetch && !isWebSearch)
+          permissionOptions.push(
+            {
+              optionId: `${PROJECT_ALLOW_OPTION_ID_PREFIX}${requestId}`,
+              name: 'This project',
+              kind: ALLOW_ALWAYS_OPTION_KIND,
+              scope: 'project'
+            },
+            {
+              optionId: `${GLOBAL_ALLOW_OPTION_ID_PREFIX}${requestId}`,
+              name: 'Always',
+              kind: ALLOW_ALWAYS_OPTION_KIND,
+              scope: 'global'
+            }
+          )
       } else if (!this.permissionGrantRegistry) {
         permissionOptions.push({
           optionId: `${SESSION_ALLOW_OPTION_ID_PREFIX}${requestId}`,
@@ -1013,7 +1225,11 @@ class AcpPermissionBroker {
       toolCallId: params.toolCall.toolCallId,
       title: resolvePermissionTitle(params, isMcp),
       status: params.toolCall.status ?? undefined,
-      providerToolName: extractProviderToolName(params.toolCall),
+      providerToolName: isWebSearch
+        ? 'WebSearch'
+        : isWebFetch
+          ? 'WebFetch'
+          : extractProviderToolName(params.toolCall),
       isMcp,
       ...(mcpIdentity ? { mcpIdentity } : {}),
       toolKind: params.toolCall.kind ?? undefined,
@@ -1022,7 +1238,34 @@ class AcpPermissionBroker {
       rawInput: params.toolCall.rawInput,
       options: permissionOptions
     }
+    const diagnostic = { request, policyContext, capability }
+    this.trace(diagnostic, {
+      stage: 'request',
+      reportedToolName: extractProviderToolName(params.toolCall),
+      identitySource:
+        trustedMcpToolIdentity(params) || managedSkill
+          ? 'verified_context'
+          : extractProviderToolName(params.toolCall)
+            ? 'provider_metadata'
+            : params.toolCall.kind
+              ? 'tool_kind'
+              : 'unavailable'
+    })
     const fingerprint = permissionRequestFingerprint(request)
+    const restored = this.restoredContinuations.get(request.sessionId)
+    const restoredContinuation =
+      restored?.projectId === policyContext?.projectId &&
+      restored?.promptMessageId === policyContext?.promptMessageId &&
+      restored?.interactionSequence !== undefined &&
+      restored.interactionSequence === policyContext?.interactionSequence &&
+      restored.isCurrent?.()
+        ? restored
+        : undefined
+    if (restored && !restoredContinuation)
+      return Promise.resolve({ outcome: { outcome: 'cancelled' } })
+    const markReleased = (): void => {
+      if (restoredContinuation) restoredContinuation.released = true
+    }
     const durableCandidate: DurablePermissionWaitCandidate | undefined = fingerprint
       ? {
           request,
@@ -1030,15 +1273,26 @@ class AcpPermissionBroker {
           promptMessageId: policyContext?.promptMessageId,
           fingerprint,
           categoryKey,
-          capability
+          capability,
+          ...(restoredContinuation ? { restoredContinuation } : {})
         }
       : undefined
 
+    const restoredAllowOnce = this.restoredAllowOnceBySession.get(request.sessionId)
+    const legacyCategoryCanMatch =
+      restoredAllowOnce?.categoryKey === undefined &&
+      /^mcp:open-science-notebook\/(?:notebook_execute|repl_execute):(?:python|r|javascript)$/.test(
+        categoryKey ?? ''
+      )
     if (
       durableCandidate &&
-      this.restoredAllowOnceBySession.get(request.sessionId) === durableCandidate.fingerprint
+      (!restored || (restoredContinuation && !restoredContinuation.handoffStarted)) &&
+      restoredAllowOnce?.fingerprint === durableCandidate.fingerprint &&
+      (restoredAllowOnce.categoryKey === categoryKey || legacyCategoryCanMatch)
     ) {
       this.restoredAllowOnceBySession.delete(request.sessionId)
+      this.trace(diagnostic, { stage: 'decision', authority: 'restored_once', outcome: 'allowed' })
+      markReleased()
       return Promise.resolve({
         outcome: { outcome: 'selected', optionId: providerAllowOnceOption.optionId }
       })
@@ -1054,6 +1308,13 @@ class AcpPermissionBroker {
     )
 
     if (automaticOptionId) {
+      this.trace(diagnostic, {
+        stage: 'decision',
+        authority: 'automatic_policy',
+        reason: this.automaticReason(automaticRequest, policyContext),
+        outcome: 'allowed'
+      })
+      markReleased()
       return Promise.resolve({
         outcome: { outcome: 'selected', optionId: automaticOptionId }
       })
@@ -1061,19 +1322,27 @@ class AcpPermissionBroker {
 
     if (this.permissionGrantRegistry && capability) {
       const sessionCancellationToken = this.trackSessionCancellation(params.sessionId)
-      return this.permissionGrantRegistry
-        .resolve(capability, {
-          projectId: policyContext?.projectId,
-          sessionId: policyContext?.permissionGrantSessionId ?? params.sessionId
-        })
+      return this.resolveGrant(capability, categoryKey, params.sessionId, policyContext)
         .then((match) => {
           if (
             cancellationGeneration !== this.cancellationGeneration ||
-            sessionCancellationToken.cancelled
+            sessionCancellationToken.cancelled ||
+            (restoredContinuation && !restoredContinuation.isCurrent?.())
           ) {
             return { outcome: { outcome: 'cancelled' as const } }
           }
           if (match && providerAllowOnceOption) {
+            this.trace(diagnostic, {
+              stage: 'decision',
+              authority: 'registry_grant',
+              matchedScope: match.matchedScope,
+              outcome: 'allowed',
+              reason:
+                match.grant.capability.key !== capability.key
+                  ? 'legacy_exact_loader_grant'
+                  : 'capability_grant'
+            })
+            markReleased()
             return {
               outcome: { outcome: 'selected' as const, optionId: providerAllowOnceOption.optionId }
             }
@@ -1101,6 +1370,8 @@ class AcpPermissionBroker {
       : undefined
 
     if (autoAllowOptionId) {
+      this.trace(diagnostic, { stage: 'decision', authority: 'legacy_session', outcome: 'allowed' })
+      markReleased()
       return Promise.resolve({
         outcome: { outcome: 'selected', optionId: autoAllowOptionId }
       })
@@ -1113,6 +1384,8 @@ class AcpPermissionBroker {
       automaticRequest,
       policyContext,
       categoryKey,
+      capability,
+      projectId: policyContext?.projectId,
       providerAllowOnceOptionId: providerAllowOnceOption?.optionId,
       durableCandidate
     })
@@ -1126,12 +1399,35 @@ class AcpPermissionBroker {
       : undefined
 
     if (liveAutomaticOptionId) {
+      this.trace(pending, {
+        stage: 'decision',
+        authority: 'automatic_policy',
+        reason: this.automaticReason(pending.automaticRequest!, pending.policyContext),
+        outcome: 'allowed'
+      })
       return Promise.resolve({
         outcome: { outcome: 'selected', optionId: liveAutomaticOptionId }
       })
     }
 
     return this.enqueuePermissionRequest(pending)
+  }
+
+  private automaticReason(
+    request: RequestPermissionRequest,
+    context?: PermissionPolicyContext
+  ): string | undefined {
+    const live = this.livePermissionProfiles.get(request.sessionId)
+    return resolveAutomaticPermissionReason(
+      request,
+      live
+        ? {
+            ...context,
+            profile: live.profile.selectedProfile,
+            autoReviewStrategy: live.profile.autoReviewStrategy
+          }
+        : context
+    )
   }
 
   private resolveCurrentAutomaticPermission(
@@ -1152,6 +1448,51 @@ class AcpPermissionBroker {
   private enqueuePermissionRequest(
     pending: Omit<PendingPermission, 'resolve' | 'reject'> & { requestId: string }
   ): Promise<RequestPermissionResponse> {
+    if (pending.policyContext?.permissionPrompts === 'none') {
+      this.trace(pending, {
+        stage: 'decision',
+        reason: 'permission_prompts_disabled',
+        outcome: 'rejected'
+      })
+      const reject = pending.request.options.find((option) => option.kind === 'reject_once')
+      try {
+        this.onPermissionSettled?.(
+          pending.requestId,
+          reject ? 'rejected' : 'cancelled',
+          pending.request
+        )
+      } catch {
+        // Notification projection failures must never change the permission decision.
+      }
+      return Promise.resolve({
+        outcome: reject
+          ? { outcome: 'selected', optionId: reject.optionId }
+          : { outcome: 'cancelled' }
+      })
+    }
+    this.trace(pending, {
+      stage: 'decision',
+      authority: 'human',
+      outcome: 'approval_required',
+      fallback:
+        !pending.appOwned &&
+        (!pending.capability || !this.permissionGrantRegistry || !pending.projectId),
+      reason: pending.appOwned
+        ? 'app_owned_approval'
+        : !pending.capability
+          ? pending.automaticRequest
+            ? unmappedPermissionReason(
+                pending.automaticRequest,
+                pending.categoryKey,
+                pending.policyContext?.mcpServerNames ?? []
+              )
+            : 'capability_unmapped'
+          : !this.permissionGrantRegistry
+            ? 'registry_unavailable'
+            : !pending.projectId
+              ? 'project_context_unavailable'
+              : 'grant_not_matched'
+    })
     let resolveResponse!: (response: RequestPermissionResponse) => void
     let rejectResponse!: (error: unknown) => void
     const response = new Promise<RequestPermissionResponse>((resolve, reject) => {
@@ -1165,6 +1506,8 @@ class AcpPermissionBroker {
       reject: rejectResponse
     }
     this.pendingRequests.set(requestId, stored)
+    // Close the gap between the initial registry lookup and joining the pending queue.
+    if (stored.capability) void this.releaseGrantedRequests()
 
     if (!stored.durableCandidate || !this.permissionWaitHooks) {
       this.emitPermissionRequest(entry.request)
@@ -1195,6 +1538,12 @@ class AcpPermissionBroker {
       this.activeDurableRequestBySession.set(sessionId, requestId)
       stored.durableStarted = true
       stored.durablePersistenceSettled = false
+      if (candidate.restoredContinuation && !candidate.restoredContinuation.handedOff) {
+        // New arguments need a fresh decision. Retire any unused old Once before awaiting storage,
+        // so a concurrent exact retry cannot borrow it while the successor is being committed.
+        candidate.restoredContinuation.handoffStarted = true
+        this.restoredAllowOnceBySession.delete(sessionId)
+      }
       stored.durableReady = hooks.persist(candidate).then((persisted) => {
         stored.durablePersisted = persisted
         stored.durablePersistenceSettled = true
@@ -1206,6 +1555,12 @@ class AcpPermissionBroker {
         if (!persisted) this.releaseDurablePermissionSlot(stored)
       })
       void stored.durableReady.catch((error: unknown) => {
+        this.trace(stored, {
+          stage: 'decision',
+          authority: 'system',
+          reason: 'permission_settlement_failed',
+          outcome: 'cancelled'
+        })
         stored.durablePersistenceSettled = true
         if (this.pendingRequests.get(requestId) === stored) {
           this.pendingRequests.delete(requestId)
@@ -1261,6 +1616,7 @@ class AcpPermissionBroker {
     }
 
     this.pendingRequests.delete(response.requestId)
+    pending.decisionAuthority ??= 'human'
 
     // Keep the claimed request cancellable until its provider decision is released.
     this.respondingRequests.set(response.requestId, pending)
@@ -1351,6 +1707,21 @@ class AcpPermissionBroker {
 
       const persistence = this.persistLiveSettlement(pending)
       if (persistence) await persistence
+      if (pending.decisionAuthority === 'registry_grant') {
+        const match =
+          pending.capability &&
+          this.isPendingCurrent(pending) &&
+          (await this.resolveGrant(
+            pending.capability,
+            pending.categoryKey,
+            pending.request.sessionId,
+            pending.policyContext
+          ))
+        if (!match || !this.isPendingCurrent(pending)) {
+          this.settlePending(pending, { outcome: { outcome: 'cancelled' } }, 'cancelled')
+          return true
+        }
+      }
 
       this.settlePending(
         pending,
@@ -1364,6 +1735,15 @@ class AcpPermissionBroker {
       )
 
       return true
+    } catch (error) {
+      this.trace(pending, {
+        stage: 'decision',
+        authority: pending.decisionAuthority,
+        reason: 'permission_settlement_failed',
+        outcome: 'cancelled'
+      })
+      this.settlePending(pending, { outcome: { outcome: 'cancelled' } }, 'cancelled')
+      throw error
     } finally {
       if (this.respondingRequests.get(response.requestId) === pending) {
         this.respondingRequests.delete(response.requestId)
@@ -1415,6 +1795,11 @@ class AcpPermissionBroker {
   ): void {
     if (pending.settled) return
     pending.settled = true
+    this.trace(pending, {
+      stage: 'settlement',
+      authority: pending.decisionAuthority ?? 'system',
+      outcome: state
+    })
     pending.resolve(response)
     try {
       this.onPermissionSettled?.(pending.request.requestId, state, pending.request)
@@ -1466,15 +1851,20 @@ class AcpPermissionBroker {
   async prepareRestoredDecision(
     permission: SessionPermissionRuntimeContext,
     option: AcpPermissionRequest['options'][number] | undefined,
-    projectId: string
+    projectId: string,
+    continuation?: RestoredPermissionContinuation
   ): Promise<void> {
+    if (continuation) this.restoredContinuations.set(permission.request.sessionId, continuation)
     if (!option || option.kind.toLowerCase().startsWith('reject_')) return
     if (!option.kind.toLowerCase().startsWith('allow_')) {
       throw new Error('The restored permission option cannot be replayed safely.')
     }
 
     if (option.scope === 'once' || option.kind.toLowerCase() === ALLOW_ONCE_OPTION_KIND) {
-      this.restoredAllowOnceBySession.set(permission.request.sessionId, permission.fingerprint)
+      this.restoredAllowOnceBySession.set(permission.request.sessionId, {
+        fingerprint: permission.fingerprint,
+        ...(permission.categoryKey ? { categoryKey: permission.categoryKey } : {})
+      })
       return
     }
 
@@ -1500,8 +1890,11 @@ class AcpPermissionBroker {
     throw new Error('The restored permission scope cannot be granted safely.')
   }
 
-  clearRestoredDecision(sessionId: string): void {
+  clearRestoredDecision(sessionId: string, continuation?: RestoredPermissionContinuation): boolean {
+    if (continuation && this.restoredContinuations.get(sessionId) !== continuation) return false
+    this.restoredContinuations.delete(sessionId)
     this.restoredAllowOnceBySession.delete(sessionId)
+    return true
   }
 
   // Process/connection teardown must release the dead provider RPC without erasing the durable
@@ -1510,6 +1903,7 @@ class AcpPermissionBroker {
     this.cancellationGeneration += 1
     this.livePermissionProfiles.clear()
     this.restoredAllowOnceBySession.clear()
+    this.restoredContinuations.clear()
     this.durableRequestQueues.clear()
     this.activeDurableRequestBySession.clear()
     const pending = [...this.pendingRequests.values(), ...this.respondingRequests.values()]
@@ -1535,6 +1929,7 @@ class AcpPermissionBroker {
     this.sessionCancellationTokens.clear()
     this.livePermissionProfiles.clear()
     this.restoredAllowOnceBySession.clear()
+    this.restoredContinuations.clear()
     const pendingRequests = Array.from(this.pendingRequests.keys())
     for (const pending of Array.from(this.respondingRequests.values())) {
       this.settlePending(pending, { outcome: { outcome: 'cancelled' } }, 'cancelled')
@@ -1551,6 +1946,7 @@ class AcpPermissionBroker {
     this.sessionCancellationTokens.delete(sessionId)
     for (const token of cancellationTokens ?? []) token.cancelled = true
     this.restoredAllowOnceBySession.delete(sessionId)
+    this.restoredContinuations.delete(sessionId)
     const pendingRequests = Array.from(this.pendingRequests.values())
     for (const pending of Array.from(this.respondingRequests.values())) {
       if (pending.request.sessionId === sessionId) {
@@ -1596,4 +1992,4 @@ export {
   resolveCategoryKey,
   resolveNotebookPermissionContext
 }
-export type { DurablePermissionWaitCandidate, PermissionWaitHooks }
+export type { DurablePermissionWaitCandidate, PermissionWaitHooks, RestoredPermissionContinuation }

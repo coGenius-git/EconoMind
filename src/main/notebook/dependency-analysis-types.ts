@@ -1,8 +1,10 @@
+import type { PythonArgumentShape } from './python-library-effects'
 import type {
   NotebookInvalidatedRun,
   NotebookRunRecord,
   NotebookRunStaleness
 } from '../../shared/notebook'
+import type { NotebookFileCallEffect } from './notebook-call-effects'
 
 type NotebookDependencyAlias = {
   target: string
@@ -14,7 +16,7 @@ type NotebookDependencyAlias = {
 
 type NotebookDependencyTypeSummary = {
   name: string
-  kind: 'python-class' | 'python-module' | 'r-s4' | 'r-r6'
+  kind: 'python-class' | 'python-module' | 'r-s4' | 'r-r6' | 'r-function'
   complete?: boolean
   fields: Array<{ name: string; relationship: 'reference' | 'value' | 'unknown' }>
   methods: Array<{
@@ -24,6 +26,8 @@ type NotebookDependencyTypeSummary = {
     safeCallNames?: string[]
     unknownScope?: 'receiver' | 'namespace'
     returnType?: string | null
+    // R helpers whose results remain ordinary values when every supplied argument is ordinary.
+    returnCopyArguments?: boolean
     destructuredReturnTypes?: string[]
     mutatesKeyword?: string | null
   }>
@@ -49,19 +53,29 @@ type NotebookDependencyReceiverCall = {
   receiverChain?: string[]
   receiverChainFirstArgumentNames?: string[][]
   receiverChainPositionalArgumentNames?: string[][][]
+  receiverChainPositionalStaticShapes?: PythonArgumentShape[][]
   receiverChainPositionalStaticBooleans?: Array<Array<boolean | null>>
   receiverChainKeywordArguments?: Array<
-    Array<{ name: string; argumentNames: string[]; staticBoolean?: boolean | null }>
+    Array<{
+      name: string
+      argumentNames: string[]
+      staticBoolean?: boolean | null
+      staticShape?: PythonArgumentShape
+    }>
   >
   receiverValueNames?: string[]
   positionalArgumentNames?: string[][]
+  positionalStaticShapes?: PythonArgumentShape[]
   positionalStaticBooleans?: Array<boolean | null>
   resultNames?: string[]
+  // Each flattened result name retains its position in a nested unpacking target.
+  resultPaths?: number[][]
   keywordArguments?: Array<{
     name: string
     argumentNames: string[]
     possibleArgumentNames?: string[]
     staticBoolean?: boolean | null
+    staticShape?: PythonArgumentShape
     callableReferences?: Array<{ root: string; member?: string; container?: 'list' | 'dict' }>
   }>
 }
@@ -71,6 +85,73 @@ type NotebookDependencyMemberWrite = {
   member?: string
   scope?: 'instance' | 'type'
   conditional?: boolean
+}
+
+type NotebookFileCallEffectSummary = Pick<NotebookFileCallEffect, 'kind' | 'inputForm'> & {
+  name: string
+  position: number
+  keywords: string[]
+  dependencyNames: string[]
+}
+
+type NotebookPythonHelperModule = {
+  source: string
+  exports: string[]
+}
+
+type NotebookSourceFileAccessContext = {
+  // Live analysis only; these fields are deliberately omitted from the sidecar.
+  // The runtime working directory is known from the run envelope. It lets the
+  // source analyzer represent Path.cwd() as the notebook execution root while
+  // keeping the lineage paths relative and portable.
+  workingDirectory?: string
+  managedEnvironment?: Readonly<Record<string, string>>
+  managedEnvironmentSafe?: boolean
+  replContainerNames?: string[]
+  replNamespaceUncertain?: boolean
+  replPersistentBindings?: true
+  staticStrings: Array<{ name: string; value: string }>
+  staticCollections: Array<{
+    name: string
+    values: string[]
+    entries?: Array<{ key: string; value: string }>
+    rKind?: 'vector' | 'list'
+  }>
+  localFileWrappers: NotebookFileCallEffectSummary[]
+  // Bounded identities only: no live objects, interpreter handles or settings.
+  pythonBindings?: Array<{
+    name: string
+    qualifiedName: string
+    kind: 'import' | 'object'
+    // Source identity only; never serialize the workbook or its contents.
+    filePath?: string
+  }>
+  // Observed monkeypatches survive re-imports within the same kernel epoch.
+  pythonTaintedNamespaces?: string[]
+  // Derived from prior same-epoch facts for the live run only. The bounded sidecar serializer
+  // deliberately omits this field, so dependency-analysis.json remains unchanged.
+  resolvedKernelNames?: string[]
+  // Transient callable knowledge rebuilt from same-epoch dependency facts.
+  rFunctions?: Array<{ name: string; summary: NotebookDependencyTypeSummary }>
+  // Plain atomic values only; no R objects or vector contents are captured here.
+  rAtomicValueNames?: string[]
+  // Transient ordinary-value ownership, rebuilt from same-epoch facts; no object contents.
+  rCopyOnModifyNames?: string[]
+  // Candidate serialized generations; usable only after matching a captured input checksum.
+  serializedValueFiles?: Array<NotebookSerializedValue & { checksum: string }>
+  verifiedSerializedValues?: NotebookSerializedValue[]
+  // Transient reference identities for Python collections; rebuilt from same-epoch facts.
+  staticCollectionAliases?: Array<{ target: string; source: string }>
+  // Recorded helper source is bounded identity evidence used to analyze later exported calls. It
+  // is parsed in an isolated scope and is never executed or treated as a name whitelist.
+  pythonHelperModules?: NotebookPythonHelperModule[]
+}
+
+// Only source-proven value categories. These descriptors contain no serialized contents.
+export type NotebookSerializedValue = {
+  path: string
+  format: 'rds' | 'qs' | 'python-pickle' | 'joblib' | 'npy'
+  valueType: 'r-value' | 'pandas.DataFrame' | 'pandas.Series' | 'numpy.ndarray'
 }
 
 type NotebookRunDependencyFacts =
@@ -86,6 +167,16 @@ type NotebookRunDependencyFacts =
       aliases?: NotebookDependencyAlias[]
       builtinContainerNames?: string[]
       copyOnModifyNames?: string[]
+      rAtomicValueNames?: string[]
+      serializedValueWrites?: NotebookSerializedValue[]
+      serializedValueReads?: string[]
+      rPackageLoads?: string[]
+      rPackageReads?: string[]
+      rThemeState?: { reads: boolean; writes: boolean }
+      rOptionWrites?: string[]
+      rGraphicsState?: { readsPrior: boolean; resets: boolean }
+      pythonRandomStateReads?: boolean
+      pythonPlottingState?: { reads: boolean; writes: boolean }
       copyOnModifyBindings?: NotebookDependencyCopyBinding[]
       copyOnModifyInvalidatedNames?: string[]
       safeCallNames?: string[]
@@ -108,6 +199,16 @@ type NotebookRunDependencyFacts =
       aliases?: NotebookDependencyAlias[]
       builtinContainerNames?: string[]
       copyOnModifyNames?: string[]
+      rAtomicValueNames?: string[]
+      serializedValueWrites?: NotebookSerializedValue[]
+      serializedValueReads?: string[]
+      rPackageLoads?: string[]
+      rPackageReads?: string[]
+      rThemeState?: { reads: boolean; writes: boolean }
+      rOptionWrites?: string[]
+      rGraphicsState?: { readsPrior: boolean; resets: boolean }
+      pythonRandomStateReads?: boolean
+      pythonPlottingState?: { reads: boolean; writes: boolean }
       copyOnModifyBindings?: NotebookDependencyCopyBinding[]
       copyOnModifyInvalidatedNames?: string[]
       safeCallNames?: string[]
@@ -126,6 +227,7 @@ type AnalyzedNotebookRun = {
 type NotebookDependencyProjection = {
   stalenessByRunId: Record<string, NotebookRunStaleness>
   invalidatedByRunId: Record<string, NotebookInvalidatedRun[]>
+  dependenciesByRunId?: Record<string, string[]>
 }
 
 type NotebookDependencyInterpreter = { command: string; args?: string[]; condaPrefix?: string }
@@ -133,11 +235,22 @@ type NotebookDependencyInterpreter = { command: string; args?: string[]; condaPr
 type NotebookDependencyAnalysisSidecar = {
   version: 1
   analyzerVersion: 1
+  analyzerRevision?: string
+  // Read-time protection only; never written to disk.
+  readOnly?: true
   runs: Record<
     string,
     {
       checksum: string
       facts: NotebookRunDependencyFacts
+      fileContext?: NotebookSourceFileAccessContext
+    }
+  >
+  projectionSnapshots: Record<
+    string,
+    {
+      checksum: string
+      projection: NotebookDependencyProjection
     }
   >
 }
@@ -147,6 +260,17 @@ type ProjectNotebookDependenciesRequest = {
   sessionId: string
   completedRun?: NotebookRunRecord
   interpreter?: NotebookDependencyInterpreter
+  throughRunId?: string
+}
+
+type NotebookSourceFileAccessContextRequest = {
+  projectId: string
+  sessionId: string
+  currentRunId: string
+  includeManagedEnvironment?: boolean
+  language: 'python' | 'r' | 'repl'
+  environment?: string
+  kernelEpochId: string
 }
 
 type AnalyzeNotebookScripts = (
@@ -154,6 +278,35 @@ type AnalyzeNotebookScripts = (
   language: 'python' | 'r',
   sources: readonly string[]
 ) => Promise<NotebookRunDependencyFacts[]>
+
+type NotebookSourceFileWriteScope = {
+  kind: 'directory' | 'shapefile' | 'geotiff' | 'timestamped-log'
+  path: string
+}
+
+type NotebookSourceFileAccessExtraction = {
+  reads: string[]
+  writes: string[]
+  // Transient names whose recorded helper bodies were actually replayed for this source.
+  replayedHelperNames?: string[]
+  writeScopes?: NotebookSourceFileWriteScope[]
+  unresolvedReads: boolean
+  unresolvedWrites: boolean
+  unsupportedExternalState: boolean
+  directoryStateRead: boolean
+  localFileWrappersComplete: boolean
+  context: NotebookSourceFileAccessContext
+}
+
+type NotebookSourceFileAccessAnalysis = {
+  readState: 'complete' | 'partial' | 'unavailable'
+  writeState: 'complete' | 'partial' | 'unavailable'
+  externalState: 'complete' | 'partial' | 'unavailable'
+  reads: string[]
+  writes: string[]
+  writeScopes?: NotebookSourceFileWriteScope[]
+  reasonCodes: Array<'dynamic-path-unresolved' | 'source-analysis-unsupported-call'>
+}
 
 export type {
   AnalyzeNotebookScripts,
@@ -167,6 +320,13 @@ export type {
   NotebookDependencyReceiverCall,
   NotebookDependencyTypeBinding,
   NotebookDependencyTypeSummary,
+  NotebookFileCallEffectSummary,
+  NotebookPythonHelperModule,
   NotebookRunDependencyFacts,
+  NotebookSourceFileAccessAnalysis,
+  NotebookSourceFileAccessContext,
+  NotebookSourceFileAccessContextRequest,
+  NotebookSourceFileAccessExtraction,
+  NotebookSourceFileWriteScope,
   ProjectNotebookDependenciesRequest
 }

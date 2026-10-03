@@ -1,3 +1,4 @@
+import { indexReplayRun, type ReplayRunIndex } from '../../shared/replay'
 import { mkdir, readdir, rm, stat } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -22,7 +23,11 @@ import {
   writeDurableJsonFile
 } from '../storage/durable-json-file'
 import { decodeVersionedJson } from '../storage/versioned-json-decoder'
-import { decodeRunDocumentDataPaths, encodeRunDocumentDataPaths } from './run-document-data-paths'
+import {
+  decodeRunDocumentDataPaths,
+  encodeRunDocumentDataPaths
+} from './run-document-data-path-codec'
+import { decodeNotebookHelperEvidence } from './helper-evidence'
 import {
   createFrameNotebookLane,
   createRootNotebookLane,
@@ -145,6 +150,19 @@ const persistedScopeValue = (value: unknown): string =>
 const isOptionalSha256 = (value: unknown): boolean =>
   value === undefined || (typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value))
 
+const notebookHelperEvidenceStatusCandidate = (value: unknown): boolean => {
+  if (!isRecord(value) || (value.state !== 'complete' && value.state !== 'incomplete')) return false
+  return (
+    value.state === 'complete' ||
+    (Array.isArray(value.reasons) &&
+      value.reasons.length > 0 &&
+      value.reasons.every(
+        (reason) =>
+          reason === 'source-missing' || reason === 'source-corrupt' || reason === 'payload-limit'
+      ))
+  )
+}
+
 class UnsupportedNotebookDocumentVersionError extends DurableJsonRecoveryBarrierError {
   constructor() {
     super('Notebook document version is not supported.')
@@ -222,6 +240,8 @@ const notebookRunCandidate = (value: unknown): boolean => {
     (value.kernelEpochId !== undefined &&
       (typeof value.kernelEpochId !== 'string' || value.kernelEpochId.length === 0)) ||
     (value.kernelDispatched !== undefined && typeof value.kernelDispatched !== 'boolean') ||
+    (value.replPersistentBindings !== undefined &&
+      (value.replPersistentBindings !== true || value.kernelKind !== 'repl')) ||
     (value.runtimeId !== undefined && typeof value.runtimeId !== 'string') ||
     (value.kernelKind !== undefined &&
       value.kernelKind !== 'python' &&
@@ -294,6 +314,20 @@ const notebookRunCandidate = (value: unknown): boolean => {
           typeof artifact.path !== 'string' ||
           (typeof artifact.projectId !== 'string' && typeof artifact.projectName !== 'string')
       ))
+  ) {
+    return false
+  }
+  if (
+    value.helperModules !== undefined &&
+    (!Array.isArray(value.helperModules) ||
+      // Analysis budgets are not validity constraints on durable execution history.
+      value.helperModules.some((helper) => decodeNotebookHelperEvidence(helper).state !== 'valid'))
+  ) {
+    return false
+  }
+  if (
+    value.helperEvidenceStatus !== undefined &&
+    !notebookHelperEvidenceStatusCandidate(value.helperEvidenceStatus)
   ) {
     return false
   }
@@ -627,6 +661,45 @@ class NotebookRunRepository {
     { mtimeMs: number; size: number; ino: number; document: NotebookRunDocument }
   >()
   private documentCacheBytes = 0
+  // ponytail: reuse the bounded document cache; cold/oversized JSON still needs a full read.
+  // A durable per-run index is the next step if archives routinely exceed that cache budget.
+  private readonly runIndexes = new WeakMap<
+    NotebookRunDocument,
+    { rows: ReplayRunIndex[]; byId: Map<string, NotebookRunRecord> }
+  >()
+
+  private runIndex(document: NotebookRunDocument): {
+    rows: ReplayRunIndex[]
+    byId: Map<string, NotebookRunRecord>
+  } {
+    let index = this.runIndexes.get(document)
+    if (!index) {
+      index = {
+        rows: document.runs.map(indexReplayRun),
+        byId: new Map(document.runs.map((run) => [run.runId, run]))
+      }
+      this.runIndexes.set(document, index)
+    }
+    return index
+  }
+
+  async readSessionRunIndex(projectId: string, sessionId: string): Promise<ReplayRunIndex[]> {
+    return (await this.readSessionDocuments(projectId, sessionId))
+      .flatMap((document) => this.runIndex(document).rows)
+      .sort((a, b) => a.startedAt - b.startedAt || a.runId.localeCompare(b.runId))
+  }
+
+  async readSessionRun(
+    projectId: string,
+    sessionId: string,
+    runId: string
+  ): Promise<NotebookRunRecord | undefined> {
+    for (const document of await this.readSessionDocuments(projectId, sessionId)) {
+      const run = this.runIndex(document).byId.get(runId)
+      if (run) return run
+    }
+    return undefined
+  }
 
   constructor(private readonly storageRoot: string) {}
 

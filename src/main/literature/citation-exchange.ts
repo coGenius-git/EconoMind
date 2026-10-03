@@ -1,3 +1,5 @@
+// Modified by EconoMind contributors: preserve historical RIS literal-creator annotations.
+// Based on AIPOCH Open Science; see LICENSE and NOTICE.
 import type { CslItem, CslName } from '../../shared/literature-csl'
 
 // citeme-engine-wasm 0.3.8 exposes BibTeX month and day components as zero-based values.
@@ -27,12 +29,19 @@ export const normalizeBibtexEntry = (entry: Record<string, unknown>): Record<str
 }
 
 const literalNamePrefix = 'EconoMind literal creator: '
+// Export our current name, but keep both historical upstream spellings readable. These are file
+// format markers: replacing them during branding changes would turn institution names into people.
+const readableLiteralNamePrefixes = [
+  literalNamePrefix,
+  'Open-Science literal creator: ',
+  'Open Science literal creator: '
+]
 
 const lineValue = (value: string): string => value.replace(/[\r\n]+/gu, ' ').trim()
 const nameText = (name: CslName): string =>
   name.literal ?? `${name.family ?? ''}, ${name.given ?? ''}`
 
-// BOOK A3/editor, A4/translator and ET/edition follow Zotero's RIS mappings.
+// BOOK A3/editor, A4/translator, ET/edition and J2/journal abbreviation follow Zotero's RIS mappings.
 // Labeled N1 notes preserve identifiers without misusing DOI or accession-number tags.
 // These notes are readable by other tools; structured recovery is our explicit adapter contract.
 export const exportRisFields = (item: CslItem): string => {
@@ -52,6 +61,7 @@ export const exportRisFields = (item: CslItem): string => {
     })
   }
   if (item.edition) fields.push(['ET', item.edition])
+  if (item['container-title-short']) fields.push(['J2', item['container-title-short']])
   return fields.map(([tag, value]) => `${tag}  - ${lineValue(value)}\n`).join('')
 }
 
@@ -75,9 +85,10 @@ export const importRisFields = (
     if (tag === 'N1') {
       const identifier = /^(PMID|PMCID|arXiv):\s*(\S+)$/u.exec(value)
       if (identifier) result[identifier[1]!] = identifier[2]
-      if (value.startsWith(literalNamePrefix)) {
+      const prefix = readableLiteralNamePrefixes.find((candidate) => value.startsWith(candidate))
+      if (prefix) {
         try {
-          const marker: unknown = JSON.parse(value.slice(literalNamePrefix.length))
+          const marker: unknown = JSON.parse(value.slice(prefix.length))
           if (
             Array.isArray(marker) &&
             marker.length === 3 &&
@@ -93,6 +104,7 @@ export const importRisFields = (
         }
       }
     } else if (tag === 'ET') result.edition = value
+    else if (tag === 'J2') result['container-title-short'] = value
     else if (tag === 'A4' || tag === 'ED' || tag === editorTag) {
       const comma = value.indexOf(',')
       const name =

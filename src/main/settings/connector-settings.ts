@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
+import { BootstrapError } from '../../shared/bootstrap'
 
 import type {
   AddCustomServerRequest,
@@ -40,11 +41,8 @@ import {
   isCustomConnectorName
 } from '../../shared/custom-connector'
 import { CONNECTOR_CATALOG } from '../connectors/catalog'
-import {
-  hasUsableCustomMcpCredentials,
-  isCustomMcpServerRouteSafe
-} from '../connectors/custom-mcp-bootstrap'
-import { hasAmbiguousCustomMcpCredentialNames } from '../connectors/custom-mcp-windows-credential-names'
+import { hasUsableCustomMcpCredentials, isCustomMcpServerRouteSafe } from '../connectors/custom-mcp'
+import { hasAmbiguousCustomMcpCredentialNames } from '../connectors/custom-mcp'
 import { getConnectorTools } from '../connectors/registry'
 import { encryptKey, isEncryptionAvailable, tryDecryptKey } from './crypto'
 import { getCredentialStore } from './credential-store-mode'
@@ -71,7 +69,7 @@ import {
   CustomServerIdConflictError,
   customServerSecurityFingerprint
 } from './custom-server-identity'
-import { assertSecureCustomMcpUrl } from '../connectors/custom-mcp-url'
+import { assertSecureCustomMcpUrl } from '../connectors/custom-mcp'
 
 type CustomServerSecurityChangeGuard = {
   commit(server: StoredCustomMcpServer): void
@@ -591,6 +589,15 @@ class ConnectorSettingsModule {
     const apiKey = request.apiKey.trim()
     await this.repository.setOpenAlexCredential(apiKey ? encryptKey(apiKey) : undefined)
     return this.connectorsSnapshot()
+  }
+
+  async bootstrapOpenAlex(key: string): Promise<void> {
+    const existing = (await this.repository.getSettings()).connectors
+    const ref = existing?.openAlexApiKeyRef
+    if (ref && tryDecryptKey(ref) !== key) throw new BootstrapError('configuration_conflict')
+    const result = await this.validateOpenAlexCredential({ apiKey: key })
+    if (!result.valid) throw new BootstrapError('credential_invalid')
+    await this.repository.publishBootstrapOpenAlex(existing, ref ?? encryptKey(key))
   }
 
   async validateOpenAlexCredential(

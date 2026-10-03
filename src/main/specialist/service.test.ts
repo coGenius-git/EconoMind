@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 import { SpecialistService } from './service'
+import { AgentsService } from '../agents/agents-service'
 import { ConnectorService } from '../connectors/service'
 import { SessionBindingService } from './session-binding'
 import { SpecialistRepository } from './repository'
@@ -25,6 +26,24 @@ afterEach(async () => {
 })
 
 describe('SpecialistService.list', () => {
+  it('keeps previously installed marketplace specialists editable as local content', async () => {
+    const created = await service.create({
+      name: 'Economics Research',
+      systemPrompt: 'Use verified evidence.'
+    })
+    const repository = new SpecialistRepository(tmpDir)
+    await repository.update(created.id, { origin: 'marketplace' }, created.revision)
+    const imported = await service.getById(created.id)
+    await service.update({
+      id: imported.id,
+      revision: imported.revision,
+      description: 'Local economics specialist'
+    })
+    expect(await service.getById(created.id)).toMatchObject({
+      description: 'Local economics specialist',
+      systemPrompt: 'Use verified evidence.'
+    })
+  })
   it('fails the whole runnable catalog with structured diagnostics when any builtin is invalid', async () => {
     const diagnostic = {
       severity: 'error' as const,
@@ -372,59 +391,6 @@ describe('SpecialistService.setEnabled', () => {
 })
 
 describe('SpecialistService.update', () => {
-  it('allows only appearance edits for Marketplace-managed Specialists', async () => {
-    const repo = new SpecialistRepository(tmpDir)
-    await repo.insert({
-      id: 'managed-specialist',
-      name: 'MANAGED_SPECIALIST',
-      displayName: 'Managed Specialist',
-      description: 'Publisher description',
-      systemPrompt: 'Publisher instructions',
-      enabled: true,
-      capabilityMode: 'selected',
-      fullAccess: emptyFullAccessConfig(),
-      selectedCapabilities: emptySelectedConfig(),
-      revision: 1,
-      packageVersion: '1.0.0',
-      origin: 'marketplace',
-      ownedSkillIds: []
-    })
-
-    await expect(
-      service.update({
-        id: 'managed-specialist',
-        revision: 1,
-        iconKey: 'microscope',
-        colorKey: 'teal'
-      })
-    ).resolves.toMatchObject({ iconKey: 'microscope', colorKey: 'teal', revision: 2 })
-    await expect(
-      service.update({
-        id: 'managed-specialist',
-        revision: 2,
-        description: 'Local rewrite'
-      })
-    ).rejects.toMatchObject({ code: 'SPECIALIST_READ_ONLY', targetKind: 'marketplace' })
-    await expect(service.setEnabled('managed-specialist', false)).resolves.toMatchObject({
-      enabled: false
-    })
-    await expect(service.duplicate('managed-specialist')).resolves.toMatchObject({
-      name: 'Managed Specialist Copy'
-    })
-    await expect(
-      service.attachSkill('managed-specialist', 'publisher-skill', 3)
-    ).rejects.toMatchObject({ code: 'SPECIALIST_READ_ONLY', targetKind: 'marketplace' })
-    await expect(
-      service.detachSkill('managed-specialist', 'publisher-skill', 3)
-    ).rejects.toMatchObject({ code: 'SPECIALIST_READ_ONLY', targetKind: 'marketplace' })
-    await expect(
-      service.attachConnector('managed-specialist', 'publisher-connector', 3)
-    ).rejects.toMatchObject({ code: 'SPECIALIST_READ_ONLY', targetKind: 'marketplace' })
-    await expect(
-      service.detachConnector('managed-specialist', 'publisher-connector', 3)
-    ).rejects.toMatchObject({ code: 'SPECIALIST_READ_ONLY', targetKind: 'marketplace' })
-  })
-
   it('atomically completes imported setup with submitted configuration and enablement', async () => {
     const repo = new SpecialistRepository(tmpDir)
     await repo.insert({
@@ -1078,4 +1044,34 @@ it('does not disable a record for an unrelated appearance diagnostic', async () 
   await writeFile(path, JSON.stringify(document))
   expect((await service.listForSettingsSnapshot()).integrity.status).toBe('degraded')
   expect(await service.resolveRunnableById(source.id)).toMatchObject({ id: source.id })
+})
+
+describe('Specialist errors through host.agents', () => {
+  it('preserves owned domain failures but hides unknown dependencies', async () => {
+    const agents = new AgentsService({
+      specialistService: service,
+      catalog: { listSkillCatalog: async () => [], getConnectors: async () => undefined }
+    })
+    await expect(agents.dispatch({ op: 'get', params: { name: 'missing' } })).rejects.toThrow(
+      'host.agents.get: Specialist "missing" not found.'
+    )
+    await expect(agents.dispatch({ op: 'create', params: { name: 'Reviewer' } })).rejects.toThrow(
+      'read-only'
+    )
+    const created = await service.create({ name: 'DOMAIN_TEST' })
+    await service.update({ id: created.id, revision: created.revision, description: 'changed' })
+    await expect(
+      agents.dispatch({
+        op: 'update',
+        params: {
+          name: created.name,
+          patch: { revision: created.revision, description: 'new change' }
+        }
+      })
+    ).rejects.toThrow('host.agents.get')
+    vi.spyOn(service, 'getByName').mockRejectedValueOnce(new Error('private credential SENTINEL'))
+    await expect(agents.dispatch({ op: 'get', params: { name: created.name } })).rejects.toThrow(
+      'Internal operation failed.'
+    )
+  })
 })

@@ -1,13 +1,16 @@
+import { buildSync } from 'esbuild'
 import { randomUUID } from 'node:crypto'
-import { createServer, connect, type Socket } from 'node:net'
+import { createServer, connect, Server, type Socket } from 'node:net'
 import { createServer as createHttpServer, request } from 'node:http'
 import { createServer as createTlsServer } from 'node:tls'
 import { execFile, spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
+import { once } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { CommandGateway, tunnelThroughProxy } from '../runtime/src/gateway/command-gateway.js'
@@ -29,8 +32,21 @@ const runResetTunnelChild = (
   resetPoint: 'before-routing' | 'client' | 'destination'
 ): Promise<ChildResult> =>
   new Promise((resolve, reject) => {
-    const gatewayModuleUrl = new URL('../runtime/src/gateway/command-gateway.ts', import.meta.url)
-      .href
+    const bundleRoot = mkdtempSync(join(tmpdir(), 'notebook-gateway-bundle-'))
+    const bundlePath = join(bundleRoot, 'command-gateway.mjs')
+    writeFileSync(
+      bundlePath,
+      buildSync({
+        entryPoints: [
+          fileURLToPath(new URL('../runtime/src/gateway/command-gateway.ts', import.meta.url))
+        ],
+        bundle: true,
+        platform: 'node',
+        format: 'esm',
+        write: false
+      }).outputFiles[0]!.text
+    )
+    const gatewayModuleUrl = pathToFileURL(bundlePath).href
     const script = `
       import { once } from 'node:events'
       import { connect, createServer } from 'node:net'
@@ -96,8 +112,17 @@ const runResetTunnelChild = (
     child.stdout.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => (stderr += chunk))
     child.stdout.on('data', (chunk: string) => (stdout += chunk))
-    child.once('error', reject)
-    child.once('close', (exitCode, signal) => resolve({ exitCode, signal, stderr, stdout }))
+    const removeBundle = (): void => {
+      rmSync(bundleRoot, { recursive: true, force: true })
+    }
+    child.once('error', (error) => {
+      removeBundle()
+      reject(error)
+    })
+    child.once('close', (exitCode, signal) => {
+      removeBundle()
+      resolve({ exitCode, signal, stderr, stdout })
+    })
   })
 
 afterEach(async () => {
@@ -152,6 +177,102 @@ const readHttpHeader = (socket: Socket): Promise<string> =>
   })
 
 describe('Notebook command gateway', () => {
+  it.skipIf(process.platform !== 'win32')(
+    'identifies the Notebook gateway when Windows denies a shared-port bind',
+    async () => {
+      // A real exclusive Windows listener reproduces WSAEACCES without changing firewall rules
+      // or system port exclusions. Use port 0 so the fixture does not depend on the reporter's port.
+      const script = [
+        '$listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Any, 0)',
+        '$listener.ExclusiveAddressUse = $true',
+        '$listener.Start()',
+        '[Console]::WriteLine($listener.LocalEndpoint.Port)',
+        '[Console]::Out.Flush()',
+        '[Console]::ReadLine() | Out-Null',
+        '$listener.Stop()'
+      ].join('; ')
+      const owner = spawn(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-EncodedCommand',
+          Buffer.from(script, 'utf16le').toString('base64')
+        ],
+        { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, timeout: 10_000 }
+      )
+      const closed = once(owner, 'close')
+      let failure: unknown
+      let port = 0
+      try {
+        const [output] = await Promise.race([
+          once(owner.stdout, 'data'),
+          closed.then(([code]) => {
+            throw new Error(`Exclusive listener fixture exited before reporting its port: ${code}`)
+          })
+        ])
+        port = Number(output.toString().trim())
+        expect(port).toBeGreaterThan(0)
+        try {
+          const gateway = await CommandGateway.open({
+            credentials,
+            sharedPort: port,
+            decide: async () => ({ allowed: false, message: 'test policy' })
+          })
+          closeTasks.push(() => gateway.close())
+        } catch (error) {
+          failure = error
+        }
+      } finally {
+        owner.stdin.end('\n')
+        await closed
+      }
+      // Failed startup must not poison subsequent acquisition after the external owner exits.
+      const recovered = await CommandGateway.open({
+        credentials,
+        sharedPort: port,
+        decide: async () => ({ allowed: false, message: 'test policy' })
+      })
+      closeTasks.push(() => recovered.close())
+      expect(recovered.port).toBe(port)
+      expect(failure).toBeInstanceOf(Error)
+      expect((failure as Error).message).toContain(`EACCES: permission denied 127.0.0.1:${port}`)
+      expect((failure as Error).message).toContain('Notebook network gateway')
+      expect((failure as Error).message).toContain('Settings > Network')
+      expect((failure as Error).cause).toMatchObject({ code: 'EACCES', port })
+    },
+    15_000
+  )
+
+  it('explains an ephemeral listener failure without recommending protected-mode setup', async () => {
+    const failure = Object.assign(new Error('listen EACCES: permission denied 127.0.0.1'), {
+      code: 'EACCES'
+    })
+    const listen = vi.spyOn(Server.prototype, 'listen').mockImplementationOnce(function (
+      this: Server
+    ) {
+      queueMicrotask(() => this.emit('error', failure))
+      return this
+    })
+    try {
+      const error = await CommandGateway.open({
+        credentials,
+        decide: async () => ({ allowed: false })
+      }).catch((error: unknown) => error)
+      expect(error).toBeInstanceOf(Error)
+      expect(error).toMatchObject({
+        code: 'EACCES',
+        cause: failure,
+        message: expect.stringContaining('Notebook network gateway')
+      })
+      expect((error as Error).message).toContain(failure.message)
+      expect((error as Error).message).toContain('Check local port restrictions')
+      expect((error as Error).message).not.toContain('Set up')
+    } finally {
+      listen.mockRestore()
+    }
+  })
+
   it.each(['http', 'socks4', 'socks5'])('aborts a stalled %s proxy handshake', async (protocol) => {
     const controller = new AbortController()
     let disconnected!: Promise<void>
@@ -252,7 +373,11 @@ describe('Notebook command gateway', () => {
         credentials,
         sharedPort: occupied.port
       })
-    ).rejects.toMatchObject({ code: 'EADDRINUSE' })
+    ).rejects.toMatchObject({
+      code: 'EADDRINUSE',
+      cause: expect.objectContaining({ code: 'EADDRINUSE' }),
+      message: expect.stringContaining('Settings > Network')
+    })
   })
 
   it('returns the policy denial body to HTTP clients', async () => {

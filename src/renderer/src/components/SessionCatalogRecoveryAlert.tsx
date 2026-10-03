@@ -4,7 +4,11 @@ import * as Dialog from '@/components/ui/dialog'
 
 import type { SessionCatalogRecovery } from '@/lib/session-persistence/session-persistence'
 import { Button } from '@/components/ui/button'
-import { dialogOverlayClassName, dialogPanelClassName } from '@/components/ui/dialog-chrome'
+import {
+  dialogOverlayClassName,
+  dialogPanelClassName,
+  dialogTitleClassName
+} from '@/components/ui/dialog-chrome'
 import { SessionPersistenceAlert } from './SessionPersistenceAlert'
 
 type SessionCatalogRecoveryAlertProps = {
@@ -16,7 +20,7 @@ type SessionCatalogRecoveryAlertProps = {
 
 // Catalog recovery is a storage concern shown before a Project command is attempted. Keep it
 // distinct from command failures and from the Project Files index, which cannot restore Session JSON.
-const SessionCatalogRecoveryAlert = ({
+const SessionCatalogRecoveryAlertContent = ({
   recovery,
   inline,
   onRetry,
@@ -99,14 +103,14 @@ const SessionCatalogRecoveryAlert = ({
                   'One or more saved conversations exceed the 256 MiB storage limit. They were left unchanged and cannot be opened. Review the affected files before retrying.'
                 )
               : t(
-                  '{{count}} damaged saved conversations were moved aside. Project archive stays unavailable because their state cannot be verified. You can still permanently delete the project.',
+                  '{{count}} damaged saved conversations were moved aside. Archiving remains unavailable for affected project data because its state cannot be verified. You can still permanently delete the affected project data.',
                   {
                     count: recovery.affectedFiles.length,
                     defaultValue_one:
-                      'A damaged saved conversation was moved aside. Project archive stays unavailable because its state cannot be verified. You can still permanently delete the project.'
+                      'A damaged saved conversation was moved aside. Archiving remains unavailable for affected project data because its state cannot be verified. You can still permanently delete the affected project data.'
                   }
                 )
-          } ${t('New Compute jobs may remain queued because saved concurrency limits could not be verified. Preserve the affected files, recover a valid copy, then recheck to resume dispatch.')}`}
+          } ${t('Compute jobs in affected Sessions may remain queued. Preserve the affected files and recover a valid copy; dispatch retries automatically.')}`}
           variant="warning"
           inline={inline}
           onRetry={onRetry}
@@ -125,7 +129,7 @@ const SessionCatalogRecoveryAlert = ({
               data-testid="session-recovery-details-dialog"
             >
               <div className="border-b border-border px-5 py-4">
-                <Dialog.Title className="text-base font-semibold text-foreground">
+                <Dialog.Title className={dialogTitleClassName}>
                   {t('Affected saved conversations')}
                 </Dialog.Title>
                 <Dialog.Description className="mt-1 text-sm text-muted-foreground">
@@ -205,5 +209,11 @@ const SessionCatalogRecoveryAlert = ({
     />
   )
 }
+
+const SessionCatalogRecoveryAlert = (
+  props: SessionCatalogRecoveryAlertProps
+): React.JSX.Element => (
+  <SessionCatalogRecoveryAlertContent key={JSON.stringify(props.recovery)} {...props} />
+)
 
 export { SessionCatalogRecoveryAlert }

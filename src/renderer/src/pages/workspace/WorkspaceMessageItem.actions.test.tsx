@@ -81,6 +81,9 @@ const renderItem = async (
       messageId: string,
       target: EditAnnotationTarget | undefined
     ) => void
+    onPreviewMentionArtifact?: React.ComponentProps<
+      typeof WorkspaceMessageItem
+    >['onPreviewMentionArtifact']
     canBranchInNewSession?: boolean
     onBranchInNewSession?: (messageId: string) => void
     subsequentTurns?: number
@@ -103,7 +106,8 @@ const renderItem = async (
         onPreviewArtifact={noop}
         onPreviewUploadAttachment={noop}
         onOpenSkillMention={noop}
-        onPreviewMentionArtifact={noop}
+        onOpenLibraryMention={noop}
+        onPreviewMentionArtifact={options.onPreviewMentionArtifact ?? noop}
         canEditMessage={options.canEditMessage ?? false}
         showUserActions={options.showUserActions}
         onSendEditedMessage={options.onSendEditedMessage}
@@ -748,6 +752,39 @@ describe('WorkspaceMessageItem user message actions', () => {
     expect(content.classList.contains('max-h-[12.5lh]')).toBe(false)
   })
 
+  it('defers skipped row measurements and preserves expansion until rendering resumes', async () => {
+    await renderItem(createMessage({ content: 'Long prompt line\n'.repeat(13) }))
+    const measurement = container.querySelector<HTMLElement>(
+      '[data-slot="user-message-measurement"]'
+    )!
+    measurement.style.lineHeight = '20px'
+    const readHeight = vi.fn(() => 260)
+    Object.defineProperty(measurement, 'scrollHeight', { get: readHeight })
+    const checkVisibility = vi.fn(() => false)
+    measurement.checkVisibility = checkVisibility
+
+    act(() => notifyResize?.())
+    expect(checkVisibility).toHaveBeenCalledWith({ contentVisibilityAuto: true })
+    expect(readHeight).not.toHaveBeenCalled()
+    expect(container.querySelector('[aria-label="Show more"]')).toBeNull()
+
+    checkVisibility.mockReturnValue(true)
+    act(() => notifyResize?.())
+    await click(getButton('Show more'))
+    expect(getButton('Show less').getAttribute('aria-expanded')).toBe('true')
+
+    checkVisibility.mockReturnValue(false)
+    readHeight.mockClear()
+    act(() => notifyResize?.())
+    expect(readHeight).not.toHaveBeenCalled()
+    expect(getButton('Show less').getAttribute('aria-expanded')).toBe('true')
+
+    checkVisibility.mockReturnValue(true)
+    readHeight.mockReturnValue(240)
+    act(() => notifyResize?.())
+    expect(container.querySelector('[data-slot="user-message-collapse-toggle"]')).toBeNull()
+  })
+
   it('remeasures structured content and uses a non-interactive summary while collapsed', async () => {
     const text = 'Structured prompt line\n'.repeat(13)
     const contentText = `${text}/forecast @evidence.csv`
@@ -820,6 +857,39 @@ describe('WorkspaceMessageItem user message actions', () => {
     expect(getButton('Show less').getAttribute('aria-expanded')).toBe('true')
   })
 
+  it('keeps a Collection mention non-interactive until a long message is expanded', async () => {
+    const text = 'Long prompt line\n'.repeat(13)
+    const message = createMessage({
+      content: `${text}@TP53 evidence`,
+      parts: [
+        { type: 'text', text },
+        {
+          type: 'literature-scope',
+          scope: 'collection',
+          collectionId: 'collection-1',
+          name: 'TP53 evidence'
+        }
+      ]
+    })
+    await renderItem(message)
+
+    const content = container.querySelector<HTMLElement>('[data-slot="user-message-content"]')
+    const measurement = container.querySelector<HTMLElement>(
+      '[data-slot="user-message-measurement"]'
+    )
+    if (!content || !measurement) throw new Error('user message content not found')
+    measurement.style.lineHeight = '20px'
+    Object.defineProperty(measurement, 'scrollHeight', { configurable: true, value: 260 })
+    act(() => notifyResize?.())
+
+    expect(getButton('Show more')).not.toBeNull()
+    expect(container.querySelector('[aria-label="Open TP53 evidence"]')).toBeNull()
+    expect(content.textContent).toBe(message.content)
+
+    await click(getButton('Show more'))
+    expect(content.contains(getButton('Open TP53 evidence'))).toBe(true)
+  })
+
   it('labels an interrupted user turn without creating another message item', async () => {
     await renderItem(createMessage({ interrupted: true }))
 
@@ -827,8 +897,8 @@ describe('WorkspaceMessageItem user message actions', () => {
     const interruption = container.querySelector('[data-slot="user-message-interrupted"]')
     expect(interruption?.textContent).toBe('This turn was interrupted.')
     expect(interruption?.classList.contains('italic')).toBe(true)
-    expect(interruption?.classList.contains('text-amber-600')).toBe(true)
-    expect(interruption?.classList.contains('dark:text-amber-400')).toBe(true)
+    expect(interruption?.classList.contains('text-status-warning-foreground')).toBe(true)
+    expect(interruption?.classList.contains('dark:text-status-warning-dark-foreground')).toBe(true)
   })
 
   it('renders copy and edit actions next to user bubbles only', async () => {
@@ -898,8 +968,7 @@ describe('WorkspaceMessageItem user message actions', () => {
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
     const copyButton = actions.querySelector('[aria-label="Copy message"]')
     expect(copyButton?.getAttribute('data-state')).toBe('closed')
-    expect(copyButton?.classList.contains('focus-visible:ring-[3px]')).toBe(true)
-    expect(copyButton?.classList.contains('focus-visible:ring-ring/50')).toBe(true)
+    expect(copyButton?.classList.contains('focus-visible:keyboard-focus')).toBe(true)
     expect(copyButton?.classList.contains('disabled:pointer-events-none')).toBe(true)
     expect(actions.querySelector('[aria-label="Edit message"]')).not.toBeNull()
   })
@@ -1077,6 +1146,27 @@ describe('WorkspaceMessageItem user message actions', () => {
     expect(editor?.textContent).toBe('Run /forecast now')
     // The structured skill segment comes back as a chip, not flattened text.
     expect(editor?.querySelector('[data-mention-type="skill"]')).not.toBeNull()
+  })
+
+  it('uses the message owner preview action for a file chip in the inline editor', async () => {
+    const part = {
+      type: 'artifact' as const,
+      source: 'upload' as const,
+      id: 'mention-1',
+      sourceFileId: 'file-1',
+      versionId: 'version-1',
+      name: 'volcano.csv',
+      path: 'uploads/volcano.csv'
+    }
+    const preview = vi.fn()
+    await renderItem(createMessage({ content: '@volcano.csv', parts: [part] }), {
+      canEditMessage: true,
+      onPreviewMentionArtifact: preview
+    })
+    await click(getButton('Edit message'))
+    const chip = getEditor()!.querySelector<HTMLElement>('[data-mention-type="artifact"]')!
+    await click(chip)
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining(part))
   })
 
   it('separates read-only uploaded files from the message editor', async () => {

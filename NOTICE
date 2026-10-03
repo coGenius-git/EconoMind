@@ -1,0 +1,33 @@
+EconoMind
+https://github.com/coGenius-git/EconoMind
+
+This product is derived from Open Science by AIPOCH.
+Original project: https://github.com/aipoch/open-science
+Copyright 2026 AIPOCH
+Modifications Copyright 2026 EconoMind contributors
+
+Open Science and the EconoMind modifications are licensed under the
+Apache License, Version 2.0. A complete copy is provided in LICENSE
+(LICENSE.txt in the installed application's resources directory).
+
+EconoMind is a modified distribution maintained separately from Open Science.
+Its changes include an economics and management research workbench, literature
+screening and bibliometrics workflows, project classification, domain-specific
+skills and specialists, interface and branding changes, removal of marketplace
+and remote-access features, and workflow reliability fixes. The current
+integration baseline is Open Science commit
+c87a5668d6d53d2752ffb46b9f36a307cfca8cb1 (source version 0.34.1).
+See UPSTREAM.md and OPEN_SOURCE.md for origin, scope and compatibility details.
+In a source checkout, OPEN_SOURCE.md is located in docs/.
+
+EconoMind is not an official AIPOCH release. References to AIPOCH and Open Science
+identify the source of the work and do not imply endorsement or affiliation.
+No rights to third-party trademarks are granted by this notice.
+
+Third-party components, model weights, icons, fonts and contributed resources
+retain their own licenses and attribution notices. In particular, copied
+LobeHub provider icons retain the MIT notice in LobeHub-icons-LICENSE.
+The Apache-2.0 designation does not relicense those third-party materials.
+
+This NOTICE provides attribution and information; it does not change the terms
+of LICENSE or add restrictions to the Apache License, Version 2.0.

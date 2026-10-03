@@ -240,12 +240,31 @@ baseline.
 **6.2 Single-observation categories.** A filled dot with a thin neutral stem to
 the semantic zero (lollipop). Value labels sit beside the dot.
 
+The grouped plotting helpers require nonempty, one-dimensional, finite real
+observations in every supplied group. They reject empty groups and NaN/Inf before
+drawing: resolve exclusions explicitly, report the retained n, and add a missing
+category marker separately when appropriate. They do not silently drop missing
+observations. Masked arrays with excluded observations are rejected before
+conversion; arrays with no masked entries remain valid.
+Requested SD/CI intervals require at least two observations per
+group; for a single observation, use points without an interval. Labels and
+data groups must align. For `strip_with_median`, nonempty color sequences cycle;
+None or an empty sequence uses default gray.
+An empty bar color sequence uses Matplotlib's default bar color; an empty
+`focal_palette` base sequence uses the default color cycle.
+
 **6.3 Continuous series.** Mean-per-x as a line with markers; individual runs as
 thin translucent lines or points behind it. Label each series with direct text
 at the right end of its line in preference to a legend box;
 `end_of_line_labels(...)` places those labels. Summary glyphs (per-bin
 mean/median) use a shape that cannot be mistaken for a raw observation,
 identical across series, drawn below the raw points in z-order.
+
+`end_of_line_labels` validates series/label counts and nonempty matched x/y
+lengths before adding labels. Endpoints must be finite; interior gaps can remain.
+It accesses the end of each indexed sequence without copying the full series.
+Nonempty color sequences cycle; None or an empty sequence uses the current
+default text color. Panel letters must be unique for `panel_crops`.
 
 **6.4 Distributions on shared support.** When two distributions overlap heavily,
 stack them as small panels with a shared x-axis or use a ridgeline. Overlay only
@@ -357,10 +376,22 @@ those panel crops first at native resolution. For full QA, crop the saved PNG to
 each panel and look:
 
 ```python
+from PIL import Image
+
 fig.savefig("figure.png")
-for letter, box in panel_crops(fig).items():
-    print(letter, box)  # pass each box to the Agent's image-viewing tool
+with Image.open("figure.png") as saved:
+    for letter, box in panel_crops(fig).items():
+        saved.crop(box).save(f"panel_{letter}.png")
 ```
+
+`panel_crops` returns **pixels with a top-left origin**, for cropping the saved
+image. Never pass these boxes to `savefig(bbox_inches=...)` or construct a
+`Bbox.from_extents` for a new render from them: `bbox_inches` uses inches and a
+bottom-left origin. At 300 dpi, treating pixel dimensions as inches multiplies
+the raster area by 90,000 and can exhaust system memory. Use the saved-image
+crop above, with matching DPI, `bbox_inches`, and `pad_inches` settings for
+`savefig` and `panel_crops`. Panels outside an explicit saved bounding box are
+omitted from the crops.
 
 For each crop: Is every glyph and mark legible against its background? Does the
 smallest plotted element have a stroke or stub? Do any leaders cross? Could any

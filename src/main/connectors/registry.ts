@@ -1,9 +1,20 @@
 import Ajv2020, { type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.js'
 
 import { LITERATURE_TOOLS } from './descriptors/literature'
+
+import { RESEARCH_RESOURCES_TOOLS } from './descriptors/research-resources'
+
+import { ZENODO_TOOLS } from './descriptors/zenodo'
+
 import type { ToolDescriptor } from './types'
 
-const ALL_TOOLS: ToolDescriptor[] = [...LITERATURE_TOOLS]
+const ALL_TOOLS: ToolDescriptor[] = [
+  ...LITERATURE_TOOLS,
+
+  ...RESEARCH_RESOURCES_TOOLS,
+
+  ...ZENODO_TOOLS
+]
 
 const inputSchemaCompiler = new Ajv2020({
   strict: true,
@@ -58,7 +69,7 @@ export function validateToolArguments(
   )
 }
 
-export const ALL_CONNECTOR_IDS = [...new Set(ALL_TOOLS.map((t) => t.connector))]
+export const ALL_CONNECTOR_IDS = [...new Set(ALL_TOOLS.map((tool) => tool.connector))]
 
 export function getConnectorTools(connector: string): ToolDescriptor[] {
   return ALL_TOOLS.filter((t) => t.connector === connector)
@@ -67,3 +78,35 @@ export function getConnectorTools(connector: string): ToolDescriptor[] {
 export function getDescriptor(connector: string, method: string): ToolDescriptor | undefined {
   return ALL_TOOLS.find((t) => t.connector === connector && t.id === method)
 }
+
+// Cleanup-only identities; none of these connectors can be listed or dispatched.
+export const RETIRED_BUILTIN_CONNECTOR_IDS: readonly string[] = [
+  'alliance',
+  'chemistry',
+  'molecule',
+  'pubmed',
+  'genes',
+  'pathway-commons',
+  'genomes',
+  'variants',
+  'clinical-trials',
+  'clinical-genomics',
+  'structures',
+  'chembl',
+  'biorxiv',
+  'drug-regulatory',
+  'human-genetics',
+  'expression',
+  'hmmer',
+  'interproscan',
+  'protein-annotation',
+  'cancer-models',
+  'gdc',
+  'rna',
+  'omics-archives',
+  'cellxgene-discover',
+  'cellguide',
+  'regulation',
+  'biomart',
+  'zinc'
+]

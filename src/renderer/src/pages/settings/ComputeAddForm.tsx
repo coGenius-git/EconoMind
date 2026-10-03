@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { InlineNotice } from '@/components/ui/inline-notice'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { ComputeAuthenticationMode, ComputeExecutionMode } from '../../../../shared/compute'
@@ -59,6 +60,15 @@ export function ComputeAddForm({ onCreated, onCancel }: ComputeAddFormProps): Re
   >()
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
+  const mounted = useRef(false)
+
+  useLayoutEffect(() => {
+    // Relinquish navigation during the unmount commit, before a pending command can settle.
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
 
   useEffect(() => {
     void loadSshAliases()
@@ -102,16 +112,19 @@ export function ComputeAddForm({ onCreated, onCancel }: ComputeAddFormProps): Re
         },
         { createSshConfigHost: createHost, createPasswordHost }
       )
-      setPassword('')
       // Navigate to the detail page immediately; the probe runs in the background so the detail page
       // can show "Probing…" state (design.md §7: create record → auto-probe → redirect to detail).
-      onCreated(host.providerId)
+      // Leaving does not cancel creation, but the old form no longer owns navigation.
+      if (mounted.current) {
+        setPassword('')
+        onCreated(host.providerId)
+      }
       // Fire-and-forget: errors are captured as probeResult.ok=false and surfaced in the detail UI.
       void probeHost(host.providerId).catch(() => undefined)
     } catch (err) {
-      setError(computeAuthenticationErrorCopy(err, t))
+      if (mounted.current) setError(computeAuthenticationErrorCopy(err, t))
     } finally {
-      setIsSubmitting(false)
+      if (mounted.current) setIsSubmitting(false)
     }
   }
 
@@ -233,9 +246,9 @@ export function ComputeAddForm({ onCreated, onCancel }: ComputeAddFormProps): Re
         )}
 
         {error ? (
-          <p role="alert" className="text-sm text-destructive">
+          <InlineNotice level="error" role="alert">
             {error}
-          </p>
+          </InlineNotice>
         ) : null}
 
         <div className="flex justify-end gap-2">

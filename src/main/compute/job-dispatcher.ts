@@ -6,6 +6,7 @@ import { hasImmutableExecutionFileEvidenceReference } from '../../shared/executi
 import { createLogger, errorLogFields } from '../logger'
 import { decodeDataPath } from '../storage/data-path'
 import {
+  isConnectionStdoutTruncated,
   classifyConnectionFailure,
   ComputeConnectionError,
   redactConnectionOutputs,
@@ -26,6 +27,7 @@ import {
 import { applyComputeEnvironment } from './compute-environment'
 import { dispatchSlurmJob, SlurmDriverError } from './slurm-driver'
 import { toBase64, type RemoteHandle } from './remote-job-contract'
+import { remoteJobPidOwnershipFunctionLines } from './remote-job-process'
 
 export {
   toBase64,
@@ -43,16 +45,10 @@ const DISPATCH_TIMEOUT_MS = 120_000
 const log = createLogger('compute')
 
 export const REMOTE_PROCESS_OWNERSHIP_FUNCTION = [
+  ...remoteJobPidOwnershipFunctionLines(),
   'process_owned_by_workdir() {',
-  '  pid=$1',
-  '  expected_workdir=$2',
-  "  case $pid in ''|*[!0-9]*) return 1 ;; esac",
-  '  [ -n "$expected_workdir" ] || return 1',
-  '  process_workdir=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)',
-  '  if [ -z "$process_workdir" ] && command -v lsof >/dev/null 2>&1; then',
-  `    process_workdir=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)`,
-  '  fi',
-  '  [ "$process_workdir" = "$expected_workdir" ]',
+  '  workdir=$2',
+  '  job_pid_is_owned "$1"',
   '}'
 ].join('\n')
 
@@ -79,8 +75,13 @@ export const hashCommand = (command: string): string =>
 // This is called both at submit time (to return immediately) and by the dispatcher.
 export const computeRemoteWorkdir = (scratchRoot: string | undefined, jobId: string): string => {
   const root = scratchRoot?.trim() || '~'
-  return `${root}/.openscience/jobs/${jobId}`
+  return `${root}/.open-science/jobs/${jobId}`
 }
+
+export const computeLegacyRemoteWorkdir = (
+  scratchRoot: string | undefined,
+  jobId: string
+): string => `${scratchRoot?.trim() || '~'}/.openscience/jobs/${jobId}`
 
 // Quotes a remote path for safe interpolation into a remote shell command, while still allowing a
 // leading `~` to be expanded to $HOME by the shell. A tilde inside double/single quotes is NOT
@@ -273,7 +274,7 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
     return
   }
 
-  const workdir = job.remote_workdir ?? computeRemoteWorkdir(host.scratchRoot, jobId)
+  const workdir = job.remote_workdir ?? computeLegacyRemoteWorkdir(host.scratchRoot, jobId)
   const timeoutSecs = job.timeout_seconds ?? 86400 // default 24h
 
   // Stage inputs declared in the manifest (all-or-nothing: failure → dispatch_failed).
@@ -388,7 +389,7 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
   // parseInt prefixes are ambiguous because adopting the wrong PID can later target another job.
   const pidOutput = runResult.stdout.trim()
   const pid = /^[1-9]\d*$/.test(pidOutput) ? Number(pidOutput) : Number.NaN
-  if (runResult.truncated || !Number.isSafeInteger(pid) || pid <= 1) {
+  if (isConnectionStdoutTruncated(runResult) || !Number.isSafeInteger(pid) || pid <= 1) {
     await recoverAmbiguousRemoteLaunch(job, connection, workdir, lifecycle, runResult.stdout)
     return
   }

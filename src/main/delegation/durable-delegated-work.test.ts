@@ -11,6 +11,8 @@ import {
   type ExecutionControl
 } from './deterministic-execution'
 import { DelegateMessagePreAcceptanceError } from './execution-port'
+import { createAcpDelegateExecution } from './acp-execution'
+import { opencodeFramework } from '../agent-framework'
 import {
   createInMemoryDelegatedWorkRecords,
   type AuthenticatedDelegateCaller,
@@ -93,6 +95,15 @@ describe('durable delegated work', () => {
         }
       ]
     }
+    const beforeQuestion = await records.snapshot()
+    await expect(
+      work.requestUserInput(
+        { ...delegatedCaller, permissionPrompts: 'none' },
+        questionRequest,
+        'question-request'
+      )
+    ).resolves.toEqual({ action: 'cancelled' })
+    expect(await records.snapshot()).toEqual(beforeQuestion)
     await expect(
       work.requestUserInput(delegatedCaller, questionRequest, 'question-request')
     ).resolves.toEqual({ action: 'pending' })
@@ -1042,6 +1053,65 @@ describe('durable delegated work', () => {
     ).resolves.toMatchObject({
       status: 'cancelled'
     })
+  })
+
+  it('reports pinned Attempts after a partial stop without exposing dependency errors', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    let failedFrame = ''
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      revokeAttemptWrites: async ({ frameId }) => {
+        if (frameId === failedFrame) throw new Error('private backend secret')
+      }
+    })
+    const dispatched = await work.delegate(
+      caller,
+      [
+        { task: 'First', name: 'First' },
+        { task: 'Second', name: 'Second' }
+      ],
+      { wait: false }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(2)
+    failedFrame = dispatched.children[1].frameId
+    const error = (await work
+      .stopChildren(
+        caller,
+        dispatched.children.map((child) => child.frameId)
+      )
+      .catch((error: unknown) => error)) as Error
+    expect(error.message).not.toContain('private backend secret')
+    const report = JSON.parse(error.message.slice(error.message.indexOf('{')))
+    expect(report.attempts).toEqual([
+      {
+        frameId: dispatched.children[0].frameId,
+        attemptId: dispatched.children[0].attemptId,
+        stopOutcome: 'cancelled'
+      },
+      {
+        frameId: dispatched.children[1].frameId,
+        attemptId: dispatched.children[1].attemptId,
+        stopOutcome: 'unconfirmed',
+        reason: expect.any(String)
+      }
+    ])
+    const observed = await work.collect(
+      caller,
+      report.attempts.map(({ frameId, attemptId }: { frameId: string; attemptId: string }) => ({
+        frameId,
+        attemptId
+      })),
+      { timeoutSeconds: 0 }
+    )
+    expect(observed.map((child) => child.status)).toEqual(['cancelled', 'running'])
+    failedFrame = ''
+    await work.stopChildren(caller, [dispatched.children[1].frameId])
   })
 
   it('restores unresolved permission cards when Stop submission fails', async () => {
@@ -2828,7 +2898,7 @@ describe('durable delegated work', () => {
           status: 'error',
           error: { code: 'execution_failure', message: 'provider startup failed' }
         },
-        { status: 'cancelled', cancellationReason: 'main_agent_stop' }
+        { status: 'cancelled', cancellationReason: 'runtime_interrupted' }
       ]
     })
   })
@@ -3362,7 +3432,7 @@ describe('durable delegated work', () => {
       children: [
         {
           status: 'cancelled',
-          cancellationReason: 'main_agent_stop',
+          cancellationReason: 'runtime_interrupted',
           artifactsCreated: []
         }
       ]
@@ -4063,7 +4133,7 @@ describe('durable delegated work', () => {
         agentName: 'Main Agent',
         status: 'cancelled',
         artifactsCreated: [],
-        cancellationReason: 'main_agent_stop'
+        cancellationReason: 'runtime_interrupted'
       },
       {
         frameId: failed.children[0].frameId,
@@ -4176,7 +4246,7 @@ describe('durable delegated work', () => {
       })
 
     const continued = await work.sendMessage(
-      { ...caller, toolInvocationId: 'continuation-call' },
+      { ...caller, permissionPrompts: 'none', toolInvocationId: 'continuation-call' },
       frameId,
       'Check a counterexample'
     )
@@ -4191,6 +4261,7 @@ describe('durable delegated work', () => {
       (await records.snapshot()).records[0].attempts[1].runtimeSegmentIds[0]
     )
     expect(execution.controls()[1].input).toMatchObject({
+      permissionPrompts: 'none',
       frameId,
       task: 'Check a counterexample',
       continuation: true,
@@ -4901,4 +4972,187 @@ describe('reported delegation regressions', () => {
       expect(execution.controls()).toHaveLength(1)
     }
   )
+})
+
+describe('ACP terminal outcomes through durable delegation', () => {
+  it.each([
+    'completed',
+    'cancelled',
+    'unreaped',
+    'stopped',
+    'stopped-unreaped',
+    'startup-unreaped',
+    'stopped-startup-unreaped'
+  ] as const)('preserves the %s outcome and its resource ownership', async (outcome) => {
+    const unreaped = outcome.endsWith('unreaped')
+    const stopped = outcome.startsWith('stopped')
+    let finishPrompt!: () => void
+    const promptFinished = new Promise<void>((resolve) => {
+      finishPrompt = resolve
+    })
+    const releaseClaim = vi.fn(async () => undefined)
+    const disposeResources = vi.fn()
+    const promptStarted = vi.fn()
+    const sessionStarted = vi.fn()
+    const revoke = vi.fn()
+    const backend = { framework: opencodeFramework, executablePath: '/bin/agent', env: {} }
+    const execution = createAcpDelegateExecution({
+      capacity: 1,
+      prepare: (input) => ({
+        executionId: input.attemptId,
+        provenance: {
+          projectId: input.session.projectId,
+          sessionId: input.session.sessionId,
+          agentFrameId: input.frameId,
+          runtimeSegmentId: input.runtimeSegmentId,
+          promptMessageId: input.turn!.promptMessageId,
+          messageBranchId: input.turn!.messageBranchId
+        },
+        workspace: { cwd: '/workspace/child' },
+        runtimeHome: '/runtime/child',
+        frameworkId: 'opencode',
+        capability: { revoke },
+        disposeResources
+      }),
+      assertFrameworkNativeDelegationDisabled: () => undefined,
+      createRuntime: (_scope, callbacks) => ({
+        createSession: async () => {
+          sessionStarted()
+          if (outcome === 'stopped-startup-unreaped') await promptFinished
+          if (outcome === 'startup-unreaped') throw new Error('provider startup rejected')
+          return { sessionId: 'provider-child' }
+        },
+        sendAppContinuation: async () => {
+          promptStarted()
+          callbacks.onProviderPromptAccepted('provider-child')
+          callbacks.onEvent({
+            id: 'partial-output',
+            level: 'info',
+            timestamp: 1,
+            kind: 'message',
+            role: 'assistant',
+            sessionId: 'provider-child',
+            text: 'Observed evidence',
+            title: 'Assistant'
+          })
+          if (stopped) await promptFinished
+          return { stopReason: outcome === 'cancelled' || stopped ? 'cancelled' : 'end_turn' }
+        },
+        cancelPrompt: async () => {
+          finishPrompt()
+        },
+        setPermissionProfile: async () => undefined,
+        respondToPermission: async () => undefined,
+        deleteSession: async () => undefined,
+        shutdownForQuit: async () => ({ reaped: !unreaped })
+      })
+    })
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const terminalize = vi.spyOn(records, 'terminalize')
+    const finalize = vi.fn(async () => undefined)
+    const artifact = {
+      id: 'published-version',
+      artifactId: 'published-artifact',
+      versionId: 'published-version',
+      versionNumber: 1,
+      checksum: 'abc',
+      createdAt: '2026-09-24T00:00:00.000Z',
+      projectId: caller.session.projectId,
+      sessionId: caller.session.sessionId,
+      runId: 'run-a',
+      name: 'panel.png',
+      path: '/managed/panel.png',
+      fileUrl: 'file:///managed/panel.png',
+      mimeType: 'image/png',
+      size: 8,
+      mtimeMs: 1
+    }
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      artifactEvidence: {
+        open: async () => ({ finalize, dispose: async () => undefined }),
+        project: async () => [artifact]
+      },
+      resolveExecutionModel: () => ({
+        snapshot: TEST_EXECUTION_MODEL,
+        backendLease: {
+          claim: () => ({ backend, release: releaseClaim }),
+          release: async () => undefined
+        }
+      })
+    })
+    let result
+    if (stopped) {
+      const launched = await work.delegate(
+        caller,
+        { task: 'Inspect evidence', name: 'Inspect' },
+        { wait: false }
+      )
+      await vi.waitFor(() =>
+        expect(
+          outcome === 'stopped-startup-unreaped' ? sessionStarted : promptStarted
+        ).toHaveBeenCalledOnce()
+      )
+      const stopping = work.stopChildren(caller, [launched.children[0].frameId])
+      if (outcome === 'stopped-startup-unreaped') {
+        await vi.waitFor(() => expect(revoke).toHaveBeenCalledOnce())
+        finishPrompt()
+      }
+      await stopping
+      result = {
+        kind: 'results',
+        children: await work.collect(caller, [launched.children[0].frameId])
+      }
+    } else {
+      result = await work.delegate(caller, { task: 'Inspect evidence', name: 'Inspect' })
+    }
+    const expectedStatus =
+      outcome === 'startup-unreaped'
+        ? 'error'
+        : stopped
+          ? 'cancelled'
+          : outcome === 'unreaped'
+            ? 'completed'
+            : outcome
+    expect.soft(result).toMatchObject({ kind: 'results', children: [{ status: expectedStatus }] })
+    expect.soft(terminalize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: expectedStatus,
+        ...(expectedStatus === 'cancelled'
+          ? { cancellationReason: stopped ? 'main_agent_stop' : 'runtime_interrupted' }
+          : {})
+      })
+    )
+    expect.soft(disposeResources).toHaveBeenCalledTimes(unreaped ? 0 : 1)
+    expect.soft(releaseClaim).toHaveBeenCalledOnce()
+    if (outcome === 'startup-unreaped')
+      expect.soft(terminalize).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: expect.objectContaining({
+            message: expect.stringContaining('cleanup could not be confirmed')
+          })
+        })
+      )
+    if (expectedStatus === 'completed') {
+      expect(finalize).toHaveBeenCalledOnce()
+      expect(result).toMatchObject({
+        children: [{ response: 'Observed evidence', artifactsCreated: [artifact] }]
+      })
+      const collected = await work.collect(caller, [result.children[0].frameId])
+      expect(collected).toMatchObject([{ status: 'completed', response: 'Observed evidence' }])
+    }
+    if (unreaped) {
+      await expect(execution.reserve(1)).rejects.toMatchObject({ code: 'capacity' })
+      await expect(work.stopSession(caller.session)).rejects.toThrow()
+      if (expectedStatus === 'completed')
+        expect(await work.collect(caller, [result.children[0].frameId])).toMatchObject([
+          { status: 'completed', response: 'Observed evidence', artifactsCreated: [artifact] }
+        ])
+    }
+  })
 })

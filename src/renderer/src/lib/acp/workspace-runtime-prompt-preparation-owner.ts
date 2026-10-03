@@ -2,6 +2,8 @@ import type { AcpMessageImage, AcpStateSnapshot } from '../../../../shared/acp'
 import type { AgentFrameworkId, SessionAgentConfiguration } from '../../../../shared/settings'
 import type { PermissionProfileId } from '../../../../shared/permission-profiles'
 import {
+  CLAUDE_CLI_INCOMPATIBLE_MESSAGE,
+  isClaudeCliCompatibilityError,
   RESUME_MODEL_INCOMPATIBLE_MESSAGE,
   RESUME_RECONNECT_FAILED_MESSAGE,
   RESUME_TIMED_OUT_MESSAGE,
@@ -70,6 +72,7 @@ type PreparedWorkspacePromptReplay = HistoryReplayContext & {
 }
 
 type PreparedExistingWorkspacePrompt = {
+  runtimeSegmentOpened: boolean
   appendOwnership: {
     projectId?: string
     agentFrameworkId?: AgentFrameworkId
@@ -199,6 +202,8 @@ const RESUME_UNKNOWN_ERROR_MESSAGE = 'Agent session resume failed: Unknown error
 const getResumeFailureMessage = (error: unknown): string => {
   const message = error instanceof Error ? error.message : String(error)
 
+  if (isClaudeCliCompatibilityError(message)) return CLAUDE_CLI_INCOMPATIBLE_MESSAGE
+
   if (/cwd does not exist/i.test(message)) return RESUME_WORKSPACE_MISSING_MESSAGE
   if (/timed out/i.test(message)) return RESUME_TIMED_OUT_MESSAGE
   if (/does not support session resume/i.test(message)) return RESUME_UNSUPPORTED_MESSAGE
@@ -269,6 +274,7 @@ const prepareExistingWorkspacePrompt = async (
   let agentContextResetPerformed = false
   let shouldResumeSession = false
   let contextResetFromResume = false
+  let runtimeSegmentOpened = false
   const specialistSwitchReplay = Boolean(currentSession?.specialistSwitchResetRequired)
   if (specialistSwitchReplay) {
     useSessionStore.getState().clearSpecialistSwitchResetRequired(sessionId)
@@ -300,6 +306,7 @@ const prepareExistingWorkspacePrompt = async (
             agentBackendId: reset?.backendId,
             providerSessionId: reset?.providerSessionId,
             providerContinuityToken: reset?.providerContinuityToken,
+            wslSetup: reset?.wslSetup,
             pendingHistoryReplay: currentSession?.pendingHistoryReplay ?? { kind: 'all' }
           },
           { preserveCompaction: Boolean(request.isCurrent && currentSession?.compacting) }
@@ -351,6 +358,7 @@ const prepareExistingWorkspacePrompt = async (
               agentBackendId: resumeResult.backendId,
               providerSessionId: resumeResult.providerSessionId,
               providerContinuityToken: resumeResult.providerContinuityToken,
+              wslSetup: resumeResult.wslSetup,
               ...(contextResetFromResume
                 ? {
                     pendingHistoryReplay:
@@ -378,15 +386,25 @@ const prepareExistingWorkspacePrompt = async (
             agentBackendId: reset?.backendId,
             providerSessionId: reset?.providerSessionId,
             providerContinuityToken: reset?.providerContinuityToken,
+            wslSetup: reset?.wslSetup,
             pendingHistoryReplay: currentSession?.pendingHistoryReplay ?? { kind: 'all' }
           },
           { preserveCompaction: Boolean(request.isCurrent && currentSession?.compacting) }
         )
         contextResetFromResume = true
       }
-
-      // #936: accepted events from the retired generation must settle before the next run opens.
+    }
+    // Resetting a Branch also retires its prior turn. Drain accepted stops before appending
+    // the new prompt, or the persistence flush can settle it before provider dispatch.
+    if (shouldResumeSession || agentContextResetPerformed) {
       await request.drainRuntimeEvents?.(sessionId)
+    }
+    if (request.isCurrent?.() === false) return undefined
+    if (agentContextResetPerformed || contextResetFromResume) {
+      if (!useSessionStore.getState().openContextResetRuntimeSegment(sessionId)) {
+        throw new Error('Agent context reset Runtime Segment could not be created.')
+      }
+      runtimeSegmentOpened = true
     }
   } catch (error) {
     if (request.isCurrent?.() === false) return undefined
@@ -473,6 +491,7 @@ const prepareExistingWorkspacePrompt = async (
   }
 
   return {
+    runtimeSegmentOpened,
     appendOwnership: {
       projectId: preparedSession?.projectId,
       agentFrameworkId: shouldResumeSession

@@ -1,3 +1,4 @@
+import { NotebookExecutionStopError } from '../../shared/notebook-execution-error'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -13,6 +14,7 @@ import type {
   NotebookRunProvenanceContext,
   NotebookRunSource,
   NotebookRunStatus,
+  ShellRuntimeBinding,
   NotebookWorkingFile,
   RunNotebookCellRequest
 } from '../../shared/notebook'
@@ -54,10 +56,24 @@ import {
 import type { NotebookHelperModuleHost, NotebookHelperModuleScope } from './helper-module-host'
 import { getNotebookFileEvidenceLocation } from './repository'
 import { getNotebookInputRoot } from './input-staging'
+import {
+  captureShellRuntimeBinding,
+  defaultShellRuntimeBinding,
+  shellRuntimePlatform
+} from './shell-runtime'
+import type { NotebookSourceFileAccessContext } from './dependency-analysis-types'
+import type { GrantedLocalRoot } from '../../shared/local-fs'
 
 type NotebookControlResult = Pick<
   NotebookSessionExecutionResult,
-  'stdout' | 'stderr' | 'traceback' | 'outputs' | 'truncated' | 'workingFiles' | 'fileEvidence'
+  | 'stdout'
+  | 'stderr'
+  | 'traceback'
+  | 'outputs'
+  | 'truncated'
+  | 'workingFiles'
+  | 'fileEvidence'
+  | 'recovery'
 > & {
   status: Exclude<NotebookRunStatus, 'queued' | 'running'>
   viewImages?: readonly TransientViewImage[]
@@ -126,17 +142,24 @@ type NotebookExecutionOwnerOptions = {
     run: NotebookRunRecord,
     interpreter?: NotebookDependencyInterpreter
   ) => Promise<NotebookDependencyProjection>
+  sourceFileAccessContext?: (
+    session: NotebookSessionAggregate,
+    run: NotebookRunRecord
+  ) => Promise<NotebookSourceFileAccessContext | undefined>
   helperModules: Pick<
     NotebookHelperModuleHost,
     'preflight' | 'plan' | 'commitInitialized' | 'loadedEvidence'
   >
-  logger: Pick<Logger, 'error'>
+  logger: Pick<Logger, 'error'> & Partial<Pick<Logger, 'info'>>
   platform?: NodeJS.Platform
   shellProcess?: NotebookShellProcess
   shellConcurrencyLimit?: number
+  shellRuntimeBinding?: ShellRuntimeBinding
+  getGrantedLocalRoots?: () => Promise<readonly GrantedLocalRoot[]>
 }
 
 const errorToExecutionResult = (error: unknown, cwd: string): NotebookSessionExecutionResult => {
+  if (error instanceof NotebookExecutionStopError) throw error
   const message = error instanceof Error ? error.message : String(error)
 
   return {
@@ -243,7 +266,8 @@ const controlRunFingerprint = (
 const shellRunFingerprint = (
   session: NotebookSessionAggregate,
   request: ExecuteShellRequest,
-  frozenShellContext: NonNullable<NotebookRunRecord['frozenShellContext']>
+  frozenShellContext: NonNullable<NotebookRunRecord['frozenShellContext']>,
+  runtimeBinding: ShellRuntimeBinding
 ): string =>
   createHash('sha256')
     .update(
@@ -254,7 +278,8 @@ const shellRunFingerprint = (
         ...(request.background ? { executionMode: 'background' } : {}),
         provenanceContext: request.provenanceContext ?? null,
         inputFiles: immutableInputIdentities(request.registeredInputFiles),
-        frozenShellContext
+        frozenShellContext,
+        runtimeBinding
       })
     )
     .digest('hex')
@@ -271,16 +296,23 @@ const controlResultFromRun = (run: NotebookRunRecord): NotebookControlResult => 
     outputs: run.outputs,
     ...(run.truncated ? { truncated: true } : {}),
     workingFiles: run.workingFiles,
-    fileEvidence: run.fileEvidence
+    fileEvidence: run.fileEvidence,
+    ...(run.recovery ? { recovery: run.recovery } : {})
   }
 }
 
 const publicShellResult = (
-  run: Pick<NotebookRunRecord, 'text' | 'exitCode' | 'truncated'>
+  run: Pick<
+    NotebookRunRecord,
+    'text' | 'exitCode' | 'truncated' | 'shellRuntimeStatus' | 'shellErrorCode' | 'recovery'
+  >
 ): NotebookShellResult => ({
   stdout: run.text.stdout,
   stderr: run.text.stderr,
   exitCode: run.exitCode ?? null,
+  ...(run.shellRuntimeStatus ? { runtimeStatus: run.shellRuntimeStatus } : {}),
+  ...(run.shellErrorCode ? { errorCode: run.shellErrorCode } : {}),
+  ...(run.recovery ? { recovery: run.recovery } : {}),
   ...(run.truncated ? { truncated: true } : {})
 })
 
@@ -388,6 +420,7 @@ class BoundedShellAdmission {
 class NotebookExecutionOwner {
   private readonly shellProcess: NotebookShellProcess
   private readonly shellAdmission: BoundedShellAdmission
+  private readonly shellRuntimeBinding: ShellRuntimeBinding
   private controlCompletionInterceptor: NotebookControlCompletionInterceptor | undefined
   private readonly activeDataSubmissions = new Map<
     string,
@@ -405,6 +438,7 @@ class NotebookExecutionOwner {
     {
       fingerprint: string
       admitted: Promise<NotebookRunRecord>
+      executionSettled: Promise<unknown>
       promise: Promise<NotebookControlResult>
     }
   >()
@@ -446,6 +480,9 @@ class NotebookExecutionOwner {
   constructor(private readonly options: NotebookExecutionOwnerOptions) {
     this.shellProcess = options.shellProcess ?? new NotebookShellProcessAdapter(options.platform)
     this.shellAdmission = new BoundedShellAdmission(options.shellConcurrencyLimit ?? 6)
+    this.shellRuntimeBinding = captureShellRuntimeBinding(
+      options.shellRuntimeBinding ?? defaultShellRuntimeBinding(options.platform)
+    )
   }
 
   private inputRoot(session: NotebookSessionAggregate): string {
@@ -517,20 +554,25 @@ class NotebookExecutionOwner {
   }
 
   async cancelShellRuns(
-    scope: { projectId?: string; sessionId?: string; laneKey?: string },
+    scope: { projectId?: string; sessionId?: string; laneKey?: string; runId?: string },
     reason: unknown
   ): Promise<{ reaped: boolean }> {
-    const runs = Array.from(this.liveShellRuns.values()).filter(
-      (run) =>
-        (scope.projectId === undefined || run.projectId === scope.projectId) &&
-        (scope.sessionId === undefined || run.sessionId === scope.sessionId) &&
-        (scope.laneKey === undefined || run.laneKey === scope.laneKey)
-    )
+    const runs = Array.from(this.liveShellRuns.entries())
+      .filter(
+        ([runId, run]) =>
+          (scope.runId === undefined || runId === scope.runId) &&
+          (scope.projectId === undefined || run.projectId === scope.projectId) &&
+          (scope.sessionId === undefined || run.sessionId === scope.sessionId) &&
+          (scope.laneKey === undefined || run.laneKey === scope.laneKey)
+      )
+      .map(([, run]) => run)
     const cancellationWrites = await Promise.allSettled(
       runs.map((run) => run.requestCancellation(reason))
     )
     for (const run of runs) run.controller.abort(reason)
     const settlements = await Promise.allSettled(runs.map((run) => run.settled))
+    const shellShutdown =
+      scope.runId === undefined ? await this.shellProcess.shutdown?.(scope) : undefined
     const failures = cancellationWrites.flatMap((result) =>
       result.status === 'rejected' ? [result.reason] : []
     )
@@ -538,7 +580,9 @@ class NotebookExecutionOwner {
       throw new AggregateError(failures, 'Shell cancellation intent could not be persisted.')
     }
     return {
-      reaped: settlements.every((result) => result.status === 'fulfilled' && result.value)
+      reaped:
+        shellShutdown?.reaped !== false &&
+        settlements.every((result) => result.status === 'fulfilled' && result.value)
     }
   }
 
@@ -682,7 +726,7 @@ class NotebookExecutionOwner {
       kernelEpoch,
       helperModuleScope
     )
-    const helperPlan = await this.options.helperModules.plan(kernelEpoch, helperRequest)
+    await this.options.helperModules.plan(kernelEpoch, helperRequest)
     const queuedRun: NotebookRunRecord = {
       runId,
       executionMode: request.background ? 'background' : 'foreground',
@@ -750,11 +794,26 @@ class NotebookExecutionOwner {
       return await session.enqueueExecution(
         processKey,
         async () => {
+          // Admission freezes the target and inputs, not the process or directory that survives
+          // preceding executions. Resolve those facts again on this process's serialized turn.
+          const cwdBefore = session.cwd
+          const kernelStatusBefore = session.kernelStatus(processKey)
           const kernelWasTerminated =
-            kernelWasTerminatedAtAdmission ||
             session.isKernelTerminated(processKey) ||
             session.kernelStatus(processKey) === 'terminated' ||
             session.hasDurableKernelTermination(processKey)
+          const kernelEpoch = session.kernelEpoch(
+            processKey,
+            kernelWasTerminated,
+            notebookInterpreterIdentity(resolvedInterpreter)
+          )
+          const kernelEpochId = kernelEpoch.id
+          const executionRun = {
+            ...durableAdmission.run,
+            inputFiles: queuedRun.inputFiles,
+            cwdBefore,
+            kernelEpochId
+          }
           const kernelMarkedRunning = admission.rejection === undefined
           let executedOnLiveKernel = true
           let reachedExecutor = false
@@ -762,7 +821,7 @@ class NotebookExecutionOwner {
             session,
             // Admission freezes the exact Version identities. The request-owned copies retain only
             // the monotonic access association gathered while that frozen Version is resolved.
-            queuedRun: { ...durableAdmission.run, inputFiles: queuedRun.inputFiles },
+            queuedRun: executionRun,
             startLive: () => {
               session.markCellRunning(cell.id, runId, executionCount)
               if (kernelMarkedRunning) {
@@ -794,7 +853,14 @@ class NotebookExecutionOwner {
                     executedOnLiveKernel = false
                     return errorToExecutionResult(error, cwdBefore)
                   }
+                  const helperPlan = await this.options.helperModules.plan(
+                    kernelEpoch,
+                    helperRequest
+                  )
                   reachedExecutor = true
+                  const sourceFileAccessContext = await this.options
+                    .sourceFileAccessContext?.(session, executionRun)
+                    .catch(() => undefined)
                   let executionResult = await session
                     .execute({
                       runId,
@@ -819,9 +885,14 @@ class NotebookExecutionOwner {
                       resolvedInterpreter,
                       sessionId: session.sessionId,
                       projectId: session.projectId,
-                      inputRunLeaseId: request.inputRunLeaseId
+                      inputRunLeaseId: request.inputRunLeaseId,
+                      ...(durableAdmission.run.inputFiles?.length
+                        ? { registeredInputFiles: durableAdmission.run.inputFiles }
+                        : {}),
+                      ...(sourceFileAccessContext ? { sourceFileAccessContext } : {})
                     })
                     .catch((error: unknown) => {
+                      if (error instanceof NotebookExecutionStopError) throw error
                       executedOnLiveKernel = false
                       const fallback =
                         session.consumeForceStopped(processKey) || signal?.aborted
@@ -853,7 +924,11 @@ class NotebookExecutionOwner {
                     const capture = await this.options.environmentStateTracker.captureCompletedRun(
                       target,
                       result.environmentOverlay,
-                      environmentRunStart
+                      environmentRunStart,
+                      {
+                        sessionRoot: session.notebookSessionRoot,
+                        searchRoots: [result.cwdAfter ?? cwdBefore, session.notebookSessionRoot]
+                      }
                     )
                     return {
                       ...result,
@@ -866,7 +941,8 @@ class NotebookExecutionOwner {
                           : {})
                       },
                       environmentManifest: capture.manifest,
-                      environmentManifestChecksum: capture.checksum
+                      environmentManifestChecksum: capture.checksum,
+                      environmentLock: capture.environmentLock
                     }
                   } catch (error) {
                     return {
@@ -921,7 +997,7 @@ class NotebookExecutionOwner {
         signal
       )
     } catch (error) {
-      if (!signal?.aborted) throw error
+      if (error instanceof NotebookExecutionStopError || !signal?.aborted) throw error
       const run = await this.options.runTerminalization.cancelQueued(
         session,
         durableAdmission.run,
@@ -943,7 +1019,8 @@ class NotebookExecutionOwner {
     session: NotebookSessionAggregate,
     request: ExecuteNotebookControlRequest,
     signal?: AbortSignal,
-    onAdmitted?: (run: NotebookRunRecord) => void
+    onAdmitted?: (run: NotebookRunRecord) => void,
+    onExecutionSettled?: (error?: unknown) => void
   ): Promise<NotebookControlResult> {
     const submissionFingerprint = controlRunFingerprint(session, request)
     const initialIdentity = request.executionInvocationId
@@ -958,6 +1035,7 @@ class NotebookExecutionOwner {
         throw new NotebookRunSubmissionConflictError(submissionIdentity)
       }
       if (onAdmitted) void active.admitted.then(onAdmitted, () => undefined)
+      if (onExecutionSettled) void active.executionSettled.then(onExecutionSettled)
       return active.promise
     }
     const completed = this.completedControlSubmissions.get(laneKey)
@@ -969,6 +1047,7 @@ class NotebookExecutionOwner {
       if (completed.fingerprint !== submissionFingerprint) {
         throw new NotebookRunSubmissionConflictError(submissionIdentity)
       }
+      onExecutionSettled?.()
       return completed.result
     }
 
@@ -979,6 +1058,11 @@ class NotebookExecutionOwner {
       rejectAdmitted = reject
     })
     void admitted.catch(() => undefined)
+    let resolveExecutionSettled!: (error?: unknown) => void
+    const executionSettled = new Promise<unknown>((resolve) => {
+      resolveExecutionSettled = resolve
+    })
+    if (onExecutionSettled) void executionSettled.then(onExecutionSettled)
     const promise = (async () => {
       if (request.executionInvocationId) {
         const existing = await this.options.runTerminalization.findSubmission(
@@ -1006,13 +1090,14 @@ class NotebookExecutionOwner {
         (run) => {
           resolveAdmitted(run)
           onAdmitted?.(run)
-        }
+        },
+        resolveExecutionSettled
       )
     })().catch((error) => {
       rejectAdmitted(error)
       throw error
     })
-    const entry = { fingerprint: submissionFingerprint, admitted, promise }
+    const entry = { fingerprint: submissionFingerprint, admitted, executionSettled, promise }
     this.activeControlSubmissions.set(submissionKey, entry)
     try {
       const result = await promise
@@ -1025,6 +1110,7 @@ class NotebookExecutionOwner {
       }
       return result
     } finally {
+      resolveExecutionSettled()
       if (this.activeControlSubmissions.get(submissionKey) === entry) {
         this.activeControlSubmissions.delete(submissionKey)
       }
@@ -1039,12 +1125,11 @@ class NotebookExecutionOwner {
     submissionIdentity: string,
     submissionFingerprint: string,
     signal?: AbortSignal,
-    onAdmitted?: (run: NotebookRunRecord) => void
+    onAdmitted?: (run: NotebookRunRecord) => void,
+    onExecutionSettled?: (error?: unknown) => void
   ): Promise<NotebookControlResult> {
     const admittedAt = Date.now()
-    const replWasTerminated =
-      session.kernelStatus('repl') === 'terminated' || session.hasDurableKernelTermination('repl')
-    const kernelEpochId = session.kernelEpoch('repl', replWasTerminated).id
+    const kernelEpochId = session.currentKernelEpochId('repl')
     const queuedRun: NotebookRunRecord = {
       runId: controlInvocationId,
       executionMode: request.background ? 'background' : 'foreground',
@@ -1059,6 +1144,7 @@ class NotebookExecutionOwner {
       source: 'agent',
       inputKind: 'cell',
       kernelKind: 'repl',
+      replPersistentBindings: true,
       script: request.code,
       status: 'queued',
       startedAt: admittedAt,
@@ -1077,10 +1163,6 @@ class NotebookExecutionOwner {
       processKey: 'repl'
     }
 
-    // Resolve and retain the Session-owned Host SDK capability before the durable admission point.
-    // The per-invocation scope is opened only when this FIFO entry actually dispatches.
-    signal?.throwIfAborted()
-    const mcpRpc = await session.resolveMcpRpcConnection(this.options.getMcpRpcConnectionResolver())
     signal?.throwIfAborted()
     const blockedMutation = detectManagedRuntimeMutation({
       source: request.code,
@@ -1107,8 +1189,6 @@ class NotebookExecutionOwner {
               request,
               durableAdmission.run,
               controlInvocationGeneration,
-              replWasTerminated,
-              mcpRpc,
               blockedMutation,
               signal
             ),
@@ -1123,7 +1203,17 @@ class NotebookExecutionOwner {
         )
         return controlResultFromRun(run)
       }
-    })()
+    })().then(
+      (result) => {
+        // Release the execution drain before handoff, which may itself wait for turn cleanup.
+        onExecutionSettled?.()
+        return result
+      },
+      (error: unknown) => {
+        onExecutionSettled?.(error)
+        throw error
+      }
+    )
 
     try {
       // The completion gate deliberately stays outside enqueueControl: an approved continuation may
@@ -1178,14 +1268,20 @@ class NotebookExecutionOwner {
     request: ExecuteNotebookControlRequest,
     queuedRun: NotebookRunRecord,
     controlInvocationGeneration: number,
-    replWasTerminated: boolean,
-    mcpRpc: NotebookSessionMcpRpcConnection | undefined,
     blockedMutation: ReturnType<typeof detectManagedRuntimeMutation>,
     signal?: AbortSignal
   ): Promise<NotebookControlResult> {
+    // A lifecycle projection may have been appended after this entry already joined the FIFO.
+    await session.drainExecutorLifecycle()
     const replStatusBefore = session.kernelStatus('repl')
+    const replWasTerminated =
+      replStatusBefore === 'terminated' || session.hasDurableKernelTermination('repl')
+    const epoch = session.kernelEpoch('repl', replWasTerminated)
+    // The queued record describes admission. Persist the actual dispatch epoch in the existing
+    // queued -> running transition, before any process receives this invocation.
+    queuedRun = { ...queuedRun, kernelEpochId: epoch.id }
     const runId = queuedRun.runId
-    const kernelEpochId = queuedRun.kernelEpochId
+    const kernelEpochId = epoch.id
     const replEpochId = blockedMutation ? undefined : kernelEpochId
     let executedOnLiveKernel = !blockedMutation
     let reachedExecutor = false
@@ -1206,8 +1302,22 @@ class NotebookExecutionOwner {
                 session.cwd
               )
             )
-          : (() => {
+          : (async () => {
+              const mcpRpc = await session.resolveMcpRpcConnection(
+                this.options.getMcpRpcConnectionResolver(),
+                epoch
+              )
+              signal?.throwIfAborted()
+              const sourceFileAccessContext = await this.options
+                .sourceFileAccessContext?.(session, queuedRun)
+                .catch(() => undefined)
+              signal?.throwIfAborted()
+              if (session.currentKernelEpochId('repl') !== epoch.id) {
+                throw new Error('Notebook REPL epoch retired before dispatch.')
+              }
+              if (mcpRpc) session.retainControlInvocationConnection(runId, mcpRpc)
               const releaseControlInvocation = mcpRpc?.beginControlInvocation?.({
+                rootExecutionId: request.rootExecutionId,
                 turnId: runId,
                 controlInvocationGeneration,
                 toolInvocationId: runId,
@@ -1236,6 +1346,7 @@ class NotebookExecutionOwner {
                   kernelEpochId,
                   code: request.code,
                   kind: 'repl',
+                  ...(sourceFileAccessContext ? { sourceFileAccessContext } : {}),
                   cwd: session.cwd,
                   notebookSessionRoot: session.notebookSessionRoot,
                   inputRoot: this.inputRoot(session),
@@ -1257,6 +1368,23 @@ class NotebookExecutionOwner {
                 .finally(() => releaseControlInvocation?.())
             })()
         ).catch((error: unknown) => {
+          // Preparation can yield after the Run starts but before the interpreter receives it.
+          if (
+            !reachedExecutor &&
+            signal?.aborted &&
+            error === signal.reason &&
+            !(error instanceof NotebookExecutionStopError)
+          ) {
+            return {
+              status: 'cancelled',
+              kernelDispatched: false,
+              stdout: '',
+              stderr: error instanceof Error ? error.message : String(error),
+              traceback: '',
+              cwdAfter: session.cwd,
+              outputs: []
+            }
+          }
           executedOnLiveKernel = false
           return errorToExecutionResult(error, session.cwd)
         }),
@@ -1300,6 +1428,7 @@ class NotebookExecutionOwner {
       traceback: result.traceback,
       outputs: result.outputs,
       ...(result.truncated ? { truncated: true } : {}),
+      ...(result.recovery ? { recovery: result.recovery } : {}),
       workingFiles: result.workingFiles,
       fileEvidence: result.fileEvidence
     }
@@ -1311,6 +1440,9 @@ class NotebookExecutionOwner {
     signal?: AbortSignal,
     onAdmitted?: (run: NotebookRunRecord) => void
   ): Promise<NotebookShellResult> {
+    const runtimeBinding = captureShellRuntimeBinding(
+      request.shellRuntime ?? this.shellRuntimeBinding
+    )
     this.assertShellAdmissionAvailable(session)
     const platform = this.options.platform ?? process.platform
     const runtimeRoot = session.runtimeRoot
@@ -1319,10 +1451,11 @@ class NotebookExecutionOwner {
     const protectedDirs = [getAppClaudeConfigDir(this.options.configRoot)]
     const environment = buildShellEnv(
       handoffDir,
-      platform,
+      shellRuntimePlatform(runtimeBinding, platform),
       process.env,
       runtimeRoot,
-      prepareNotebookWorkloadCache(runtimeRoot)
+      prepareNotebookWorkloadCache(runtimeRoot),
+      runtimeBinding
     )
     const frozenShellContext: NonNullable<NotebookRunRecord['frozenShellContext']> = {
       cwd: session.cwd,
@@ -1339,7 +1472,12 @@ class NotebookExecutionOwner {
       timeoutMs: request.timeoutMs ?? 120_000,
       platform
     }
-    const submissionFingerprint = shellRunFingerprint(session, request, frozenShellContext)
+    const submissionFingerprint = shellRunFingerprint(
+      session,
+      request,
+      frozenShellContext,
+      runtimeBinding
+    )
     let runId: string | undefined
     const submissionIdentity =
       request.executionInvocationId ??
@@ -1396,6 +1534,7 @@ class NotebookExecutionOwner {
         source: 'agent',
         inputKind: 'cell',
         kernelKind: 'bash',
+        shellRuntime: runtimeBinding,
         script: request.command,
         status: 'queued',
         startedAt: admittedAt,
@@ -1434,30 +1573,42 @@ class NotebookExecutionOwner {
           void reason
         }
       }
+      // Register the live run before async lookup to maintain cancellation coverage
       this.liveShellRuns.set(runId, liveRun)
-      const shellProcessRequest = {
-        runId,
-        command: request.command,
-        cwd: frozenShellContext.cwd,
-        handoffDir: frozenShellContext.handoffDir,
-        runtimeRoot: frozenShellContext.runtimeRoot,
-        notebookSessionRoot: frozenShellContext.notebookSessionRoot,
-        inputRoot: frozenShellContext.inputRoot,
-        protectedDirs: frozenShellContext.protectedDirs,
-        environment: frozenShellContext.environment,
-        sessionId: session.sessionId,
-        projectId: session.projectId,
-        timeoutMs: frozenShellContext.timeoutMs
-      }
       let preparedShell:
         Awaited<ReturnType<NonNullable<NotebookShellProcess['prepare']>>> | undefined
       let lease: ShellAdmissionLease | undefined
       try {
+        // Fetch granted roots with cancellation coverage via liveRun lifecycle
+        // Only await if the function exists to avoid unnecessary async overhead
+        const grantedRoots = this.options.getGrantedLocalRoots
+          ? await this.options.getGrantedLocalRoots()
+          : []
+        // Recheck admission after async lookup - shutdown or revocation could have happened
+        this.assertShellAdmissionAvailable(session)
+        const shellProcessRequest = {
+          laneKey: notebookLaneKey(session.lane),
+          runId,
+          executionReference: runId,
+          runtimeBinding,
+          command: request.command,
+          cwd: frozenShellContext.cwd,
+          handoffDir: frozenShellContext.handoffDir,
+          runtimeRoot: frozenShellContext.runtimeRoot,
+          notebookSessionRoot: frozenShellContext.notebookSessionRoot,
+          inputRoot: frozenShellContext.inputRoot,
+          protectedDirs: frozenShellContext.protectedDirs,
+          environment: frozenShellContext.environment,
+          sessionId: session.sessionId,
+          projectId: session.projectId,
+          timeoutMs: frozenShellContext.timeoutMs,
+          grantedRoots
+        }
         let durableAdmission: Awaited<ReturnType<NotebookRunTerminalizationOwner['admit']>>
         try {
           if (lifecycleSignal.aborted) throw lifecycleSignal.reason
-          // Production freezes sandbox roots, trust material, network decision state, and one-shot
-          // grants before durable admission. Injected test adapters may keep the legacy execute port.
+          // Freeze this request before admission. The lane validates it against the live cwd and
+          // activates per-command network grants when it reaches the front of its execution queue.
           preparedShell = await this.shellProcess.prepare?.(shellProcessRequest)
           durableAdmission = await this.options.runTerminalization.admit({ session, queuedRun })
         } catch (error) {
@@ -1520,10 +1671,10 @@ class NotebookExecutionOwner {
               let fileEvidence: ExecutionFileEvidenceSummary | undefined
               const blockedMutation = detectManagedRuntimeMutation({
                 source: request.command,
-                surface: platform === 'win32' ? 'powershell' : 'bash',
+                surface: runtimeBinding.kind === 'powershell' ? 'powershell' : 'bash',
                 runtimeRoot: frozenShellContext.runtimeRoot,
                 cwd: frozenShellContext.cwd,
-                platform
+                platform: shellRuntimePlatform(runtimeBinding)
               })
               let shellResult: NotebookShellResult | undefined
               try {
@@ -1553,14 +1704,45 @@ class NotebookExecutionOwner {
               }
               if (!shellResult)
                 throw new Error('Notebook shell execution completed without a result.')
-              ownedTreeReaped = shellResult.ownedTreeReaped !== false
-              const status: NotebookRunStatus = shellResult.cancelled
-                ? 'cancelled'
-                : shellResult.exitCode === 0
-                  ? 'completed'
-                  : shellResult.exitCode === null
-                    ? 'timeout'
-                    : 'failed'
+              ownedTreeReaped =
+                shellResult.ownedTreeReaped !== false &&
+                shellResult.errorCode !== 'shell-cleanup-incomplete'
+              const status: NotebookRunStatus = !ownedTreeReaped
+                ? 'failed'
+                : shellResult.cancelled
+                  ? 'cancelled'
+                  : shellResult.runtimeStatus === 'unavailable'
+                    ? 'failed'
+                    : shellResult.exitCode === 0
+                      ? 'completed'
+                      : shellResult.exitCode === null
+                        ? 'timeout'
+                        : 'failed'
+              this.options.logger.info?.('shell execution completed', {
+                executionId: runId,
+                runtime: runtimeBinding.kind,
+                ...(runtimeBinding.kind === 'wsl2-bash'
+                  ? { profileReference: runtimeBinding.profileId }
+                  : {}),
+                stage:
+                  shellResult.runtimeStatus === 'unavailable' ? 'sandbox-prepare' : 'execution',
+                status,
+                terminationReason:
+                  shellResult.errorCode === 'shell-cleanup-incomplete'
+                    ? 'cleanup-incomplete'
+                    : shellResult.cancelled
+                      ? 'cancel'
+                      : shellResult.exitCode === null
+                        ? 'timeout'
+                        : 'exit',
+                cleanupState:
+                  shellResult.errorCode === 'shell-cleanup-incomplete' ? 'incomplete' : 'complete',
+                exitCode: shellResult.exitCode,
+                stdoutByteCount: Buffer.byteLength(shellResult.stdout, 'utf8'),
+                stderrByteCount: Buffer.byteLength(shellResult.stderr, 'utf8'),
+                outputByteCount: Buffer.byteLength(shellResult.stdout + shellResult.stderr, 'utf8'),
+                truncated: shellResult.truncated === true
+              })
               const outputs: NotebookOutput[] = [
                 ...(shellResult.stdout
                   ? [{ type: 'stream' as const, name: 'stdout' as const, text: shellResult.stdout }]
@@ -1575,15 +1757,22 @@ class NotebookExecutionOwner {
                 stdout: shellResult.stdout,
                 stderr: shellResult.stderr,
                 traceback: '',
-                cwdAfter: frozenShellContext.cwd,
+                cwdAfter: shellResult.cwd ?? frozenShellContext.cwd,
+                cwdBefore: shellResult.cwdBefore,
                 outputs,
                 truncated: shellResult.truncated,
                 workingFiles,
                 fileEvidence,
-                exitCode: shellResult.exitCode
+                exitCode: shellResult.exitCode,
+                runtimeStatus: shellResult.runtimeStatus,
+                errorCode: shellResult.errorCode,
+                recovery: shellResult.recovery
               }
             }
           })
+          // Cancellation must report an unconfirmed stop to its owning turn. Ordinary launch/exit
+          // cleanup failures retain the existing result and recovery instructions for their caller.
+          if (!ownedTreeReaped && lifecycleSignal.aborted) throw new NotebookExecutionStopError()
           const result = terminalized.result
           if (!result) {
             return publicShellResult(terminalized.run)
@@ -1592,6 +1781,9 @@ class NotebookExecutionOwner {
             stdout: result.stdout,
             stderr: result.stderr,
             exitCode: result.exitCode,
+            ...(result.runtimeStatus ? { runtimeStatus: result.runtimeStatus } : {}),
+            ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+            ...(result.recovery ? { recovery: result.recovery } : {}),
             ...(result.truncated ? { truncated: true } : {})
           }
         }

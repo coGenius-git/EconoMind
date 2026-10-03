@@ -1,8 +1,17 @@
+import {
+  GeneratedFileCard,
+  artifactCardClassName,
+  artifactGalleryClassName
+} from './GeneratedFileCard'
 import { useSmoothStreamingContent } from '@/components/streamdown/use-smooth-streaming-content'
 import { ErrorNotice } from '@/components/error-notice'
 import { MessageScrollerItem } from '@/components/ui/message-scroller'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { useDateTimeFormat } from '@/hooks/useDateTimeFormat'
+import {
+  WorkspaceMessageTimestamp as MessageTimestamp,
+  WorkspaceUserMessageBubble,
+  WorkspaceAssistantMessageSurface
+} from './WorkspaceTranscriptSurface'
 import { cn, formatByteSize } from '@/lib/utils'
 import { useNavigationStore } from '@/stores/navigation-store'
 import { useSessionStore } from '@/stores/session-store'
@@ -10,7 +19,6 @@ import { useSettingsStore } from '@/stores/settings-store'
 import type { ChatMessage, ChatSession } from '@/stores/session-store'
 import { Collapsible } from 'radix-ui'
 import {
-  ArrowUpRight,
   Bot,
   Brain,
   BookOpenText,
@@ -22,15 +30,15 @@ import {
   CircleAlert,
   CircleGauge,
   Copy,
-  FileText,
   GitBranch,
-  Image as ImageIcon,
   MessageCircleMore,
   Loader2,
   Pencil
 } from 'lucide-react'
 import { memo, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
+import { ReplayReferenceText } from './ReplayReferenceText'
+import { splitReplayReferenceText } from './replay-reference-text'
 import { formatDisplayNumber } from '@/lib/locale-format'
 import type { ArtifactPreviewResult } from '../../../../shared/artifacts'
 import type { ProvenanceMessagePart } from '../../../../shared/artifact-provenance'
@@ -52,6 +60,7 @@ import { ComposerEditor } from './composer/ComposerEditor'
 import { copyMessageToClipboard } from './composer/message-clipboard'
 import { EditMessageConfirmDialog } from './EditMessageConfirmDialog'
 import { ExtensionPreservingFileName } from './ExtensionPreservingFileName'
+import { FileTypeIcon } from './file-type-icon'
 import { providerKindKey } from '../settings/provider-form-value'
 import { AgentFrameworkIcon, ProviderKindIcon } from '../settings/provider-icons'
 import {
@@ -82,6 +91,7 @@ import type { AnnotationPort } from './annotations/annotation-port'
 import { requestAnnotationReveal } from './annotations/annotation-reveal'
 import { requestPdfReadingReveal } from './pdf-reading-reveal'
 import { TextAnnotationSurface } from './annotations/TextAnnotationSurface'
+import { useBookmarks } from './bookmarks/bookmark-context'
 import {
   validateAnnotations,
   type Annotation,
@@ -105,6 +115,8 @@ type MessageUploadAttachment = NonNullable<ChatMessage['uploads']>[number]
 type MessageImage = NonNullable<ChatMessage['images']>[number]
 type ArtifactMentionPart = Extract<MessagePart, { type: 'artifact' }>
 type LiteratureMentionPart = Extract<MessagePart, { type: 'literature' }>
+type LibraryMentionScopeRequest =
+  import('./previews/library-reference-actions').LibraryPreviewScopeRequest
 type MessageRuntimeIdentity = Partial<
   Pick<PersistedRuntimeSegment, 'frameworkId' | 'backendId' | 'model'>
 >
@@ -119,10 +131,12 @@ type ReviewerCorrectionState = 'waiting' | 'responding' | 'completed' | 'failed'
 type WorkspaceMessageItemProps = {
   message: ChatMessage
   projectId?: string
+  isPackageSession?: boolean
   onPreviewArtifact: (artifact: MessageArtifact) => void
   onPreviewArtifactModal?: (artifact: MessageArtifact) => void
   onPreviewUploadAttachment: (attachment: MessageUploadAttachment) => void
   onOpenSkillMention: (skillId: string, name: string) => void
+  onOpenLibraryMention?: (scope: LibraryMentionScopeRequest) => void
   onPreviewMentionArtifact: (part: ArtifactMentionPart) => void
   artifacts?: MessageArtifact[]
   // Inline editing is only enabled once the session's run settles; confirming forks the
@@ -167,6 +181,8 @@ type WorkspaceMessageItemProps = {
   // A trailing buffered reply can reserve the loading-row geometry it replaces. When another
   // live row remains below it, the message keeps only its natural text-line height.
   reserveLoadingRowHeight?: boolean
+  // Whole-window find owns scroll positioning while it is open.
+  disableScrollAnchor?: boolean
   // Durable lifecycle of an application-authored correction request. Keeping the response state
   // explicit prevents a missing historical response from looking like a successfully started one.
   reviewerCorrectionState?: ReviewerCorrectionState
@@ -177,32 +193,6 @@ const toMessageDate = (timestamp: number | undefined): Date | undefined => {
   if (timestamp === undefined) return undefined
   const date = new Date(timestamp)
   return Number.isNaN(date.getTime()) ? undefined : date
-}
-
-const MessageTimestamp = ({
-  label,
-  date
-}: {
-  // Already-resolved copy: the caller owns which of sent/completed/failed applies.
-  label: string
-  date: Date
-}): React.JSX.Element => {
-  const formatDate = useDateTimeFormat()
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <time
-          dateTime={date.toISOString()}
-          tabIndex={0}
-          className="rounded-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-        >
-          {label} {formatDate(date)}
-        </time>
-      </TooltipTrigger>
-      <TooltipContent>{formatDate(date, 'full')}</TooltipContent>
-    </Tooltip>
-  )
 }
 
 const formatElapsedDuration = (durationMs: number): string => {
@@ -280,7 +270,7 @@ const TurnTokenUsage = ({
             type="button"
             aria-label={accessibleLabel}
             aria-expanded={open}
-            className="inline-flex touch-manipulation items-center gap-1 border-b border-dashed border-current pb-px leading-none transition-colors duration-150 motion-reduce:transition-none hover:text-text-100 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            className="inline-flex touch-manipulation items-center gap-1 border-b border-dashed border-current pb-px leading-none transition-colors duration-150 motion-reduce:transition-none hover:text-text-100 focus-visible:keyboard-focus"
             onClick={(event) => {
               // Calls is read-only detail; retain explicit click/touch access to the hover content.
               event.preventDefault()
@@ -440,21 +430,14 @@ const TurnTokenUsage = ({
   )
 }
 
-const artifactCardClassName =
-  'h-[82px] w-[128px] shrink-0 cursor-pointer overflow-hidden rounded-lg border border-border-200 bg-bg-000 text-left text-text-000 shadow-none transition-colors hover:bg-bg-200 active:bg-bg-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-200/60 disabled:cursor-not-allowed disabled:opacity-50'
-const artifactPreviewClassName = 'h-[56px] w-full overflow-hidden bg-bg-200'
-const artifactGalleryClassName = 'grid max-w-full grid-cols-[repeat(auto-fill,128px)] gap-2 pb-1'
-
-const userMessageBubbleClassName =
-  'max-w-[90%] break-words rounded-2xl bg-bg-300 px-3.5 py-2 text-sm text-message-user-text md:max-w-[min(85%,56rem)] md:px-4 md:py-2.5 md:text-[15px]'
 const userMessageCollapseButtonClassName =
-  'inline-flex items-center gap-1 whitespace-nowrap rounded-md text-[13px] font-medium text-text-200 transition-colors duration-200 ease-out hover:text-text-000 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 active:translate-y-px disabled:pointer-events-none disabled:opacity-50 motion-reduce:active:translate-y-0 motion-reduce:transition-none'
+  'inline-flex items-center gap-1 whitespace-nowrap rounded-md text-[13px] font-medium text-text-200 transition-colors duration-200 ease-out hover:text-text-000 focus-visible:keyboard-focus active:translate-y-px disabled:pointer-events-none disabled:opacity-50 motion-reduce:active:translate-y-0 motion-reduce:transition-none'
 const USER_MESSAGE_PREVIEW_LINE_COUNT = 12.5
 // Hover actions sit left of the user bubble, revealed on row hover or keyboard focus.
 const userMessageActionsClassName =
-  'flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100'
+  'flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100 focus-within:transition-none'
 const userMessageActionButtonClassName =
-  'flex size-6 touch-manipulation items-center justify-center rounded-md text-text-300 transition-colors duration-200 ease-out hover:bg-bg-200 hover:text-text-100 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50'
+  'flex size-6 touch-manipulation items-center justify-center rounded-md text-text-300 transition-colors duration-200 ease-out hover:bg-bg-200 hover:text-text-100 focus-visible:keyboard-focus disabled:pointer-events-none disabled:opacity-50'
 
 const UserMessageActionTooltip = ({
   children,
@@ -525,11 +508,13 @@ const WorkspaceAssistantTurnCompletion = ({
                 aria-label={copied ? t('Copied') : t('Copy message')}
                 onClick={handleCopyMessage}
               >
-                {copied ? (
-                  <Check className="size-3.5" strokeWidth={2} aria-hidden="true" />
-                ) : (
-                  <Copy className="size-3.5" strokeWidth={2} aria-hidden="true" />
-                )}
+                <span key={String(copied)} className="button-feedback">
+                  {copied ? (
+                    <Check className="size-3.5" strokeWidth={2} aria-hidden="true" />
+                  ) : (
+                    <Copy className="size-3.5" strokeWidth={2} aria-hidden="true" />
+                  )}
+                </span>
               </button>
             </UserMessageActionTooltip>
             <UserMessageActionTooltip label={t('Branch in new session')}>
@@ -575,7 +560,7 @@ const ignoreEditPaste = (): void => {}
 const EDIT_TRUNCATION_WARNING_TURNS = 2
 // Staged uploads render as gray file pills inside the sent bubble.
 const uploadedAttachmentButtonClassName =
-  'inline-flex max-w-full items-center gap-1.5 rounded-md border border-border-200 bg-bg-200 px-2 py-0.5 text-left text-[13px] leading-5 text-text-000 transition-colors hover:bg-bg-000 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-200/60'
+  'inline-flex max-w-full items-center gap-1.5 rounded-md border border-border-200 bg-bg-200 px-2 py-0.5 text-left text-[13px] leading-5 text-text-000 transition-colors hover:bg-bg-000 focus-visible:keyboard-focus'
 // Shared pill shape for inline skill/artifact mentions in the sent bubble. Capped width + truncation
 // keeps a long file/skill name from overflowing the bubble.
 const mentionPillClassName =
@@ -583,11 +568,7 @@ const mentionPillClassName =
 const artifactMentionPillClassName =
   'inline-flex max-w-[220px] align-middle rounded px-1.5 py-0.5 mx-0.5 text-sm font-medium'
 // Interactive additions layered onto the pill shape when a mention resolves to a clickable target.
-const mentionButtonClassName =
-  'cursor-pointer hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-200/60'
-
-const assistantMessageSurfaceClassName =
-  'relative w-full max-w-[56rem] text-sm leading-relaxed text-text-000 md:text-[15px]'
+const mentionButtonClassName = 'cursor-pointer hover:brightness-95 focus-visible:keyboard-focus'
 
 const measurementContentClassName = 'before:content-[attr(data-content)]'
 
@@ -718,6 +699,9 @@ const CollapsibleUserMessageContent = ({
 
     setIsExpanded(false)
     const measureOverflow = (): void => {
+      // Reading a skipped subtree's geometry defeats content-visibility containment.
+      // ResizeObserver measures it again when the browser resumes rendering the row.
+      if (measurement.checkVisibility?.({ contentVisibilityAuto: true }) === false) return
       const style = window.getComputedStyle(measurement)
       const parsedLineHeight = Number.parseFloat(style.lineHeight)
       const parsedFontSize = Number.parseFloat(style.fontSize)
@@ -907,6 +891,7 @@ const ArtifactCard = ({
   const requestKey = JSON.stringify([
     artifact.id,
     artifact.artifactId ?? null,
+    artifact.versionId ?? null,
     artifact.resolvedProjectId ?? null,
     artifact.resolvedSessionId ?? null,
     artifact.path,
@@ -929,57 +914,39 @@ const ArtifactCard = ({
   })
 
   return (
-    <button
-      ref={setElement}
-      type="button"
-      className={cn('group flex min-w-0 flex-col', artifactCardClassName)}
+    <GeneratedFileCard
+      buttonRef={setElement}
+      name={artifactName}
+      sizeLabel={sizeLabel}
       disabled={publicationPending}
-      onClick={() => {
-        onPreviewArtifact(artifact)
-      }}
-      aria-label={t('Preview generated file {{name}}', { name: artifactName })}
+      onClick={() => onPreviewArtifact(artifact)}
+      label={t('Preview generated file {{name}}', { name: artifactName })}
       title={artifact.path}
-    >
-      <div className={cn('relative', artifactPreviewClassName)}>
-        <span className={cn('block size-full', missing && 'opacity-40')}>
-          {/* Unmount the reader outside the overscan window so message history stays lightweight. */}
-          {publicationPending ? null : isNearViewport ? (
-            <VisibleArtifactPreview artifact={artifact} requestKey={requestKey} />
-          ) : (
-            <ArtifactPreview
-              artifact={artifact}
-              projectId={artifact.resolvedProjectId}
-              sessionId={artifact.resolvedSessionId}
-              managedFileId={artifact.artifactId}
-              selectedVersionId={artifact.versionId}
-              isVisible={false}
-            />
-          )}
-        </span>
-        {missing ? (
-          <span className="absolute left-1 top-1 rounded bg-text-000/75 px-1 py-0.5 text-[8px] font-semibold uppercase tracking-wide text-bg-000 shadow-sm">
-            {t(FILE_MISSING_TAG_KEY)}
+      preview={
+        <>
+          <span className={cn('block size-full', missing && 'opacity-40')}>
+            {/* Unmount the reader outside the overscan window so message history stays lightweight. */}
+            {publicationPending ? null : isNearViewport ? (
+              <VisibleArtifactPreview artifact={artifact} requestKey={requestKey} />
+            ) : (
+              <ArtifactPreview
+                artifact={artifact}
+                projectId={artifact.resolvedProjectId}
+                sessionId={artifact.resolvedSessionId}
+                managedFileId={artifact.artifactId}
+                selectedVersionId={artifact.versionId}
+                isVisible={false}
+              />
+            )}
           </span>
-        ) : null}
-        <span
-          data-slot="generated-artifact-open-icon"
-          className="absolute right-1 top-1 flex size-7 items-center justify-center rounded-md bg-bg-000/90 text-text-100 opacity-0 shadow-sm transition-[opacity,background-color,color] duration-150 hover:bg-bg-300 hover:text-text-000 group-hover:opacity-100 group-focus-visible:opacity-100 motion-reduce:transition-none"
-          aria-hidden="true"
-        >
-          <ArrowUpRight className="size-4" strokeWidth={1.75} />
-        </span>
-      </div>
-      <div className="flex min-w-0 flex-1 items-center px-1.5">
-        <ExtensionPreservingFileName
-          name={artifactName}
-          className="flex-1 text-[12px] leading-5"
-          compact
-        />
-        {sizeLabel ? (
-          <span className="ml-1 shrink-0 text-[11px] text-text-000">{sizeLabel}</span>
-        ) : null}
-      </div>
-    </button>
+          {missing ? (
+            <span className="absolute left-1 top-1 rounded bg-text-000/75 px-1 py-0.5 text-[8px] font-semibold uppercase tracking-wide text-bg-000 shadow-sm">
+              {t(FILE_MISSING_TAG_KEY)}
+            </span>
+          ) : null}
+        </>
+      }
+    />
   )
 }
 
@@ -1064,8 +1031,6 @@ const MessageUploadAttachmentList = ({
       {attachments.map((attachment) => {
         // Use the original display name so pasted/renamed files match the composer chip.
         const attachmentName = getUploadedAttachmentName(attachment)
-        const Icon = attachment.mimeType?.startsWith('image/') ? ImageIcon : FileText
-
         return (
           <button
             key={attachment.id}
@@ -1077,7 +1042,11 @@ const MessageUploadAttachmentList = ({
             aria-label={t('Preview uploaded attachment {{name}}', { name: attachmentName })}
             title={attachment.path}
           >
-            <Icon className="h-3.5 w-3.5 shrink-0 text-text-300" aria-hidden="true" />
+            <FileTypeIcon
+              name={attachmentName}
+              mimeType={attachment.mimeType}
+              className="size-3.5"
+            />
             <ExtensionPreservingFileName name={attachmentName} compact />
           </button>
         )
@@ -1114,7 +1083,7 @@ const MessagePdfReadingContext = ({
       <button
         type="button"
         data-slot="message-pdf-reading-context"
-        className="inline-flex items-center gap-1.5 rounded-md border border-border-200 bg-bg-200 px-2 py-0.5 text-[13px] leading-5 text-text-200 transition-colors hover:bg-bg-000 hover:text-text-000 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-200/60"
+        className="inline-flex items-center gap-1.5 rounded-md border border-border-200 bg-bg-200 px-2 py-0.5 text-[13px] leading-5 text-text-200 transition-colors hover:bg-bg-000 hover:text-text-000 focus-visible:keyboard-focus"
         aria-label={label}
         title={binding.name}
         onClick={() => requestPdfReadingReveal(projectId, binding, position.pageNumber)}
@@ -1132,6 +1101,7 @@ const MessagePartsContent = ({
   isStatic = false,
   projectId,
   onOpenSkillMention,
+  onOpenLibraryMention,
   onOpenLiteratureMention,
   onPreviewMentionArtifact
 }: {
@@ -1139,13 +1109,14 @@ const MessagePartsContent = ({
   isStatic?: boolean
   projectId?: string
   onOpenSkillMention: (skillId: string, name: string) => void
+  onOpenLibraryMention?: (scope: LibraryMentionScopeRequest) => void
   onOpenLiteratureMention: (part: LiteratureMentionPart) => void
   onPreviewMentionArtifact: (part: ArtifactMentionPart) => void
 }): React.JSX.Element => {
   const { t } = useTranslation()
 
   return (
-    <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+    <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
       {parts.map((part, index) => {
         if (part.type === 'skill') {
           // A static (provenance) part carries no id, so it renders as a plain pill.
@@ -1263,7 +1234,7 @@ const MessagePartsContent = ({
 
         if (part.type === 'literature-scope') {
           const name = part.scope === 'collection' ? part.name : t('Library')
-          if (!isStatic && part.scope === 'project' && projectId) {
+          if (!isStatic && part.scope === 'project' && projectId && onOpenLibraryMention) {
             return (
               <button
                 key={index}
@@ -1273,9 +1244,7 @@ const MessagePartsContent = ({
                   mentionButtonClassName,
                   'bg-accent text-accent-foreground'
                 )}
-                onClick={() =>
-                  useNavigationStore.getState().openProjectLiterature(projectId, 'user')
-                }
+                onClick={() => onOpenLibraryMention({})}
                 aria-label={t("Open this project's Library")}
                 title={name}
               >
@@ -1283,7 +1252,7 @@ const MessagePartsContent = ({
               </button>
             )
           }
-          if (!isStatic && part.scope === 'collection') {
+          if (!isStatic && part.scope === 'collection' && onOpenLibraryMention) {
             return (
               <button
                 key={index}
@@ -1294,7 +1263,10 @@ const MessagePartsContent = ({
                   'bg-accent text-accent-foreground'
                 )}
                 onClick={() =>
-                  useNavigationStore.getState().openCollectionLiterature(part.collectionId, 'user')
+                  onOpenLibraryMention({
+                    collectionId: part.collectionId,
+                    collectionName: part.name
+                  })
                 }
                 aria-label={t('Open {{name}}', { name })}
                 title={name}
@@ -1314,13 +1286,13 @@ const MessagePartsContent = ({
           )
         }
 
-        return (
-          <span key={index} className="whitespace-pre-wrap">
-            {part.text}
-          </span>
+        return isStatic ? (
+          <span key={index}>{part.text}</span>
+        ) : (
+          <ReplayReferenceText key={index} text={part.text} projectId={projectId} />
         )
       })}
-    </p>
+    </div>
   )
 }
 
@@ -1328,10 +1300,12 @@ const MessagePartsContent = ({
 const WorkspaceMessageItemImpl = ({
   message,
   projectId,
+  isPackageSession = false,
   onPreviewArtifact,
   onPreviewArtifactModal = onPreviewArtifact,
   onPreviewUploadAttachment,
   onOpenSkillMention,
+  onOpenLibraryMention,
   onPreviewMentionArtifact,
   canEditMessage = false,
   showUserActions = true,
@@ -1353,9 +1327,11 @@ const WorkspaceMessageItemImpl = ({
   presentationSourceOpen,
   presentationAnimateOnMount,
   reserveLoadingRowHeight = true,
+  disableScrollAnchor = false,
   reviewerCorrectionState = 'failed'
 }: WorkspaceMessageItemProps): React.JSX.Element => {
   const { t } = useTranslation()
+  const bookmarks = useBookmarks()
   const isUserMessage = message.role === 'user'
   const isHumanUser = isHumanUserMessage(message)
   const reviewerCorrectionActive =
@@ -1550,6 +1526,7 @@ const WorkspaceMessageItemImpl = ({
         isStatic
         projectId={projectId}
         onOpenSkillMention={onOpenSkillMention}
+        onOpenLibraryMention={onOpenLibraryMention}
         onOpenLiteratureMention={setSelectedLiteratureReference}
         onPreviewMentionArtifact={onPreviewMentionArtifact}
       />
@@ -1558,22 +1535,28 @@ const WorkspaceMessageItemImpl = ({
         parts={message.parts}
         projectId={projectId}
         onOpenSkillMention={onOpenSkillMention}
+        onOpenLibraryMention={onOpenLibraryMention}
         onOpenLiteratureMention={setSelectedLiteratureReference}
         onPreviewMentionArtifact={onPreviewMentionArtifact}
       />
     ) : message.content ? (
-      <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{message.content}</p>
+      <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+        <ReplayReferenceText text={message.content} projectId={projectId} />
+      </div>
     ) : null
   const hasInteractiveUserMessageContent = Boolean(
     !staticParts &&
-    message.parts?.some(
-      (part) =>
-        part.type === 'skill' ||
-        part.type === 'artifact' ||
-        part.type === 'literature' ||
-        part.type === 'session' ||
-        (part.type === 'literature-scope' && part.scope === 'project' && Boolean(projectId))
-    )
+    (splitReplayReferenceText(message.content).some((part) => part.kind === 'reference') ||
+      message.parts?.some(
+        (part) =>
+          part.type === 'skill' ||
+          part.type === 'artifact' ||
+          part.type === 'literature' ||
+          part.type === 'session' ||
+          (onOpenLibraryMention &&
+            part.type === 'literature-scope' &&
+            (part.scope === 'collection' || (part.scope === 'project' && Boolean(projectId))))
+      ))
   )
 
   return (
@@ -1582,7 +1565,7 @@ const WorkspaceMessageItemImpl = ({
         key={message.id}
         messageId={message.id}
         disableContainment={skipContentVisibilityNow || skipContentVisibility}
-        scrollAnchor={message.role === 'user'}
+        scrollAnchor={message.role === 'user' && !disableScrollAnchor}
         className="min-w-0"
       >
         <div className={cn('px-4 pb-1 pt-5 md:px-6', contentPaddingClassName)}>
@@ -1716,13 +1699,14 @@ const WorkspaceMessageItemImpl = ({
                     }}
                     onSubmit={handleConfirmEdit}
                     onPaste={ignoreEditPaste}
+                    onPreviewMentionArtifact={onPreviewMentionArtifact}
                     placeholder={t('Edit your message')}
                     ariaLabel={t('Edit message')}
                     focusRequest={editFocusRequest}
                   />
                   {editError ? (
                     <div role="alert">
-                      <ErrorNotice tone="red" title={editError} />
+                      <ErrorNotice inline tone="red" title={editError} />
                     </div>
                   ) : null}
                   <div className="flex items-center justify-end gap-1">
@@ -1769,11 +1753,13 @@ const WorkspaceMessageItemImpl = ({
                             aria-label={copied ? t('Copied') : t('Copy message')}
                             onClick={handleCopyMessage}
                           >
-                            {copied ? (
-                              <Check className="size-3.5" strokeWidth={2} aria-hidden="true" />
-                            ) : (
-                              <Copy className="size-3.5" strokeWidth={2} aria-hidden="true" />
-                            )}
+                            <span key={String(copied)} className="button-feedback">
+                              {copied ? (
+                                <Check className="size-3.5" strokeWidth={2} aria-hidden="true" />
+                              ) : (
+                                <Copy className="size-3.5" strokeWidth={2} aria-hidden="true" />
+                              )}
+                            </span>
                           </button>
                         </UserMessageActionTooltip>
                         <UserMessageActionTooltip label={t('Edit message')}>
@@ -1791,7 +1777,7 @@ const WorkspaceMessageItemImpl = ({
                       </div>
                     </>
                   ) : null}
-                  <div data-slot="user-message-bubble" className={userMessageBubbleClassName}>
+                  <WorkspaceUserMessageBubble>
                     <MessagePdfReadingContext message={message} projectId={projectId} />
                     <AnnotationMessageCards
                       annotations={message.annotations ?? []}
@@ -1813,7 +1799,7 @@ const WorkspaceMessageItemImpl = ({
                     ) : (
                       userMessageContent
                     )}
-                  </div>
+                  </WorkspaceUserMessageBubble>
                 </div>
                 {sending || sentDate || message.interrupted || showRevisionNavigation ? (
                   <div
@@ -1832,7 +1818,7 @@ const WorkspaceMessageItemImpl = ({
                     {message.interrupted ? (
                       <span
                         data-slot="user-message-interrupted"
-                        className="italic text-amber-600 dark:text-amber-400"
+                        className="italic text-status-warning-foreground dark:text-status-warning-dark-foreground"
                       >
                         {t('This turn was interrupted.')}
                       </span>
@@ -1906,9 +1892,8 @@ const WorkspaceMessageItemImpl = ({
               </div>
             )
           ) : (
-            <div
+            <WorkspaceAssistantMessageSurface
               className={cn(
-                assistantMessageSurfaceClassName,
                 'select-text overflow-visible',
                 // Reserve the tallest loading-row geometry only when this reply replaces that row.
                 // If Thinking or a live tool remains below, the buffered message stays at line height.
@@ -1916,17 +1901,18 @@ const WorkspaceMessageItemImpl = ({
               )}
             >
               {liveMessageContent ? (
-                annotationPort ? (
+                annotationPort || bookmarks.scoped ? (
                   <TextAnnotationSurface
                     source={{
                       kind: 'agent-message',
-                      sessionId: annotationPort.sessionId,
+                      sessionId: annotationPort?.sessionId ?? bookmarks.sessionId ?? '',
                       messageId: message.id
                     }}
-                    activeAnnotations={annotationPort.activeAnnotations}
-                    onAdd={annotationPort.onAdd}
-                    onUpdateNote={annotationPort.onUpdateNote}
-                    onError={annotationPort.onError}
+                    activeAnnotations={annotationPort?.activeAnnotations}
+                    onAdd={annotationPort?.onAdd}
+                    onUpdateNote={annotationPort?.onUpdateNote}
+                    onRemove={annotationPort?.onRemove}
+                    onError={annotationPort?.onError}
                     isAnimating={isAssistantPresenting}
                   >
                     <SessionMessageMarkdown
@@ -1958,7 +1944,7 @@ const WorkspaceMessageItemImpl = ({
                   onBranchInNewSession={onBranchInNewSession}
                 />
               ) : null}
-            </div>
+            </WorkspaceAssistantMessageSurface>
           )}
         </div>
         <EditMessageConfirmDialog
@@ -1969,6 +1955,7 @@ const WorkspaceMessageItemImpl = ({
         />
         {selectedLiteratureReference ? (
           <ArtifactLiteratureDetailDialog
+            snapshotOnly={isPackageSession}
             reference={selectedLiteratureReference}
             onOpenChange={(open) => {
               if (!open) setSelectedLiteratureReference(undefined)
@@ -2057,10 +2044,12 @@ const areWorkspaceMessageItemPropsEqual = (
 ): boolean =>
   previous.message === next.message &&
   previous.projectId === next.projectId &&
+  (previous.isPackageSession ?? false) === (next.isPackageSession ?? false) &&
   previous.onPreviewArtifact === next.onPreviewArtifact &&
   previous.onPreviewArtifactModal === next.onPreviewArtifactModal &&
   previous.onPreviewUploadAttachment === next.onPreviewUploadAttachment &&
   previous.onOpenSkillMention === next.onOpenSkillMention &&
+  previous.onOpenLibraryMention === next.onOpenLibraryMention &&
   previous.onPreviewMentionArtifact === next.onPreviewMentionArtifact &&
   previous.onSendEditedMessage === next.onSendEditedMessage &&
   previous.onEditAnnotationTargetChange === next.onEditAnnotationTargetChange &&
@@ -2081,10 +2070,11 @@ const areWorkspaceMessageItemPropsEqual = (
   previous.onPresentationChange === next.onPresentationChange &&
   (previous.presentationSourceOpen ?? true) === (next.presentationSourceOpen ?? true) &&
   previous.presentationAnimateOnMount === next.presentationAnimateOnMount &&
-  (previous.reserveLoadingRowHeight ?? true) === (next.reserveLoadingRowHeight ?? true)
+  (previous.reserveLoadingRowHeight ?? true) === (next.reserveLoadingRowHeight ?? true) &&
+  (previous.disableScrollAnchor ?? false) === (next.disableScrollAnchor ?? false)
 
 const WorkspaceMessageItem = memo(WorkspaceMessageItemImpl, areWorkspaceMessageItemPropsEqual)
 WorkspaceMessageItem.displayName = 'WorkspaceMessageItem'
 
 export { MessageArtifactList, WorkspaceAssistantTurnCompletion, WorkspaceMessageItem }
-export type { ArtifactMentionPart, EditAnnotationTarget }
+export type { ArtifactMentionPart, EditAnnotationTarget, LibraryMentionScopeRequest }

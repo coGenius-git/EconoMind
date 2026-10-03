@@ -1,7 +1,9 @@
+import { JournalAttributes } from '@/pages/literature/JournalAttributes'
+import { ErrorNotice } from '@/components/error-notice'
 import { useLiteratureChanges } from '@/pages/literature/useLiteratureChanges'
 /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 */
 import * as Dialog from '@/components/ui/dialog'
-import { FileText, X } from 'lucide-react'
+import { ArrowUpRight, FileText, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -25,6 +27,10 @@ import {
 } from '../../../../shared/literature'
 
 type ArtifactLiteratureDetailDialogProps = Readonly<{
+  snapshotOnly?: boolean
+  liveMetadata?: boolean
+  onViewInLiterature?: () => void
+  onCloseAutoFocus?: (event: Event) => void
   reference: ArtifactLiteratureReference | undefined
   onOpenChange: (open: boolean) => void
 }>
@@ -67,6 +73,10 @@ const formatBytes = (bytes: number): string => {
 
 const ArtifactLiteratureDetailDialog = ({
   reference,
+  snapshotOnly = false,
+  liveMetadata = false,
+  onViewInLiterature,
+  onCloseAutoFocus,
   onOpenChange
 }: ArtifactLiteratureDetailDialogProps): React.JSX.Element => {
   const { t } = useTranslation()
@@ -77,7 +87,7 @@ const ArtifactLiteratureDetailDialog = ({
   const [liveReference, setLiveReference] = useState<LiveReferenceState>({ status: 'idle' })
 
   useEffect(() => {
-    if (!reference) return
+    if (!reference || snapshotOnly) return
 
     let active = true
     void window.api.literature.get(reference.itemId).then(
@@ -97,13 +107,15 @@ const ArtifactLiteratureDetailDialog = ({
     return () => {
       active = false
     }
-  }, [reference, literatureRevision])
+  }, [reference, literatureRevision, snapshotOnly])
 
   const resolvedReference =
     reference && liveReference.itemId === reference.itemId ? liveReference : undefined
-  const loadStatus = resolvedReference?.status ?? (reference ? 'loading' : 'idle')
-  const item = reference?.item
-  const attachments = resolvedReference?.item?.attachments ?? []
+  const loadStatus = snapshotOnly
+    ? 'idle'
+    : (resolvedReference?.status ?? (reference ? 'loading' : 'idle'))
+  const item = liveMetadata ? (resolvedReference?.item?.item ?? reference?.item) : reference?.item
+  const attachments = snapshotOnly ? [] : (resolvedReference?.item?.attachments ?? [])
   const itemTypeLabels: Record<LiteratureItemType, string> = {
     journalArticle: t('Journal article'),
     review: t('Review'),
@@ -127,6 +139,7 @@ const ArtifactLiteratureDetailDialog = ({
           {/* Artifact preview panels occupy layers 60/61; keep both child surfaces above them. */}
           <Dialog.Overlay className={cn(dialogOverlayClassName, 'z-[65]')} />
           <Dialog.Content
+            onCloseAutoFocus={onCloseAutoFocus}
             className={dialogPanelClassName(
               'z-[65] flex max-h-[85svh] w-[min(680px,calc(100vw-2rem))] flex-col p-0'
             )}
@@ -142,10 +155,7 @@ const ArtifactLiteratureDetailDialog = ({
                   ) : null}
                 </div>
                 <Dialog.Title
-                  className={cn(
-                    dialogTitleClassName,
-                    'line-clamp-3 break-words text-base leading-snug'
-                  )}
+                  className={cn(dialogTitleClassName, 'line-clamp-3 break-words leading-snug')}
                 >
                   {item.title}
                 </Dialog.Title>
@@ -172,17 +182,23 @@ const ArtifactLiteratureDetailDialog = ({
 
             <div className="min-h-0 flex-1 divide-y divide-border-300/80 overflow-y-auto px-5 text-sm">
               <p className="py-3 text-xs text-muted-foreground">
-                {t('Saved reference metadata. Attachments reflect the current Library entry.')}
+                {liveMetadata
+                  ? t('Current Library entry.')
+                  : snapshotOnly
+                    ? t('Saved reference metadata from the Session package.')
+                    : t('Saved reference metadata. Attachments reflect the current Library entry.')}
               </p>
               {loadStatus === 'missing' || loadStatus === 'error' ? (
-                <p
+                <ErrorNotice
                   role="alert"
-                  className="my-4 rounded-lg border border-status-warning-foreground/30 bg-status-warning-surface/40 px-3 py-2 text-sm text-status-warning-foreground dark:border-status-warning-dark-foreground/30 dark:bg-status-warning-dark-surface/20 dark:text-status-warning-dark-foreground"
-                >
-                  {loadStatus === 'missing'
-                    ? t('This reference is no longer in your Library.')
-                    : t('Literature could not be loaded.')}
-                </p>
+                  tone="amber"
+                  className="my-4"
+                  description={
+                    loadStatus === 'missing'
+                      ? t('This reference is no longer in your Library.')
+                      : t('Literature could not be loaded.')
+                  }
+                />
               ) : null}
 
               {creatorNames(item).length > 0 ? (
@@ -201,6 +217,18 @@ const ArtifactLiteratureDetailDialog = ({
                     {item.abstract}
                   </p>
                 </section>
+              ) : null}
+
+              {!snapshotOnly ? (
+                <JournalAttributes
+                  item={item}
+                  itemId={
+                    liveMetadata && resolvedReference?.status === 'ready'
+                      ? resolvedReference.itemId
+                      : undefined
+                  }
+                  detail
+                />
               ) : null}
 
               <section className="py-4">
@@ -288,6 +316,14 @@ const ArtifactLiteratureDetailDialog = ({
                 </section>
               ) : null}
             </div>
+            {onViewInLiterature && (
+              <div className="flex shrink-0 justify-end border-t border-border px-5 py-3">
+                <Button size="sm" onClick={onViewInLiterature}>
+                  {t('View in Literature')}
+                  <ArrowUpRight aria-hidden="true" />
+                </Button>
+              </div>
+            )}
           </Dialog.Content>
         </Dialog.Portal>
       ) : null}

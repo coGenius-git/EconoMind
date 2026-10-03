@@ -1460,7 +1460,20 @@ async function hostViewImage(source, options = undefined) {
     })
   })
   const body = await res.json().catch(() => ({}))
-  if (!res.ok || body.error) throw new Error(body.error || 'host.viewImage HTTP ' + res.status)
+  if (!res.ok || body.error) {
+    const detail = body.error
+    if (detail?.code === 'BACKGROUND_HOST_METHOD_UNSAFE') {
+      throw new Error(
+        JSON.stringify({
+          code: detail.code,
+          method: detail.method,
+          retryable: false,
+          hint: detail.hint
+        })
+      )
+    }
+    throw new Error(body.error || 'host.viewImage HTTP ' + res.status)
+  }
   return frozenViewImageResult(body.result)
 }
 
@@ -2776,7 +2789,28 @@ async function hostSessionsInspect(sessionId) {
   )
 }
 
-const hostSessions = Object.freeze({ list: hostSessionsList, inspect: hostSessionsInspect })
+async function hostSessionsRead(options = {}) {
+  if (arguments.length > 1)
+    throw new TypeError(
+      'host.sessions.read accepts one optional options object; the discussion Session is selected automatically'
+    )
+  const result = await sessionsRpc('read', {
+    options: remappedHostObject(options, 'host.sessions.read options', {
+      branchId: 'branchId',
+      kind: 'kind',
+      id: 'id',
+      part: 'part',
+      offset: 'offset',
+      limit: 'limit'
+    })
+  })
+  return camelCasedHostValue(result)
+}
+const hostSessions = Object.freeze({
+  list: hostSessionsList,
+  inspect: hostSessionsInspect,
+  read: hostSessionsRead
+})
 
 // host.compute: async remote-compute calls over the SAME app-local RPC endpoint as host.mcp, routed to
 // the main-process ComputeService via {method:'computeCall'}. Like host.mcp, this is only injected in
@@ -2799,18 +2833,53 @@ async function computeRpc(params) {
       if (isRetryableSubmit && res.ok) throw error
       return {}
     })
+    if (isRetryableSubmit && res.ok && !body.error && typeof body.result?.job_id !== 'string') {
+      throw new Error('Compute submission response did not contain a Job receipt.')
+    }
     return { res, body }
   }
   let response
+  let replayed = false
   try {
     response = await request()
   } catch (error) {
     if (!isRetryableSubmit) throw error
-    response = await request()
+    replayed = true
+    try {
+      response = await request()
+    } catch {
+      throw new Error(
+        'Compute Job submission outcome is unknown after replaying the same submission. No Job receipt is available to query. Do not submit the same work again; application-side recovery is required.'
+      )
+    }
   }
   const { res, body } = response
   if (!res.ok || body.error) {
-    throw computeError(body.error || 'host.compute HTTP ' + res.status)
+    if (isRetryableSubmit && !body.error) {
+      throw new Error(
+        'Compute Job submission outcome is unknown (HTTP ' +
+          res.status +
+          '). No Job receipt is available to query. Do not submit the same work again; application-side recovery is required.'
+      )
+    }
+    const error = computeError(body.error || 'host.compute HTTP ' + res.status)
+    if (replayed) {
+      const uncertain = new Error(
+        'Compute Job submission outcome is unknown: the original response was lost and replay returned no receipt. Do not submit the same work again; application-side recovery is required.'
+      )
+      // The replay's rejection cannot establish the original submission's outcome. Keep its code
+      // for callers, but do not carry retry advice that would authorize a fresh submission.
+      if (error.error_code !== undefined) uncertain.error_code = error.error_code
+      uncertain.retry_after_user_action = false
+      uncertain.stack +=
+        '\n' +
+        JSON.stringify({
+          error_code: uncertain.error_code,
+          retry_after_user_action: false
+        })
+      throw uncertain
+    }
+    throw error
   }
   return body.result
 }
@@ -3298,6 +3367,8 @@ const hostSkills = {
 // re-serializes as a JSON string in `error` ({error_code, message, retry_after_user_action}); parse it
 // and hang those fields off the Error so REPL code can branch on `e.error_code` (matching the old Python
 // shim's RuntimeError.error_code contract). A plain (non-JSON) message falls back to a bare Error.
+const truncatedComputeErrors = new WeakSet()
+
 function computeError(raw) {
   try {
     const parsed = JSON.parse(raw)
@@ -3305,6 +3376,30 @@ function computeError(raw) {
       const err = new Error(parsed.message || parsed.error_code)
       err.error_code = parsed.error_code
       err.retry_after_user_action = parsed.retry_after_user_action
+      // Only public failure context belongs in the uncaught output; internal adapter frames add
+      // no recovery information. Reserve room for the fields before clipping a long message.
+      const metadata = JSON.stringify({
+        error_code: err.error_code,
+        retry_after_user_action: err.retry_after_user_action
+      })
+      const marker = '…[diagnostic truncated]'
+      const budget = {
+        remaining: Math.max(
+          0,
+          DIAGNOSTIC_LIMIT_BYTES - Buffer.byteLength('Error: \n' + metadata + marker, 'utf8')
+        ),
+        truncated: false
+      }
+      let message = err.message
+      if (Buffer.byteLength(message, 'utf8') > budget.remaining) {
+        // Causes tend to lead, while execution state and recovery guidance may follow them.
+        const headBudget = { remaining: Math.floor(budget.remaining / 3), truncated: false }
+        const head = takeOutput(headBudget, message)
+        budget.remaining -= Buffer.byteLength(head, 'utf8')
+        message = head + marker + takeOutputTail(budget, message)
+        truncatedComputeErrors.add(err)
+      }
+      err.stack = 'Error: ' + message + '\n' + metadata
       return err
     }
   } catch {
@@ -3374,7 +3469,7 @@ const hostCompute = {
       // Non-blocking job submission. Returns immediately with job_id + remote_workdir.
       // options: { environment?, resources?, inputs?, outputs?, timeoutSeconds?, harvest? }
       // A named environment resolves to the host-owned
-      // ~/.openscience/environments/<name>.sh activation file in the Host's configured execution mode.
+      // ~/.open-science/environments/<name>.sh activation file in the Host's configured execution mode.
       // Session/project context is always threaded from spawn env for grant-scope memory.
       // workspace_cwd is captured at spawn time so the main process can resolve workspace paths.
       async submitJob(intent, command, options = {}) {
@@ -3595,7 +3690,7 @@ function wrapForRun(code) {
 
 // Runs one request against the persistent context. console is redirected into strings and restored in
 // finally; the awaited value of the async IIFE (i.e. what the user code `return`s) becomes result.
-async function run(code) {
+async function run(code, publisher) {
   let out = '',
     err = ''
   const outputBudget = {
@@ -3613,6 +3708,10 @@ async function run(code) {
   }
   let error = null,
     result = null
+  const bindings = []
+  if (typeof publisher === 'string' && /^__open_science_publish_[a-f0-9]+$/.test(publisher)) {
+    sandbox[publisher] = (name, get, set) => bindings.push({ name, get, set })
+  }
   try {
     const value = await vm.runInContext(wrapForRun(code), context, { filename: '<repl>' })
     if (value !== undefined) {
@@ -3628,7 +3727,19 @@ async function run(code) {
     }
   } catch (e) {
     error = takeOutputTail(diagnosticBudget, e && e.stack ? String(e.stack) : String(e))
+    if (truncatedComputeErrors.has(e)) diagnosticBudget.truncated = true
   } finally {
+    // Accessors keep captured closures and later assignments attached to the same JS binding.
+    // Uninitialized lexical declarations (early return/throw) must not replace prior cell values.
+    for (const { name, get, set } of bindings) {
+      try {
+        get()
+        Object.defineProperty(sandbox, name, { get, set, enumerable: true, configurable: true })
+      } catch {
+        // A declaration still in its temporal dead zone did not finish initializing.
+      }
+    }
+    if (publisher) delete sandbox[publisher]
     console.log = origLog
     console.error = origErr
   }
@@ -3660,7 +3771,7 @@ rl.on('line', (line) => {
     ACTIVE_CONTROL_INVOCATION_ID = request.control_invocation_id
     DELEGATE_CALL_SEQUENCE = 0
     try {
-      const resp = await run(request.code || '')
+      const resp = await run(request.code || '', request.repl_publisher)
       resp.req_id = request.req_id
       emit(resp)
     } finally {

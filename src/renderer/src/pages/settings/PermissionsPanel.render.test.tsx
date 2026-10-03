@@ -222,7 +222,8 @@ describe('PermissionsPanel', () => {
     expect(restore).not.toBeNull()
     await act(async () => restore!.click())
     expect(
-      container.querySelector<HTMLButtonElement>('[aria-label="Defaults restored"]')?.disabled
+      container.querySelector<HTMLButtonElement>('[aria-label="Default permissions present"]')
+        ?.disabled
     ).toBe(true)
     const revoke = container.querySelector<HTMLButtonElement>(
       `[aria-label^="Revoke ${complete.grants[0].capabilityLabel}"]`
@@ -231,7 +232,7 @@ describe('PermissionsPanel', () => {
     await act(async () => revoke!.click())
 
     expect(usePermissionGrantsStore.getState().missingDefaultGlobalGrantCount).toBe(1)
-    expect.soft(container.querySelector('[aria-label="Defaults restored"]')).toBeNull()
+    expect.soft(container.querySelector('[aria-label="Default permissions present"]')).toBeNull()
     const restoreAgain = container.querySelector<HTMLButtonElement>(
       '[aria-label="Restore defaults"]'
     )
@@ -255,7 +256,7 @@ describe('PermissionsPanel', () => {
     await act(async () => root.render(<PermissionsPanel />))
     const row = container.querySelector('[data-slot="permission-row"]')!
     expect(row.textContent).toContain('Command details unavailable for this permission')
-    expect(row.textContent).toContain('Approved ')
+    expect(row.textContent).toContain('Added ')
     expect(row.textContent).not.toContain('Git: working tree status')
     expect(row.textContent).not.toContain('historical')
   })
@@ -438,7 +439,8 @@ describe('PermissionsPanel', () => {
     await vi.waitFor(() => {
       expect(restoreDefaults).toHaveBeenCalledOnce()
       expect(
-        document.body.querySelector<HTMLButtonElement>('[aria-label="Defaults restored"]')?.disabled
+        document.body.querySelector<HTMLButtonElement>('[aria-label="Default permissions present"]')
+          ?.disabled
       ).toBe(true)
       expect(document.body.textContent).toContain('Shell')
       expect(document.body.textContent).toContain('Use Skills')
@@ -455,14 +457,14 @@ describe('PermissionsPanel', () => {
     await act(async () => root.render(<PermissionsPanel />))
 
     const restore = document.body.querySelector<HTMLButtonElement>(
-      '[aria-label="Defaults restored"]'
+      '[aria-label="Default permissions present"]'
     )
     expect(restore?.disabled).toBe(true)
     restore?.click()
     expect(restoreDefaults).not.toHaveBeenCalled()
   })
 
-  it('uses the shared Settings danger banner for load failures', async () => {
+  it('uses the shared inline recovery notice for load failures', async () => {
     setPermissionApi({ list: vi.fn().mockRejectedValue(new Error('Permission load failed')) })
 
     await act(async () => root.render(<PermissionsPanel />))
@@ -470,9 +472,8 @@ describe('PermissionsPanel', () => {
     await vi.waitFor(() => {
       const alert = document.body.querySelector<HTMLElement>('[role="alert"]')
       expect(alert?.textContent).toContain('Permission load failed')
-      expect(alert?.className).toContain('border-danger-000/30')
-      expect(alert?.className).toContain('bg-danger-000/10')
-      expect(alert?.className).toContain('text-danger-000')
+      expect(alert?.closest('section')?.className).toContain('border-border')
+      expect(alert?.closest('section')?.className).toContain('bg-card')
     })
   })
 
@@ -507,7 +508,7 @@ describe('PermissionsPanel', () => {
     expect(
       document.body.querySelector('[aria-label="Revoke python · Project: Example project"]')
     ).not.toBeNull()
-    expect(document.body.querySelector('h3')?.className).toContain('text-base')
+    expect(document.body.querySelector('h3')?.className).toContain('text-[17px]')
     const permissionRow = document.body.querySelector<HTMLElement>('[data-slot="permission-row"]')
     expect(permissionRow?.className).toContain('min-h-11')
     expect(permissionRow?.className).toContain('py-1.5')
@@ -515,6 +516,22 @@ describe('PermissionsPanel', () => {
       '[aria-label="Filter permissions by scope"]'
     )
     expect(filterTrigger?.parentElement?.className).toContain('mb-2')
+  })
+
+  it('shows approval time for ordinary grants and leaves legacy time unknown', async () => {
+    setPermissionApi({
+      list: vi.fn().mockResolvedValue({
+        ...snapshot,
+        grants: [
+          { ...snapshot.grants[0], createdAt: Date.UTC(2026, 8, 10) },
+          { ...snapshot.grants[0], id: 'legacy' }
+        ]
+      })
+    })
+    await act(async () => root.render(<PermissionsPanel />))
+    const rows = container.querySelectorAll('[data-slot="permission-row"]')
+    expect(rows[0].textContent).toContain('Added ')
+    expect(rows[1].textContent).toContain('Added time unknown')
   })
 
   it('renders grouped grants with a scope filter and per-row revoke control', async () => {

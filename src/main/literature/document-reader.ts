@@ -1,16 +1,12 @@
 import { createHash } from 'node:crypto'
 
-import { resolveActiveConversationMessages } from '../../shared/conversation-graph'
-import type {
-  MessagePdfContextSnapshot,
-  PersistedChatSession,
-  SessionPdfBinding
-} from '../../shared/session-persistence'
+import type { MessagePdfContextSnapshot, SessionPdfBinding } from '../../shared/session-persistence'
 import { createLogger, errorLogFields } from '../logger'
 import type { SessionCatalog } from '../session-persistence/coordinator'
 import { extractPdfText, MAX_AUTO_EXTRACT_PDF_BYTES } from '../uploads/attachment-media'
 import { LiteratureFullTextIndex, type LiteratureIndexChunk } from './full-text-index'
 import type { LiteratureReadDocumentRequest } from './mcp-server'
+import { resolveCurrentPdfContext } from './pdf-context'
 import type {
   ResolvedSessionPdfVersion,
   SessionPdfSourceResolver
@@ -58,11 +54,6 @@ type ExtractedDocument = Readonly<{
   pageCount: number
   truncated: boolean
 }>
-
-const activeMessages = (session: PersistedChatSession): PersistedChatSession['messages'] =>
-  session.conversationGraph
-    ? resolveActiveConversationMessages(session.conversationGraph)
-    : session.messages
 
 const pageSections = (text: string): Array<{ page: number; text: string; start: number }> => {
   const markers = [...text.matchAll(PAGE_MARKER)]
@@ -164,16 +155,25 @@ const cursorOffset = (cursor: string | undefined, documentId: string): number =>
   try {
     value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
   } catch {
-    throw new Error('Literature read cursor is invalid.')
+    throw new Error(
+      'Literature read cursor is invalid. Restart read_document for the intended documentId without cursor; continue with the returned nextCursor.'
+    )
   }
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error('Literature read cursor is invalid.')
+    throw new Error(
+      'Literature read cursor is invalid. Restart read_document for the intended documentId without cursor; continue with the returned nextCursor.'
+    )
   }
   const { documentId: cursorDocumentId, offset } = value as Record<string, unknown>
   if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) {
-    throw new Error('Literature read cursor is invalid.')
+    throw new Error(
+      'Literature read cursor is invalid. Restart read_document for the intended documentId without cursor; continue with the returned nextCursor.'
+    )
   }
-  if (cursorDocumentId !== documentId) throw new Error('Literature read cursor is invalid.')
+  if (cursorDocumentId !== documentId)
+    throw new Error(
+      'Literature read cursor is invalid. Restart read_document for the intended documentId without cursor; continue with the returned nextCursor.'
+    )
   return offset
 }
 
@@ -185,7 +185,7 @@ class LiteratureDocumentReader {
   constructor(private readonly options: LiteratureDocumentReaderOptions) {}
 
   async readCurrent(request: ReadCurrentLiteratureRequest): Promise<unknown> {
-    const context = await this.resolveCurrentContext(request)
+    const context = await resolveCurrentPdfContext(this.options.sessions, request)
     if (request.input.query) {
       const bindings = this.selectSearchBindings(context, request.input.documentIds)
       return this.search(
@@ -223,21 +223,44 @@ class LiteratureDocumentReader {
     return this.search([await this.resolveDocument(request.projectId, binding)], request.query)
   }
 
-  private async resolveCurrentContext(
-    request: ReadCurrentLiteratureRequest
-  ): Promise<MessagePdfContextSnapshot> {
-    const session = await this.options.sessions.loadSessionForContinuation(
-      request.projectId,
-      request.sessionId
-    )
-    const message = activeMessages(session).find(({ id }) => id === request.promptMessageId)
-    const context = message?.role === 'user' ? message.pdfContext : undefined
-    if (!context) {
-      throw new Error(
-        'NO_LINKED_PDF_CONTEXT: The current message has no linked PDF context snapshot.'
-      )
+  async classificationEvidence(
+    request: Omit<SearchLiteratureAttachmentRequest, 'projectId'>
+  ): Promise<{
+    coverage: 'full-text' | 'passages'
+    passages: { pageStart: number; pageEnd: number; content: string }[]
+  }> {
+    if (request.sizeBytes > MAX_AUTO_EXTRACT_PDF_BYTES) throw new Error('PDF_SIZE_LIMIT_EXCEEDED')
+    const document = await this.resolveDocument('', {
+      version: 1,
+      bindingId: request.attachmentVersionId,
+      sourceKind: 'literature-attachment-version',
+      sourceFileId: request.attachmentId,
+      sourceVersionId: request.attachmentVersionId,
+      name: request.filename,
+      mimeType: 'application/pdf',
+      sizeBytes: request.sizeBytes,
+      checksum: request.checksum,
+      linkedAt: 0
+    })
+    const chunks = indexChunks(document.text)
+    const complete =
+      Buffer.byteLength(JSON.stringify(chunks), 'utf8') <= 32000 && chunks.length <= 8
+    const candidates = complete
+      ? chunks
+      : (
+          (await this.search([document], request.query)) as {
+            passages: { pageStart: number; pageEnd: number; content: string }[]
+          }
+        ).passages
+    const passages: { pageStart: number; pageEnd: number; content: string }[] = []
+    let bytes = 0
+    for (const { pageStart, pageEnd, content } of candidates) {
+      const next = Buffer.byteLength(content, 'utf8')
+      if (bytes + next > 32000 || passages.length >= 8) continue
+      passages.push({ pageStart, pageEnd, content })
+      bytes += next
     }
-    return context
+    return { coverage: complete ? 'full-text' : 'passages', passages }
   }
 
   private selectSearchBindings(
@@ -373,7 +396,10 @@ class LiteratureDocumentReader {
 
   private readBatch(document: ExtractedDocument, cursor: string | undefined): unknown {
     const offset = cursorOffset(cursor, document.context.bindingId)
-    if (offset > document.text.length) throw new Error('Literature read cursor is out of range.')
+    if (offset > document.text.length)
+      throw new Error(
+        'Literature read cursor is out of range. Restart read_document for the intended documentId without cursor; continue with the returned nextCursor.'
+      )
     const end = Math.min(document.text.length, offset + DOCUMENT_BATCH_CHARS)
     const content = document.text.slice(offset, end)
     const pages = pageRangeForOffsets(document.text, offset, end)

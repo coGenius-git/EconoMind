@@ -32,10 +32,15 @@ import { isProductionDelegatedWorkFramework } from '../delegation/production-rea
 import { CODEX_SUBSCRIPTION_PROVIDER_ID, isCodexSubscriptionProvider } from '../../shared/settings'
 import { prepareCodexRuntimeHomeAuthentication } from '../settings/codex-auth'
 import { codexStorageDir, codexSubscriptionStorageDir } from '../settings/codex-paths'
-import { CODEX_VERSION } from '../settings/managed-codex'
+import { CODEX_VERSION, spawnCodexWithInstallAdmission } from '../settings/managed-codex'
 import { clearSystemProxyEnvironment } from '../settings/system-proxy'
 import { registerOwnedPosixProcessGroup } from '../process-tree'
 import codexNativeModelInstructions from './codex-native-model-instructions.md?raw'
+import { modelFacingAppMcpToolName } from './app-mcp-names'
+import {
+  createSkillRuntimeAcpServerConfig,
+  OPEN_SCIENCE_SKILL_RUNTIME_SESSION_OPTION
+} from '../skills/runtime-mcp-server'
 
 const CODEX_PROVIDER_ID = 'open-science'
 // Catalog model used only for Codex's local metadata; the Responses bridge rewrites it to the selected
@@ -51,6 +56,7 @@ export const CODEX_BRIDGE_MODEL = 'gpt-5.4'
 const CODEX_EFFECTIVE_CONTEXT_WINDOW_PERCENT = 95
 const CODEX_NATIVE_MODEL_CATALOG_FILENAME_PREFIX = 'model-catalog-'
 const CODEX_BUNDLED_MODEL_IDS_BY_VERSION = {
+  // Existing installations keep their verified catalog until the user explicitly updates.
   '0.144.6': [
     'gpt-5.6-sol',
     'gpt-5.6-terra',
@@ -60,8 +66,23 @@ const CODEX_BUNDLED_MODEL_IDS_BY_VERSION = {
     'gpt-5.4-mini',
     'gpt-5.2',
     'codex-auto-review'
+  ],
+  [CODEX_VERSION]: [
+    'gpt-6-astra',
+    'gpt-6-sol',
+    'gpt-6-luna',
+    'gpt-daybreak-blue-latest',
+    'gpt-daybreak-red-latest',
+    'gpt-5.6-sol',
+    'gpt-5.6-terra',
+    'gpt-5.6-luna',
+    'gpt-5.5',
+    'gpt-5.4',
+    'gpt-5.4-mini',
+    'gpt-5.2',
+    'codex-auto-review'
   ]
-} satisfies Record<typeof CODEX_VERSION, readonly string[]>
+} satisfies Record<string, readonly string[]>
 const CODEX_MODE_IDS = {
   ask: 'read-only',
   auto: 'agent',
@@ -73,12 +94,34 @@ const CODEX_MODE_IDS = {
 // contract. This must live in CODEX_CONFIG (rather than only custom model metadata), because trusted
 // bundled models intentionally do not receive an app-authored model catalog.
 const CODEX_DISABLED_NATIVE_FEATURES = Object.freeze({
+  // EconoMind owns the Skill projection and MCP surface. Native Codex plugin/app discovery can
+  // advertise provider-installed, plugin-qualified Skills that the app runtime cannot load.
+  apps: false,
   memories: false,
   multi_agent: false,
   multi_agent_v2: false,
+  plugins: false,
+  remote_plugin: false,
+  // The bounded Skill loader must remain callable without deferred tool discovery.
+  code_mode: { direct_only_tool_namespaces: ['mcp__skills'] },
   // Disabling unified_exec alone falls back to shell_command. shell_tool disables both generations
   // so execution stays on the app-owned Notebook bash_execute MCP tool.
   shell_tool: false
+})
+const CODEX_PLAN_BRIDGE_NAMESPACE = modelFacingAppMcpToolName(
+  'codex',
+  'open-science-plan',
+  'generate_plan',
+  true
+).slice(0, -'__generate_plan'.length)
+const CODEX_CHAT_BRIDGE_FEATURES = Object.freeze({
+  ...CODEX_DISABLED_NATIVE_FEATURES,
+  // Chat Completions cannot execute Codex's deferred tool_search protocol. Keep the per-Session
+  // Plan namespace in each request when that MCP capability is actually registered; the bridge
+  // still exposes no Plan tools for Sessions whose request does not contain this namespace.
+  code_mode: {
+    direct_only_tool_namespaces: ['mcp__skills', CODEX_PLAN_BRIDGE_NAMESPACE]
+  }
 })
 const CODEX_DISABLED_NATIVE_MEMORY = Object.freeze({
   generate_memories: false,
@@ -121,25 +164,47 @@ const isolatedCodexHomeEnv = (codexHome: string, platform: NodeJS.Platform): Nod
   CODEX_HOME: codexHome
 })
 
-const normalizeResponsesBaseUrl = (value: string | undefined): string | undefined => {
+const normalizeResponsesBaseUrl = (
+  value: string | undefined,
+  options: { appendVersionPath?: boolean } = {}
+): string | undefined => {
   const normalized = value
     ?.trim()
     .replace(/\/+$/, '')
     .replace(/\/responses$/i, '')
   if (!normalized) return undefined
 
-  // Codex posts to `{base_url}/responses`, so a bare origin (e.g. the official
-  // `https://api.openai.com`) would target `.../responses` and miss the `/v1` version segment.
-  // Append `/v1` only when the input carries no path at all; gateways that already include `/v1`
-  // or a custom path are left untouched.
+  // Codex posts to `{base_url}/responses`. Explicit native/OpenAI bases preserve their published
+  // path; a custom provider's baseUrl is a root, so add `/v1` even when that root has a path prefix.
   try {
     const { pathname } = new URL(normalized)
-    if (pathname === '' || pathname === '/') return `${normalized}/v1`
+    const appendVersionPath =
+      options.appendVersionPath === true ||
+      (options.appendVersionPath === undefined && (pathname === '' || pathname === '/'))
+    if (appendVersionPath) {
+      if (/\/v1$/i.test(pathname)) return normalized
+      return `${normalized}/v1`
+    }
   } catch {
     // Non-URL inputs pass through unchanged.
   }
 
   return normalized
+}
+
+const resolveResponsesBaseUrl = (provider: {
+  responsesBaseUrl?: string
+  openaiBaseUrl?: string
+  baseUrl?: string
+}): string | undefined => {
+  const exactBase = provider.responsesBaseUrl?.trim()
+  const openAiBase = provider.openaiBaseUrl?.trim()
+  const base = exactBase || openAiBase || provider.baseUrl
+  return normalizeResponsesBaseUrl(base, {
+    // A custom provider's baseUrl is a root even when it has a path prefix (`/proxy`); only an
+    // explicitly projected OpenAI base is already versioned. A native Responses base is exact.
+    appendVersionPath: !exactBase && !openAiBase
+  })
 }
 
 const isOfficialOpenAiResponsesBase = (value: string | undefined): boolean => {
@@ -167,17 +232,23 @@ const buildCodexModelOptions = (input: {
 
 const buildCodexConfig = (provider: {
   baseUrl?: string
+  preserveBaseUrl?: boolean
   model?: string
   contextWindow?: number
   key?: string
   reasoningEffort?: ModelReasoningEffort
 }): Record<string, unknown> => {
-  const baseUrl = normalizeResponsesBaseUrl(provider.baseUrl)
+  const baseUrl = normalizeResponsesBaseUrl(provider.baseUrl, {
+    appendVersionPath: !provider.preserveBaseUrl
+  })
   const contextWindow =
     provider.contextWindow && provider.contextWindow > 0 ? provider.contextWindow : undefined
 
   return {
     ...buildCodexModelOptions(provider),
+    // Model metadata can enable native delegation even when both feature flags are off.
+    // Codex 0.157.1 config::multi_agent_version_override requires agents.enabled=false.
+    agents: { enabled: false },
     features: CODEX_DISABLED_NATIVE_FEATURES,
     memories: CODEX_DISABLED_NATIVE_MEMORY,
     ...(contextWindow
@@ -197,8 +268,6 @@ const buildCodexConfig = (provider: {
         ...(provider.key ? { requires_openai_auth: true } : {})
       }
     }
-    // Tool-search configuration is intentionally left at Codex defaults. The Chat bridge exposes its
-    // app-owned tools through explicit namespaced aliases and does not depend on deferred tool_search.
   }
 }
 
@@ -207,6 +276,7 @@ type CodexNativeModelCatalogInput = {
   vendorId?: OfficialVendorId
   baseUrl?: string
   openaiBaseUrl?: string
+  responsesBaseUrl?: string
   nativeVersion?: string
   contextWindow?: number
   supportsImageInput?: boolean
@@ -423,18 +493,22 @@ export const createCodexFramework = ({
         : input.executablePath
     const args = isJavaScript ? [input.executablePath, ...input.args] : input.args
 
-    const child = spawnProcess(command, args, {
-      env: buildSpawnEnvironment(input, sourceEnv),
-      stdio: 'pipe',
-      // Keep a terminal/dev-runner SIGINT aimed at the Electron application's foreground process
-      // group from killing Codex before the app's awaited ACP teardown can mark and reap it. Piped
-      // stdio remains referenced (we never unref the child), and the resource owner still performs
-      // explicit cross-platform tree teardown. Node's detached process-group behavior is POSIX-only;
-      // creating an independent Windows console/process group here would change packaged startup.
-      detached: platform !== 'win32',
-      windowsHide: true,
-      shell: needsShell
-    })
+    const child = spawnCodexWithInstallAdmission(
+      [input.executablePath, ...(input.env.CODEX_PATH ? [input.env.CODEX_PATH] : [])],
+      () =>
+        (input.spawnProcess ?? spawnProcess)(command, args, {
+          env: buildSpawnEnvironment(input, sourceEnv),
+          stdio: 'pipe',
+          // Keep a terminal/dev-runner SIGINT aimed at the Electron application's foreground process
+          // group from killing Codex before the app's awaited ACP teardown can mark and reap it. Piped
+          // stdio remains referenced (we never unref the child), and the resource owner still performs
+          // explicit cross-platform tree teardown. Node's detached process-group behavior is POSIX-only;
+          // creating an independent Windows console/process group here would change packaged startup.
+          detached: platform !== 'win32',
+          windowsHide: true,
+          shell: needsShell
+        })
+    )
     if (platform !== 'win32') registerOwnedPosixProcessGroup(child)
     return child
   },
@@ -476,6 +550,9 @@ export const createCodexFramework = ({
       })
       const codexConfig = {
         ...modelOptions,
+        // Model metadata can enable native delegation even when both feature flags are off.
+        // Codex 0.157.1 config::multi_agent_version_override requires agents.enabled=false.
+        agents: { enabled: false },
         features: CODEX_DISABLED_NATIVE_FEATURES,
         memories: CODEX_DISABLED_NATIVE_MEMORY,
         ...(persistentSystemPrompt ? { developer_instructions: persistentSystemPrompt } : {})
@@ -502,13 +579,13 @@ export const createCodexFramework = ({
       (provider.apiEndpoints?.includes('responses') ?? false)
     const useLocalResponsesEndpoint = useChatBridge || useNativeCompatibility
     const codexModel = useChatBridge ? CODEX_BRIDGE_MODEL : provider.model
-    // A dual-endpoint vendor keeps its Anthropic route in
-    // `baseUrl` and its OpenAI/Responses `/v1` root in `openaiBaseUrl`, so post to the latter; a
-    // Responses-only provider (e.g. OpenAI) carries its base in `baseUrl`. The Chat bridge and the
-    // protocol-preserving native compatibility endpoint both expose a local Responses URL.
+    // A dual-endpoint vendor keeps its Anthropic route in `baseUrl` and its OpenAI Chat base in
+    // `openaiBaseUrl`. Native Responses may use a separate base, so prefer that when supplied.
+    // The Chat bridge and the protocol-preserving native compatibility endpoint both expose a local
+    // Responses URL.
     const responsesBaseUrl = useLocalResponsesEndpoint
       ? bridge.baseUrl
-      : (provider.openaiBaseUrl ?? provider.baseUrl)
+      : resolveResponsesBaseUrl(provider)
     const authentication: AgentAuthentication | undefined =
       provider.key && !useLocalResponsesEndpoint
         ? {
@@ -546,9 +623,11 @@ export const createCodexFramework = ({
         model: codexModel,
         contextWindow: provider.contextWindow,
         baseUrl: responsesBaseUrl,
+        preserveBaseUrl: Boolean(provider.responsesBaseUrl?.trim()) && !useLocalResponsesEndpoint,
         key: useLocalResponsesEndpoint ? undefined : provider.key,
         reasoningEffort: ctx.reasoningEffort
       }),
+      ...(useChatBridge ? { features: CODEX_CHAT_BRIDGE_FEATURES } : {}),
       ...(modelCatalogPath ? { model_catalog_json: modelCatalogPath } : {}),
       ...(persistentSystemPrompt ? { developer_instructions: persistentSystemPrompt } : {})
     }
@@ -593,12 +672,41 @@ export const createCodexFramework = ({
   },
 
   buildSessionSetup(ctx: SessionSetupContext): SessionSetup {
+    const runtime = ctx.sessionOptions?.[OPEN_SCIENCE_SKILL_RUNTIME_SESSION_OPTION] as
+      { command?: string; entryPath?: string; root?: string; skillsDirectory?: string } | undefined
+    const loaderAvailable =
+      ctx.skillRuntimeScope !== undefined &&
+      (ctx.skillRuntimeScope === 'all' || ctx.skillRuntimeScope.length > 0) &&
+      typeof runtime?.command === 'string' &&
+      typeof runtime.entryPath === 'string' &&
+      typeof runtime.root === 'string' &&
+      typeof runtime.skillsDirectory === 'string'
+    const skillGuidance = loaderAvailable
+      ? 'Use Skill documents already loaded in this turn. For another Skill, call `mcp__skills__load_skill` with its exact available name. Do not read Skill directories through Notebook Shell or REPL, use `host.skills` for Connector discovery, or guess Connector methods. If loading fails, stop the dependent work and report the missing Skill; do not retry through another runtime.'
+      : undefined
     // Production backends pass no stable appends here because developer_instructions owns them.
     // Keep the fallback for injected/legacy backends and ephemeral reviewer sessions.
-    const promptPrefix = [...ctx.systemPromptAppends, ...(ctx.turnPromptReminders ?? [])]
+    const promptPrefix = [
+      ...ctx.systemPromptAppends,
+      skillGuidance,
+      ...(ctx.turnPromptReminders ?? [])
+    ]
       .filter(Boolean)
       .join('\n\n')
     return {
+      ...(loaderAvailable
+        ? {
+            mcpServers: [
+              createSkillRuntimeAcpServerConfig({
+                command: runtime!.command!,
+                entryPath: runtime!.entryPath!,
+                root: runtime!.root!,
+                skillsDirectory: runtime!.skillsDirectory!,
+                ...(ctx.skillRuntimeScope !== 'all' ? { allowedNames: ctx.skillRuntimeScope } : {})
+              })
+            ]
+          }
+        : {}),
       ...(promptPrefix ? { promptPrefix } : {})
     }
   },
@@ -614,5 +722,6 @@ export {
   codexSubscriptionStorageDir,
   isOfficialOpenAiResponsesBase,
   mapCodexPermissionProfile,
-  normalizeResponsesBaseUrl
+  normalizeResponsesBaseUrl,
+  resolveResponsesBaseUrl
 }

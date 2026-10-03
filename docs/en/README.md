@@ -2,7 +2,7 @@
 
 EconoMind is an AI-assisted desktop research workbench for economics, management, finance, accounting, and public policy. Its local Web mode requires the application backend.
 
-This repository customizes AIPOCH Open Science. The source version is 0.27.2; a separate customized installer uses the 3.0.0 label. Upstream releases, DOI records, and downloads are not releases of this repository.
+This repository customizes AIPOCH Open Science. The source version is 0.34.1; a separate customized installer uses the 3.0.0 label. Upstream releases, DOI records, and downloads are not releases of this repository.
 
 ## Documentation and startup
 
@@ -11,7 +11,7 @@ This repository customizes AIPOCH Open Science. The source version is 0.27.2; a 
 - [Docs](../README.md)
 - [Startup](../DEPLOY.md)
 
-`Node.js 22` + `npm`:
+`Node.js 24` + `npm`:
 
 ```bash
 git clone https://github.com/coGenius-git/EconoMind.git

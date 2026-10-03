@@ -1,3 +1,5 @@
+import { InlineNotice } from '@/components/ui/inline-notice'
+import { inlineNoticeClassName } from '@/components/ui/notice-chrome'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { RefreshCw, TriangleAlert } from 'lucide-react'
 import { Trans, useTranslation } from 'react-i18next'
@@ -18,9 +20,14 @@ import {
 } from '../../../../shared/settings'
 import {
   isSupportedCodexAcpVersion,
+  isSupportedCodexCliVersion,
+  MINIMUM_CODEX_CLI_VERSION,
+  hasCodexNativeUpdate,
+  MANAGED_CODEX_VERSION,
   MINIMUM_CODEX_ACP_VERSION
 } from '../../../../shared/codex-runtime'
 import { AgentFrameworkCard } from './AgentFrameworkCard'
+import { isSupportedClaudeCliVersion } from '../../../../shared/claude-runtime'
 import { ModelFrameworkCompatibilityAlert } from './ModelFrameworkCompatibilityAlert'
 import { AgentFrameworkIcon } from './provider-icons'
 import { RepairFrameworkDialog } from './RepairFrameworkDialog'
@@ -252,7 +259,9 @@ const AgentPanel = ({
     (framework) => framework.id === pendingSwitch
   )?.displayName
   const codexReady =
-    preflight.codexReady && (!codex.version || isSupportedCodexAcpVersion(codex.version))
+    preflight.codexReady &&
+    (!codex.version || isSupportedCodexAcpVersion(codex.version)) &&
+    isSupportedCodexCliVersion(codex.nativeVersion)
 
   // First-run users should land on a runtime they can actually use. Registry order is the stable
   // tie-breaker, and this onboarding-only preference never changes Settings selection behavior.
@@ -333,6 +342,9 @@ const AgentPanel = ({
     updateRequired?: boolean
     minimumVersion?: string
     version?: string
+    versionDetail?: string
+    updateAvailable?: boolean
+    updateHint?: string
     path?: string
     sourceLabel: string
     sourceUrl: string
@@ -353,13 +365,19 @@ const AgentPanel = ({
       name: 'Claude Agent',
       icon: <AgentFrameworkIcon frameworkId="claude-code" size={24} />,
       description: t("Anthropic's agentic coding tool for the terminal."),
-      ready: preflight.claudeReady,
+      ready: preflight.claudeReady && isSupportedClaudeCliVersion(claude.version),
       installed: Boolean(claude.resolvedPath),
+      updateRequired: Boolean(claude.resolvedPath && !isSupportedClaudeCliVersion(claude.version)),
       version: claude.version,
       path: claude.resolvedPath,
       sourceLabel: 'anthropics/claude-code',
       sourceUrl: 'https://github.com/anthropics/claude-code',
-      notReadyHint: t('Install Claude Agent below, or install it manually and re-detect.'),
+      notReadyHint:
+        claude.resolvedPath && !isSupportedClaudeCliVersion(claude.version)
+          ? t(
+              'The installed Claude Code CLI is incompatible or its version could not be verified. Update Claude Code to 2.1.118 or later, then re-detect it in Settings.'
+            )
+          : t('Install Claude Agent below, or install it manually and re-detect.'),
       uninstallCommand: 'npm uninstall -g @anthropic-ai/claude-code',
       managed: claudeManaged,
       installSources: getClaudeInstallSources(window.api?.platform),
@@ -409,10 +427,42 @@ const AgentPanel = ({
       ready: codexReady,
       installed: Boolean(codex.resolvedPath),
       updateRequired: Boolean(
-        codex.resolvedPath && codex.version && !isSupportedCodexAcpVersion(codex.version)
+        codex.resolvedPath &&
+        ((codex.version && !isSupportedCodexAcpVersion(codex.version)) ||
+          !isSupportedCodexCliVersion(codex.nativeVersion))
       ),
-      minimumVersion: MINIMUM_CODEX_ACP_VERSION,
-      version: codex.version,
+      minimumVersion:
+        codex.version && !isSupportedCodexAcpVersion(codex.version)
+          ? MINIMUM_CODEX_ACP_VERSION
+          : undefined,
+      versionDetail:
+        codex.resolvedPath || codex.version || codex.nativeVersion
+          ? t('Codex CLI {{nativeVersion}} · ACP {{adapterVersion}}', {
+              nativeVersion: codex.nativeVersion ?? t('Unknown'),
+              adapterVersion: codex.version ?? t('Unknown')
+            })
+          : undefined,
+      updateAvailable: Boolean(
+        codexManaged && codex.nativeManaged && hasCodexNativeUpdate(codex.nativeVersion)
+      ),
+      updateHint:
+        codex.resolvedPath &&
+        !codex.nativeManaged &&
+        !isSupportedCodexCliVersion(codex.nativeVersion)
+          ? t(
+              'Repair installs an app-managed Codex CLI without changing your external installation. You can also update it manually and re-detect.'
+            )
+          : hasCodexNativeUpdate(codex.nativeVersion)
+            ? codexManaged && codex.nativeManaged
+              ? t(
+                  'Update to the tested Codex CLI v{{version}}. Close Codex sessions before updating.',
+                  { version: MANAGED_CODEX_VERSION }
+                )
+              : t(
+                  'Codex CLI v{{version}} is available. Update your external installation manually, then re-detect.',
+                  { version: MANAGED_CODEX_VERSION }
+                )
+            : undefined,
       path: codex.resolvedPath,
       sourceLabel: 'agentclientprotocol/codex-acp',
       sourceUrl: 'https://github.com/agentclientprotocol/codex-acp',
@@ -425,16 +475,24 @@ const AgentPanel = ({
                 minimumVersion: MINIMUM_CODEX_ACP_VERSION
               }
             )
-          : codex.resolvedPath
+          : codex.resolvedPath && !isSupportedCodexCliVersion(codex.nativeVersion)
             ? t(
-                'The adapter or its paired native Codex runtime did not pass detection. Reinstall the managed pair below, or repair your manual installation and re-detect.'
+                'Codex CLI v{{minimumVersion}} or later is required. Update or repair Codex before using it.',
+                { minimumVersion: MINIMUM_CODEX_CLI_VERSION }
               )
-            : t(
-                'Codex ACP is required for this framework. Install it below, or install it manually and re-detect.'
-              ),
+            : codex.resolvedPath
+              ? t(
+                  'The adapter or its paired native Codex runtime did not pass detection. Reinstall the managed pair below, or repair your manual installation and re-detect.'
+                )
+              : t(
+                  'Codex ACP is required for this framework. Install it below, or install it manually and re-detect.'
+                ),
       uninstallCommand: 'npm uninstall -g @agentclientprotocol/codex-acp',
       managed: codexManaged,
-      installSources: getCodexInstallSources(),
+      installSources:
+        codex.resolvedPath && !isSupportedCodexCliVersion(codex.nativeVersion)
+          ? getCodexInstallSources().filter((source) => source.id === 'managed')
+          : getCodexInstallSources(),
       install: codexInstall,
       // Codex has no official-script source; the guard keeps the shared install-source type happy.
       onInstall: (source) => {
@@ -603,6 +661,9 @@ const AgentPanel = ({
       minimumVersion={card.minimumVersion}
       needsRepair={cardNeedsRepair(card)}
       version={card.version}
+      versionDetail={card.versionDetail}
+      updateAvailable={card.updateAvailable}
+      updateHint={card.updateHint}
       path={card.path}
       sourceLabel={card.sourceLabel}
       sourceUrl={card.sourceUrl}
@@ -644,6 +705,7 @@ const AgentPanel = ({
           so management (Installed) and acquisition (Available) don't compete for attention — but
           the active runtime can't be uninstalled (switch to the other one first). */}
       <SettingsSection
+        data-settings-anchor="agent.framework"
         title={title}
         headingAs={isOnboarding ? 'h2' : 'h3'}
         aria-label={title}
@@ -667,18 +729,18 @@ const AgentPanel = ({
       >
         <div className="space-y-5">
           {frameworkDetectionError || installActionError || environmentCheckError ? (
-            <p className="text-sm text-destructive" role="alert">
+            <InlineNotice level="error" role="alert">
               {installActionError || environmentCheckError || frameworkDetectionError}
-            </p>
+            </InlineNotice>
           ) : null}
           {!isOnboarding && agentCheckFailures.length > 0 ? (
             <div
               aria-label={t('Agent runtime repair issues')}
-              className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3"
+              className={`${inlineNoticeClassName} block`}
             >
               <div className="flex items-start gap-2">
                 <TriangleAlert
-                  className="mt-0.5 size-4 shrink-0 text-amber-600"
+                  className="mt-0.5 size-4 shrink-0 text-status-warning-foreground dark:text-status-warning-dark-foreground"
                   aria-hidden="true"
                 />
                 <div className="min-w-0">
@@ -694,7 +756,7 @@ const AgentPanel = ({
               </div>
               {/* Component summaries keep the diagnosis useful without repeating automatic-install
                   guidance from the environment-check detail in this explicit Recovery surface. */}
-              <div className="space-y-1 border-l border-amber-500/30 pl-6">
+              <div className="space-y-1 border-l border-status-warning-foreground/30 dark:border-status-warning-dark-foreground/30 pl-6">
                 {agentCheckFailures.map((failure, index) => (
                   <div key={`${failure.label}-${index}`}>
                     <p className="text-xs font-medium text-foreground">{failure.label}</p>
@@ -707,12 +769,12 @@ const AgentPanel = ({
           {installBlockers.length > 0 ? (
             <div
               aria-label={t('Agent installation blockers')}
-              className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3"
+              className={`${inlineNoticeClassName} block`}
             >
               {installBlockers.map((blocker) => (
                 <div key={blocker.id} className="flex items-start gap-2">
                   <TriangleAlert
-                    className="mt-0.5 size-4 shrink-0 text-amber-600"
+                    className="mt-0.5 size-4 shrink-0 text-status-warning-foreground dark:text-status-warning-dark-foreground"
                     aria-hidden="true"
                   />
                   <div className="min-w-0">

@@ -22,6 +22,7 @@ import {
   LOAD_SKILL_TOOL_CALLABLE_NAME,
   OPEN_SCIENCE_SKILL_RUNTIME_SESSION_OPTION,
   SKILL_RUNTIME_MCP_SERVER_NAME,
+  createSkillRuntimeAcpServerConfig,
   createSkillRuntimeMcpServerConfig
 } from '../skills/runtime-mcp-server'
 
@@ -83,6 +84,7 @@ export const claudeCodeFramework: AgentFramework = {
     // Still routes through the existing spawner; env carries the resolved provider overrides.
     return spawnClaudeAgentAcp({
       envOverrides: input.env,
+      spawnProcess: input.spawnProcess,
       executablePath: input.executablePath
     })
   },
@@ -109,15 +111,18 @@ export const claudeCodeFramework: AgentFramework = {
       typeof skillRuntime.root === 'string' &&
       typeof skillRuntime.command === 'string' &&
       typeof skillRuntime.entryPath === 'string'
-    const mcpServers = skillRuntimeEnabled
+    const skillRuntimeConfig = skillRuntimeEnabled
+      ? {
+          command: skillRuntime.command as string,
+          entryPath: skillRuntime.entryPath as string,
+          root: skillRuntime.root as string,
+          ...(ctx.skillRuntimeScope !== 'all' ? { allowedNames: ctx.skillRuntimeScope } : {})
+        }
+      : undefined
+    const mcpServers = skillRuntimeConfig
       ? {
           ...recordValue(sessionOptions.mcpServers),
-          [SKILL_RUNTIME_MCP_SERVER_NAME]: createSkillRuntimeMcpServerConfig({
-            command: skillRuntime.command as string,
-            entryPath: skillRuntime.entryPath as string,
-            root: skillRuntime.root as string,
-            ...(ctx.skillRuntimeScope !== 'all' ? { allowedNames: ctx.skillRuntimeScope } : {})
-          })
+          [SKILL_RUNTIME_MCP_SERVER_NAME]: createSkillRuntimeMcpServerConfig(skillRuntimeConfig)
         }
       : sessionOptions.mcpServers
     const toolAliases = skillRuntimeEnabled
@@ -126,26 +131,8 @@ export const claudeCodeFramework: AgentFramework = {
           Skill: LOAD_SKILL_TOOL_CALLABLE_NAME
         }
       : sessionOptions.toolAliases
-    const sessionHooks = recordValue(sessionOptions.hooks)
-    const hooks = skillRuntimeEnabled
-      ? {
-          ...sessionHooks,
-          PreToolUse: [
-            ...(Array.isArray(sessionHooks.PreToolUse) ? sessionHooks.PreToolUse : []),
-            {
-              matcher: LOAD_SKILL_TOOL_CALLABLE_NAME,
-              hooks: [
-                async () => ({
-                  hookSpecificOutput: {
-                    hookEventName: 'PreToolUse' as const,
-                    permissionDecision: 'allow' as const
-                  }
-                })
-              ]
-            }
-          ]
-        }
-      : sessionOptions.hooks
+    // Skill approvals belong to the app Permission broker, including revocable existing grants.
+    const hooks = sessionOptions.hooks
     const disallowedTools = Object.freeze([
       ...new Set([
         ...stringArrayValue(sessionOptions.disallowedTools),
@@ -224,6 +211,10 @@ export const claudeCodeFramework: AgentFramework = {
 
     return {
       meta,
+      // Register SDK-installed tooling with the app's Session capability owner as well.
+      ...(skillRuntimeConfig
+        ? { mcpServers: [createSkillRuntimeAcpServerConfig(skillRuntimeConfig)] }
+        : {}),
       ...(persistentSystemPrompt ? { persistentSystemPrompt } : {}),
       ...(promptPrefix ? { promptPrefix } : {})
     }

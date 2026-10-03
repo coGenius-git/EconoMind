@@ -1,11 +1,12 @@
 import { CirclePlus, Sparkles } from 'lucide-react'
 
-// Import the bare icon components so this shared renderer stays free of @lobehub/ui.
-import ClaudeColor from '@lobehub/icons/es/Claude/components/Color'
-import Codex from '@lobehub/icons/es/Codex/components/Mono'
-import NvidiaColor from '@lobehub/icons/es/Nvidia/components/Color'
-import OpenCode from '@lobehub/icons/es/OpenCode/components/Mono'
-import TencentCloudColor from '@lobehub/icons/es/TencentCloud/components/Color'
+import {
+  ClaudeColor,
+  CodexMono,
+  NvidiaColor,
+  OpenCodeMono,
+  TencentCloudColor
+} from './provider-brand-icons'
 
 import { cn } from '@/lib/utils'
 import anthropicLogo from '@/assets/provider-icons/anthropic.svg'
@@ -25,6 +26,7 @@ import kimiLogo from '@/assets/provider-icons/kimi.svg'
 import openrouterLogo from '@/assets/provider-icons/openrouter.svg'
 import xiaomimimoLogo from '@/assets/provider-icons/xiaomimimo.svg'
 import sensenovaLogo from '@/assets/provider-icons/sensenova.svg'
+import typesafeLogo from '@/assets/provider-icons/typesafe.svg'
 import volcengineLogo from '@/assets/provider-icons/volcengine.svg'
 import type { OfficialVendorId } from '../../../../shared/provider-registry'
 import type { AgentFrameworkId } from '../../../../shared/settings'
@@ -41,13 +43,17 @@ export const AgentFrameworkIcon = ({
 }): React.JSX.Element => {
   if (frameworkId === 'claude-code') return <ClaudeColor size={size} className={className} />
   if (frameworkId === 'opencode') {
-    return <OpenCode size={size} className={cn('text-foreground', className)} />
+    return <OpenCodeMono size={size} className={cn('text-foreground', className)} />
   }
   if (frameworkId === 'codebuddy') {
     return <img src={codebuddyLogo} alt="" width={size} height={size} className={className} />
   }
-  return <Codex size={size} className={cn('text-foreground', className)} />
+  return <CodexMono size={size} className={cn('text-foreground', className)} />
 }
+
+export const TypeSafeIcon = ({ className }: { className?: string }): React.JSX.Element => (
+  <img src={typesafeLogo} alt="" className={cn('size-3 shrink-0 object-contain', className)} />
+)
 
 // Official vendor brand marks, bundled as assets. Providers from the same vendor share one mark:
 // Bailian and Bailian for Plan, Kimi and Kimi For Coding, Zhipu and GLM Coding Plan, and StepFun and
@@ -114,7 +120,7 @@ export const ProviderKindIcon = ({
 
   if (kindKey === 'official:opencode-go' || kindKey === 'official:opencode') {
     return (
-      <OpenCode
+      <OpenCodeMono
         size={20}
         className={cn('size-5 shrink-0 text-foreground', className)}
         aria-hidden="true"

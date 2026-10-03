@@ -1,3 +1,4 @@
+import { previewCloseGuards } from './preview-close-guard'
 import { create } from 'zustand'
 
 import type { NotebookSessionReference } from '../../../shared/notebook'
@@ -41,7 +42,9 @@ export type PreviewFileFormat =
 // their path is an absolute filesystem path read via window.api.localFs.
 export type PreviewFileSource = 'artifact' | 'upload' | 'notebook-input' | 'literature' | 'local'
 export const PROJECT_FILES_PREVIEW_ID = 'tool:project:files'
+export const PROJECT_LIBRARY_PREVIEW_ID = 'tool:project:library'
 export const PROJECT_COMPUTE_PREVIEW_ID = 'tool:project:compute'
+export const sideChatTabId = (sessionId: string): string => `tool:side-chat:${sessionId}`
 
 type PreviewItemBase = {
   id: string
@@ -69,7 +72,25 @@ export type PreviewFileItem = PreviewItemBase & {
 // Tool previews share the workbench chrome with files, but keep their own render path.
 export type PreviewToolItem = PreviewItemBase & {
   type: 'tool'
-  toolKind?: 'notebook' | 'files' | 'compute' | 'reviewer' | 'plan' | 'subagents'
+  sideChatId?: string
+  // A message chip can request a transient Library scope without changing the durable tab format.
+  libraryScopeRequest?: { section?: 'inbox'; collectionId?: string; collectionName?: string }
+  toolKind?:
+    | 'notebook'
+    | 'files'
+    | 'library'
+    | 'compute'
+    | 'reviewer'
+    | 'plan'
+    | 'subagents'
+    | 'side-chat'
+    | 'replay'
+  // A replay tab retains its source when the left-hand discussion selects another Session.
+  replaySourceProjectId?: string
+  replaySourceSessionId?: string
+  replayStepId?: string
+  replayBranchId?: string
+  replayRevealRequest?: number
   notebook?: NotebookSessionReference
   notebookRunId?: string
   notebookRunFocusRequest?: number
@@ -128,6 +149,16 @@ export const createPendingPdfContext = (
 type StoredPreviewItem = PreviewItem & {
   createdAt: number
   updatedAt: number
+  // Lightweight view selection lives only as long as this tab, outside durable preview state.
+  fileViewState?: PreviewFileViewState
+}
+
+export type PreviewProvenanceTab =
+  'code' | 'sources' | 'reproducibility' | 'execution' | 'messages' | 'environment' | 'review'
+
+export type PreviewFileViewState = {
+  provenanceOpen?: boolean
+  provenanceTab?: PreviewProvenanceTab
 }
 
 // The preview state for a single project. The store keeps the active project's slice at top level and
@@ -180,6 +211,11 @@ type PreviewWorkbenchStore = PreviewWorkbenchStoreData & {
   setPdfReadingPosition: (bindingId: string, position: PdfReadingPosition) => void
   clearPdfReadingPosition: (bindingId: string) => void
   upsertItem: (item: PreviewItem, skipGuard?: boolean) => boolean
+  setFileViewState: (
+    projectId: string | undefined,
+    itemId: string,
+    patch: PreviewFileViewState
+  ) => void
   upsertAndActivateItem: (item: PreviewItem) => void
   activateItem: (itemId: string) => void
   removeItem: (itemId: string) => boolean
@@ -230,9 +266,21 @@ const createStoredPreviewItem = (
   existingItem?: StoredPreviewItem
 ): StoredPreviewItem => {
   const now = Date.now()
+  const sameFile =
+    item.type === 'file' &&
+    existingItem?.type === 'file' &&
+    item.id === existingItem.id &&
+    item.projectId === existingItem.projectId &&
+    item.sessionId === existingItem.sessionId &&
+    (item.source ?? 'artifact') === (existingItem.source ?? 'artifact') &&
+    item.artifactId === existingItem.artifactId &&
+    (item.managedFileId ?? item.artifactId) ===
+      (existingItem.managedFileId ?? existingItem.artifactId) &&
+    (item.artifactId || item.managedFileId || item.path === existingItem.path)
 
   return {
     ...item,
+    fileViewState: sameFile ? existingItem.fileViewState : undefined,
     createdAt: existingItem?.createdAt ?? now,
     updatedAt: now
   } as StoredPreviewItem
@@ -323,7 +371,17 @@ const mergeRestoredPreviewSlice = (
 
   return {
     ...authoritative,
-    items: [...authoritative.items.filter((item) => !runtimeIds.has(item.id)), ...runtimeItems],
+    items: [
+      ...authoritative.items
+        .filter((item) => !runtimeIds.has(item.id))
+        .map((item) =>
+          createStoredPreviewItem(
+            item,
+            current.items.find((previous) => previous.id === item.id)
+          )
+        ),
+      ...runtimeItems
+    ],
     activeItemId,
     panelState:
       activeRuntimeItem || (!authoritative.activeItemId && runtimeItems.length > 0)
@@ -401,6 +459,17 @@ const createProjectFilesPreviewItem = (): PreviewToolItem => ({
   title: 'Files'
 })
 
+const createProjectLibraryPreviewItem = (
+  libraryScopeRequest?: PreviewToolItem['libraryScopeRequest']
+): PreviewToolItem => ({
+  id: PROJECT_LIBRARY_PREVIEW_ID,
+  sessionId: '__project_library__',
+  type: 'tool',
+  toolKind: 'library',
+  title: 'Library',
+  ...(libraryScopeRequest ? { libraryScopeRequest } : {})
+})
+
 const createProjectComputePreviewItem = (): PreviewToolItem => ({
   id: PROJECT_COMPUTE_PREVIEW_ID,
   sessionId: '__project_compute__',
@@ -464,6 +533,33 @@ const reconcileUploadPreviewItems = (
 
 export const usePreviewWorkbenchStore = create<PreviewWorkbenchStore>((set, get) => ({
   ...createInitialPreviewWorkbenchState(),
+
+  setFileViewState: (projectId, itemId, patch) => {
+    set((state) => {
+      const slice =
+        state.activeProjectId === projectId
+          ? state
+          : projectId
+            ? state.byProject[projectId]
+            : undefined
+      const item = slice?.items.find(
+        (candidate) => candidate.id === itemId && candidate.type === 'file'
+      )
+      if (!slice || !item) return state
+      const fileViewState = { ...item.fileViewState, ...patch }
+      if (
+        fileViewState.provenanceOpen === item.fileViewState?.provenanceOpen &&
+        fileViewState.provenanceTab === item.fileViewState?.provenanceTab
+      )
+        return state
+      const items = slice.items.map((candidate) =>
+        candidate === item ? { ...item, fileViewState } : candidate
+      )
+      return state.activeProjectId === projectId
+        ? { items }
+        : { byProject: { ...state.byProject, [projectId!]: { ...slice, items } } }
+    })
+  },
 
   // Switches the visible preview slice to a project's own tabs, stashing the outgoing project's slice
   // so returning to it restores its tabs. `restored` replaces the durable subset with authoritative
@@ -754,6 +850,7 @@ export const usePreviewWorkbenchStore = create<PreviewWorkbenchStore>((set, get)
 
   // Removes one preview tab and repairs focus if the active tab disappeared.
   removeItem: (itemId) => {
+    if (!previewCloseGuards.request([itemId], () => get().removeItem(itemId))) return false
     let removed = false
     const remove = (): boolean => {
       set((state) => {
@@ -787,6 +884,15 @@ export const usePreviewWorkbenchStore = create<PreviewWorkbenchStore>((set, get)
   // composed from removeItem by callers) so expanded-surface and file-dialog teardown rules stay
   // in one place.
   removeOtherItems: (keepItemId) => {
+    if (
+      !previewCloseGuards.request(
+        get()
+          .items.filter((item) => item.id !== keepItemId)
+          .map((item) => item.id),
+        () => get().removeOtherItems(keepItemId)
+      )
+    )
+      return false
     const state = get()
     if (!state.items.some((item) => item.id === keepItemId)) return false
 
@@ -930,6 +1036,7 @@ export const usePreviewWorkbenchStore = create<PreviewWorkbenchStore>((set, get)
 export {
   createNotebookPreviewItem,
   createProjectFilesPreviewItem,
+  createProjectLibraryPreviewItem,
   createProjectComputePreviewItem,
   createSessionPlanPreviewItem,
   createSessionSubagentsPreviewItem,

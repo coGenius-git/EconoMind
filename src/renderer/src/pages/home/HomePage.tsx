@@ -1,4 +1,10 @@
 import {
+  PackageExportProgressButton,
+  PackageOperationIndicator
+} from '@/components/SessionPackageOperation'
+import { startWslSetupConversation } from '@/lib/wsl-support-handoff'
+import { useRecentSessions } from './use-recent-sessions'
+import {
   Archive,
   Check,
   CircleAlert,
@@ -56,8 +62,6 @@ import {
 import { DeleteProjectDialog } from './DeleteProjectDialog'
 import { ResearchWorkbenchHeader } from '@/components/ResearchWorkbenchHeader'
 import { ProjectFormDialog } from './ProjectFormDialog'
-
-const RECENT_SESSION_LIMIT = 5
 
 // Compact labels for dense rows ("3d"), unlike the verbose wording in global search ("3 days ago").
 // The unit is a runtime value, so it maps to its English text rather than being interpolated into a
@@ -206,6 +210,12 @@ const HomePage = ({
   const openSession = useNavigationStore((state) => state.openSession)
   const openLibrary = useNavigationStore((state) => state.openLibrary)
   const activeProjectId = useNavigationStore((state) => state.activeProjectId)
+  const pendingWslSetupAfterProjectCreation = useNavigationStore(
+    (state) => state.pendingWslSetupAfterProjectCreation
+  )
+  const consumeWslSetupProjectCreation = useNavigationStore(
+    (state) => state.consumeWslSetupProjectCreation
+  )
   const pendingProjectCreation = useNavigationStore((state) => state.pendingProjectCreation)
   const consumeProjectCreation = useNavigationStore((state) => state.consumeProjectCreation)
   const openSettings = useSettingsStore((state) => state.openSettings)
@@ -219,7 +229,19 @@ const HomePage = ({
     openCreateDialog,
     openEditDialog,
     dialogProps: projectFormDialogProps
-  } = useProjectFormDialog()
+  } = useProjectFormDialog({
+    onCreateCancelled: consumeWslSetupProjectCreation,
+    onCreated: (project) => {
+      if (!pendingWslSetupAfterProjectCreation) {
+        openProject(project.id, 'user')
+        return
+      }
+      consumeWslSetupProjectCreation()
+      void startWslSetupConversation(project.id, t).catch(() => {
+        openProject(project.id, 'user')
+      })
+    }
+  })
 
   const [projectToDelete, setProjectToDelete] = useState<Project | undefined>(undefined)
   const [isDeletingProject, setIsDeletingProject] = useState(false)
@@ -434,12 +456,9 @@ const HomePage = ({
       : specialized
   }, [projectSummaries])
 
-  const recentSessions = useMemo(
-    () =>
-      [...persistedSessions]
-        .sort((left, right) => right.updatedAt - left.updatedAt)
-        .slice(0, RECENT_SESSION_LIMIT),
-    [persistedSessions]
+  const recentSessions = useRecentSessions(
+    persistedSessions,
+    isProjectsLoaded && !loadError && hasCompleteSessionCatalog
   )
 
   const showArtifactCounts = hasCompleteSessionCatalog && recentSessions.length === 0
@@ -521,8 +540,13 @@ const HomePage = ({
     setDeleteProjectError(undefined)
   }
 
+  const isProjectArchiveBlockedByCatalogRecovery = (projectId: string): boolean => {
+    if (hasCompleteSessionCatalog) return false
+    if (effectiveCatalogRecovery.kind !== 'damaged-authority') return true
+    return effectiveCatalogRecovery.affectedFiles.some((file) => file.projectId === projectId)
+  }
   const canArchiveProject = (project: Project): boolean =>
-    hasCompleteSessionCatalog &&
+    !isProjectArchiveBlockedByCatalogRecovery(project.id) &&
     canDeleteProjects &&
     project.archivedAt === undefined &&
     !sessions.some(
@@ -537,7 +561,7 @@ const HomePage = ({
 
   const archiveUnavailableReason = (project: Project): string | undefined => {
     if (!canDeleteProjects) return t('Retry project recovery before archiving.')
-    if (!hasCompleteSessionCatalog) {
+    if (isProjectArchiveBlockedByCatalogRecovery(project.id)) {
       if (effectiveCatalogRecovery.kind === 'damaged-authority') {
         return t(
           'Project archive is unavailable because a damaged conversation cannot be verified.'
@@ -769,6 +793,7 @@ const HomePage = ({
                     </button>
                   ) : null}
                   <NetworkStatusIndicator variant="pill" />
+                  <PackageExportProgressButton iconOnly />
                   <Button
                     variant="ghost"
                     size="icon"
@@ -792,6 +817,7 @@ const HomePage = ({
                   </Button>
                 </div>
               </header>
+              <PackageOperationIndicator />
 
               {sessionUpdates.length > 0 ? (
                 <section className="mt-8 sm:mt-10" aria-label={t('Session updates')}>

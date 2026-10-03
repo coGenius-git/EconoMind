@@ -21,12 +21,36 @@ const item = (overrides: Partial<LiteratureItemInput> = {}): LiteratureItemInput
 })
 
 describe('toCslItem', () => {
+  it('keeps journal abbreviations separate from article short titles in both directions', () => {
+    const source = item({
+      title: 'A useful paper',
+      shortTitle: 'Useful paper',
+      containerTitle: 'Journal of Useful Results',
+      typeFields: { journalAbbreviation: 'J Useful Results' }
+    })
+    const csl = toCslItem('paper', source)
+    expect(csl).toMatchObject({
+      'title-short': 'Useful paper',
+      'container-title-short': 'J Useful Results'
+    })
+    expect(fromCslItem(csl)).toMatchObject({
+      shortTitle: 'Useful paper',
+      typeFields: { journalAbbreviation: 'J Useful Results' }
+    })
+  })
+
   it.each([
     ['2024-03-12', 2023, [2024, 3, 12]],
     ['2024-3-12', undefined, [2024, 3, 12]],
     ['2024-02', undefined, [2024, 2]],
     ['2024', undefined, [2024]],
     ['2024-02-29', undefined, [2024, 2, 29]],
+    ['2024 Jan 15', 2024, [2024, 1, 15]],
+    ['2024 Dec', 2024, [2024, 12]],
+    ['2024 Feb 29', 2024, [2024, 2, 29]],
+    ['2023 Feb 29', 2023, [2023]],
+    ['2024 Jan-Feb', 2024, [2024]],
+    ['2024 Winter', 2024, [2024]],
     ['2023-02-29', 2023, [2023]],
     ['2024-13-01', 2024, [2024]],
     ['2024-04-31', 2024, [2024]],
@@ -224,6 +248,37 @@ describe('fromCslItem', () => {
       identifiers: [{ scheme: 'doi', value: '10.48550/arXiv.2401.15884', isPrimary: true }]
     })
   })
+
+  it.each(['author', 'editor', 'translator'] as const)(
+    'preserves both CSL name particles for %s without changing literal names',
+    (role) => {
+      const source = fromCslItem({
+        title: 'Name preservation',
+        type: 'article-journal',
+        [role]: [
+          { given: 'Jan', family: 'Dijk', 'non-dropping-particle': 'van' },
+          { given: 'Tawfiq', family: 'Hakim', 'non-dropping-particle': 'al-' },
+          { given: 'Jean', family: 'Alembert', 'dropping-particle': "d'" },
+          {
+            given: 'Ana',
+            family: 'Cruz',
+            'dropping-particle': 'de',
+            'non-dropping-particle': 'la'
+          },
+          { literal: 'Research Group', family: 'Ignored', 'dropping-particle': 'Ignored' }
+        ]
+      })
+      expect(source.creators).toMatchObject([
+        { creatorType: role, givenName: 'Jan', familyName: 'van Dijk' },
+        { creatorType: role, givenName: 'Tawfiq', familyName: 'al-Hakim' },
+        { creatorType: role, givenName: 'Jean', familyName: "d'Alembert" },
+        { creatorType: role, givenName: 'Ana', familyName: 'de la Cruz' },
+        { creatorType: role, nameMode: 'organization', literalName: 'Research Group' }
+      ])
+      const roundTrip = fromCslItem(toCslItem('names', source))
+      expect(roundTrip.creators).toEqual(source.creators)
+    }
+  )
 
   it('rejects imported entries without a title', () => {
     expect(() => fromCslItem({ id: 'missing-title', type: 'article' })).toThrow()

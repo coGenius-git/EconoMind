@@ -1,3 +1,7 @@
+import type {
+  ProviderFailureObservation,
+  ProviderFailureObserver
+} from './provider-failure-observation'
 import { randomUUID } from 'node:crypto'
 
 import type { ModelReasoningEffort } from '../../shared/reasoning-effort'
@@ -9,7 +13,7 @@ import {
   type AgentProviderConfiguration,
   type ResolvedAgentBackend
 } from '../agent-framework'
-import { normalizeResponsesBaseUrl } from '../agent-framework/codex'
+import { resolveResponsesBaseUrl } from '../agent-framework/codex'
 import { opencodeTransportProviderId } from '../agent-framework/opencode'
 import {
   normalizeAnthropicBaseUrl,
@@ -62,7 +66,7 @@ const codeBuddyCompatibilityEndpoint = (
   wire: ChatProviderCompatibilityTarget['wire']
 ): string => {
   if (wire === 'responses') {
-    const baseUrl = normalizeResponsesBaseUrl(provider.openaiBaseUrl ?? provider.baseUrl)
+    const baseUrl = resolveResponsesBaseUrl(provider)
     if (!baseUrl) throw new Error('The CodeBuddy Responses provider target is incomplete.')
     return `${baseUrl}/responses`
   }
@@ -122,6 +126,10 @@ type ProviderTransportGeneration = Readonly<{
 }>
 
 type ProviderTransportOwnerOptions = {
+  onProviderFailure?: (
+    target: ProviderRuntimeTarget,
+    failure: ProviderFailureObservation
+  ) => Promise<void>
   getXaiOAuthAccessToken?: (forceRefresh?: boolean) => Promise<string>
   createResponsesBridge?: (
     target: ResponsesBridgeTarget,
@@ -144,6 +152,7 @@ type ProviderTransportOwnerOptions = {
 }
 
 class ProviderTransportOwner {
+  private readonly onProviderFailure: ProviderTransportOwnerOptions['onProviderFailure']
   private readonly createResponsesBridge: (
     target: ResponsesBridgeTarget,
     options?: ResponsesBridgeOptions
@@ -172,6 +181,7 @@ class ProviderTransportOwner {
   >()
 
   constructor(options: ProviderTransportOwnerOptions = {}) {
+    this.onProviderFailure = options.onProviderFailure
     this.createResponsesBridge =
       options.createResponsesBridge ??
       ((target, bridgeOptions) => new ResponsesBridge(target, netFetchStandard, bridgeOptions))
@@ -235,6 +245,19 @@ class ProviderTransportOwner {
     })
   }
 
+  private healthObservation(target: ProviderRuntimeTarget): {
+    onProviderFailure?: ProviderFailureObserver
+  } {
+    const observe = this.onProviderFailure
+    if (
+      !observe ||
+      target.configRevision === undefined ||
+      !['custom', 'official'].includes(target.providerType)
+    )
+      return {}
+    return { onProviderFailure: (failure) => observe(target, failure) }
+  }
+
   private async startCodeBuddyTransport(
     input: ProviderTransportRequest
   ): Promise<ProviderTransportGeneration> {
@@ -247,6 +270,7 @@ class ProviderTransportOwner {
     const bridge: ChatProviderCompatibilityBridgePort =
       transport.kind === 'codebuddy-provider-compatibility'
         ? this.createChatProviderCompatibilityBridge({
+            ...this.healthObservation(input.activeTarget),
             wire: transport.wire,
             endpoint: codeBuddyCompatibilityEndpoint(provider, transport.wire),
             ...(provider.key ? { key: provider.key } : {}),
@@ -267,6 +291,7 @@ class ProviderTransportOwner {
               return this.createOpenAiProviderBridge(
                 [
                   {
+                    ...this.healthObservation(input.activeTarget),
                     id: targetId,
                     wire: 'chat-completions',
                     endpoint,
@@ -337,11 +362,10 @@ class ProviderTransportOwner {
     const targets = transport.targets.map((planned): OpenAiProviderBridgeTarget => {
       const candidate = planned.target
       const model = candidate.effectiveModel ?? candidate.provider.model
-      const baseUrl = normalizeResponsesBaseUrl(
-        candidate.provider.openaiBaseUrl ?? candidate.provider.baseUrl
-      )
+      const baseUrl = resolveResponsesBaseUrl(candidate.provider)
       if (!model || !baseUrl) throw new Error('The native Responses provider target is incomplete.')
       return Object.freeze({
+        ...this.healthObservation(candidate),
         id: planned.id,
         wire: 'responses',
         endpoint: `${baseUrl}/responses`,
@@ -414,6 +438,7 @@ class ProviderTransportOwner {
               ? this.createOpenAiProviderBridge(
                   [
                     {
+                      ...this.healthObservation(candidate),
                       id: targetId,
                       wire: 'chat-completions',
                       endpoint: openAiChatCompletionsUrl(candidate.provider)!,
@@ -426,6 +451,7 @@ class ProviderTransportOwner {
               : this.createAnthropicProviderBridge(
                   [
                     {
+                      ...this.healthObservation(candidate),
                       id: targetId,
                       baseUrl: normalizeAnthropicBaseUrl(candidate.provider.baseUrl ?? ''),
                       ...(candidate.provider.key ? { key: candidate.provider.key } : {}),
@@ -516,7 +542,13 @@ class ProviderTransportOwner {
             'anthropic',
             this.getXaiOAuthAccessToken
           )
-        : this.createAnthropicProviderBridge(transport.targets, transport.initialTargetId)
+        : this.createAnthropicProviderBridge(
+            transport.targets.map(({ runtimeTarget, ...target }) => ({
+              ...target,
+              ...(runtimeTarget ? this.healthObservation(runtimeTarget) : {})
+            })),
+            transport.initialTargetId
+          )
     try {
       const connection = await bridge.start()
       let released = false
@@ -559,11 +591,10 @@ class ProviderTransportOwner {
       throw new Error('Native Responses compatibility transport is unavailable.')
     }
     const createTarget = (candidate: ProviderRuntimeTarget): NativeResponsesProxyTarget => {
-      const targetBaseUrl = normalizeResponsesBaseUrl(
-        candidate.provider.openaiBaseUrl ?? candidate.provider.baseUrl
-      )
+      const targetBaseUrl = resolveResponsesBaseUrl(candidate.provider)
       if (!targetBaseUrl) throw new Error('The native Responses provider has no base URL.')
       return {
+        ...this.healthObservation(candidate),
         baseUrl: targetBaseUrl,
         key: candidate.provider.key,
         ...xaiNativeResponsesTargetFields(candidate.provider.type, this.getXaiOAuthAccessToken),
@@ -655,6 +686,7 @@ class ProviderTransportOwner {
       const targetBaseUrl = openAiCompletionsBase(candidate.provider)
       if (!targetBaseUrl) throw new Error('The Chat Completions provider has no base URL.')
       return {
+        ...this.healthObservation(candidate),
         baseUrl: targetBaseUrl,
         key: candidate.provider.key,
         vendorId: candidate.provider.vendorId,
@@ -719,6 +751,9 @@ class ProviderTransportOwner {
         registerHostMessageSession: (key, tools, options) =>
           entry.bridge.registerHostMessageSession(key, tools, options),
         unregisterHostMessageSession: (key) => entry.bridge.unregisterHostMessageSession(key),
+        registerMcpSession: (key, tools, namespaces) =>
+          entry.bridge.registerMcpSession?.(key, tools, namespaces),
+        unregisterMcpSession: (key) => entry.bridge.unregisterMcpSession?.(key) ?? false,
         setReasoningEffort: (effort) => entry.bridge.setReasoningEffort(effort),
         setModelTarget: (target) => entry.bridge.setModelTarget(target),
         release

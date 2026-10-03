@@ -1,7 +1,14 @@
+import { SettingsFormFooter } from './SettingsLayout'
+import { createBookmarkPreviewItem } from '../workspace/annotations/annotation-reveal'
+import type { PdfAnnotation } from '../../../../shared/pdf-annotations'
+import type { PreviewFileItem } from '@/stores/preview-workbench-store'
+import { Notice } from '@/components/notice'
+import { ErrorNotice } from '@/components/error-notice'
 /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 */
 /* Hallmark · component: settings side rail · genre: modern-minimal · theme: existing EconoMind tokens · slop: pass */
 import {
   AlertTriangle,
+  Loader2,
   Archive,
   ArrowLeft,
   ArrowRight,
@@ -15,6 +22,7 @@ import {
   LockKeyhole,
   Maximize2,
   Menu,
+  MessageSquare,
   Minimize2,
   ScrollText,
   Settings2,
@@ -24,11 +32,14 @@ import {
   X,
   Zap
 } from 'lucide-react'
+import { ActionToastStack } from '@/components/ActionToast'
 import * as Dialog from '@/components/ui/dialog'
+import { motion } from 'motion/react'
 import { FocusScope } from '@radix-ui/react-focus-scope'
 import {
   forwardRef,
   lazy,
+  Suspense,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -39,11 +50,15 @@ import { useTranslation } from 'react-i18next'
 
 import {
   resolveCodexSubscriptionType,
+  type ValidateProviderResult,
   type ProviderView,
   type UpsertProviderRequest
 } from '../../../../shared/settings'
+import { APP } from '../../../../shared/app-config'
 import type { SpecialistListItem } from '../../../../shared/specialist'
 import { Button } from '@/components/ui/button'
+import { ConfirmActionDialog } from '@/components/ui/confirm-action-dialog'
+import type { SkillEditorLeaveState } from './SkillEditor'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { useMediaQuery } from '@/hooks/useMediaQuery'
 import { cn } from '@/lib/utils'
@@ -53,7 +68,12 @@ import { useMemoryStore } from '@/stores/memory-store'
 import { useNavigationStore } from '@/stores/navigation-store'
 import { useProjectStore } from '@/stores/project-store'
 import { useSessionStore } from '@/stores/session-store'
-import { selectFrameworkApiEndpoints, useSettingsStore } from '@/stores/settings-store'
+import {
+  selectActiveAgentFramework,
+  selectFrameworkApiEndpoints,
+  useSettingsStore
+} from '@/stores/settings-store'
+import { takeSettingsReturnFocusTarget } from '@/stores/settings-return-focus'
 import {
   INITIAL_SETTINGS_ROUTE,
   settingsPanelRoute,
@@ -65,6 +85,7 @@ import {
 import { useSpecialistStore } from '@/stores/specialist-store'
 import { useTagStore } from '@/stores/tag-store'
 import { ProvidersPanel } from './ProvidersPanel'
+import { ModelPanel } from './ModelPanel'
 import type { SkillsView } from './SkillsPanel'
 import type { ConnectorsView } from './ConnectorsPanel'
 import type { SpecialistsView } from './SpecialistsPanel'
@@ -90,7 +111,10 @@ import {
 } from './provider-form-value'
 import { SettingsPanelLoadingBoundary } from './SettingsPanelLoadingBoundary'
 import { localizeProviderResourceMessage } from './validation-message'
+import { ProviderTestResultCard } from './ProviderTestResultCard'
 import { loadSettingsPanel } from './settings-panel-loader'
+import { SettingsGlobalSearch } from './SettingsGlobalSearch'
+import type { SettingsWriteErrorCode } from '../../../../shared/settings'
 
 const AgentPanel = lazy(async () => ({ default: (await import('./AgentPanel')).AgentPanel }))
 const GeneralPanel = lazy(async () => ({ default: (await import('./GeneralPanel')).GeneralPanel }))
@@ -115,6 +139,7 @@ const RuntimesPanel = lazy(async () => {
   )
   return { default: module.RuntimesPanel }
 })
+
 const SkillsPanel = lazy(async () => {
   const module = await loadSettingsPanel(
     () => import('./SkillsPanel'),
@@ -207,9 +232,12 @@ type SettingsPageProps = {
   hasCompleteSessionCatalog?: boolean
   catalogRecovery?: SessionCatalogRecovery
   onRetryCatalogRecovery?: () => void
+  sessionLoadError?: string
+  undoHostRef?: React.Ref<HTMLDivElement>
 }
 
 type SettingsPageHandle = {
+  requestLeave: (leave: () => void) => void
   closeActivePane: () => boolean
 }
 
@@ -286,35 +314,46 @@ type DrillablePanelName = keyof typeof PANEL_NAME_LOWER
 type SettingsGroup = {
   // The union rather than `string` is deliberate: a group added later cannot compile until its
   // heading is a known catalog key, so it can never reach the nav as a raw untranslated label.
-  labelKey: 'Capabilities' | 'Workspace'
+  labelKey: 'Intelligence' | 'Connections' | 'Workspace' | 'System'
   panels: ReadonlyArray<SettingsPanel>
 }
 
+// Four purpose-based groups: model/agent intelligence, external connections, workspace
+// organization, and the app-level system panel.
 const SETTINGS_GROUPS: ReadonlyArray<SettingsGroup> = [
   {
-    labelKey: 'Capabilities',
+    labelKey: 'System',
+    panels: [{ id: 'general', labelKey: 'General', Icon: Settings2 }]
+  },
+  {
+    labelKey: 'Intelligence',
     panels: [
+      { id: 'model', labelKey: 'Model', Icon: Brain },
+      { id: 'agent', labelKey: 'Agent', Icon: Bot },
       { id: 'skills', labelKey: 'Skills', Icon: ScrollText },
-      { id: 'connectors', labelKey: 'Connectors', Icon: ConnectorsNavIcon },
       { id: 'specialists', labelKey: 'Specialists', Icon: Users },
-      { id: 'memory', labelKey: 'Memory', Icon: BrainCircuit },
-      { id: 'network', labelKey: 'Network', Icon: Globe }
+      { id: 'memory', labelKey: 'Memory', Icon: BrainCircuit }
+    ]
+  },
+  {
+    labelKey: 'Connections',
+    panels: [
+      { id: 'connectors', labelKey: 'Connectors', Icon: ConnectorsNavIcon },
+      { id: 'network', labelKey: 'Network', Icon: Globe },
+
+      { id: 'credentials', labelKey: 'Credentials', Icon: KeyRound }
     ]
   },
   {
     labelKey: 'Workspace',
     panels: [
-      { id: 'model', labelKey: 'Model', Icon: Brain },
-      { id: 'agent', labelKey: 'Agent', Icon: Bot },
       { id: 'tags', labelKey: 'Tags', Icon: TagsIcon },
       { id: 'permissions', labelKey: 'Permissions', Icon: LockKeyhole },
-      { id: 'credentials', labelKey: 'Credentials', Icon: KeyRound },
       { id: 'runtimes', labelKey: 'Runtimes', Icon: TerminalSquare },
       { id: 'storage', labelKey: 'Storage', Icon: Cloud },
+      { id: 'compute', labelKey: 'Compute', Icon: Zap },
       { id: 'usage', labelKey: 'Usage', Icon: ChartNoAxesCombined },
-      { id: 'general', labelKey: 'General', Icon: Settings2 },
-      { id: 'archived', labelKey: 'Archived', Icon: Archive },
-      { id: 'compute', labelKey: 'Compute', Icon: Zap }
+      { id: 'archived', labelKey: 'Archived', Icon: Archive }
     ]
   }
 ]
@@ -323,8 +362,35 @@ const SETTINGS_GROUPS: ReadonlyArray<SettingsGroup> = [
 const SETTINGS_PANELS: ReadonlyArray<SettingsPanel> = SETTINGS_GROUPS.flatMap(
   (group) => group.panels
 )
+
+// Display copy for the write-failure codes produced by settings-write-coordinator. Module-level
+// table of catalog keys (not resolved strings), resolved through t() at render time.
+const SETTINGS_WRITE_ERROR_COPY: Record<SettingsWriteErrorCode, string> = {
+  'reasoning-effort': 'Could not save reasoning effort. Try again.',
+  'session-details-model':
+    'Could not save Session details model. Refresh the model catalog and try again.',
+  'reviewer-model': 'Could not save Reviewer model. Refresh the model catalog and try again.',
+  'subagent-model': 'Could not save Subagent model. Refresh the model catalog and try again.',
+  'vision-model': 'Could not save Vision model. Refresh the model catalog and try again.',
+  notifications: 'Could not save notification preference. Try again.',
+  'notification-content': 'Could not save notification preference. Try again.',
+  'conversation-skill-import': 'Could not save conversation Skill import preference. Try again.',
+  'close-preference': 'Could not save window close preference. Try again.',
+  'app-icon': 'Could not save app icon preference. Try again.',
+  'project-files-filter': 'Could not save files filter preference. Try again.',
+  'default-permission-profile': 'Could not save the default permission mode. Try again.',
+  'active-provider': 'Could not switch active provider or model. Try again.',
+  'agent-framework': 'Could not switch agent framework. Try again.'
+}
+
 const EMPTY_USAGE_SESSIONS = [] as const
 const EMPTY_USAGE_PROJECTS = [] as const
+
+const PdfAnnotationPreviewDialog = lazy(() =>
+  import('../workspace/pdf-annotations/PdfAnnotationPreviewDialog').then((module) => ({
+    default: module.PdfAnnotationPreviewDialog
+  }))
+)
 
 // App-level model settings surface. Reuses the onboarding cards/form; manages providers (CRUD +
 // activate + test). Opened from the Home/Workspace gear entry.
@@ -336,14 +402,60 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
     canDeleteProjects = true,
     hasCompleteSessionCatalog = true,
     catalogRecovery = { kind: 'ready' },
-    onRetryCatalogRecovery
+    onRetryCatalogRecovery,
+    sessionLoadError,
+    undoHostRef
   },
   ref
 ): React.JSX.Element {
   const { t } = useTranslation()
+  const [tagAnnotationError, setTagAnnotationError] = useState<string>()
+  const [openingTagAnnotation, setOpeningTagAnnotation] = useState(false)
+  const [tagAnnotationPreview, setTagAnnotationPreview] = useState<{
+    annotation: PdfAnnotation
+    item: PreviewFileItem
+  }>()
+  const tagAnnotationRequest = useRef(0)
+  useEffect(() => {
+    if (!open) {
+      tagAnnotationRequest.current += 1
+      setOpeningTagAnnotation(false)
+      setTagAnnotationError(undefined)
+      setTagAnnotationPreview(undefined)
+    }
+    return () => {
+      tagAnnotationRequest.current += 1
+    }
+  }, [open])
+  const openTaggedPdfAnnotation = async (id: string): Promise<void> => {
+    const sequence = ++tagAnnotationRequest.current
+    const reference = useTagStore.getState().pdfAnnotations?.find((item) => item.id === id)
+    setTagAnnotationError(undefined)
+    setOpeningTagAnnotation(true)
+    try {
+      if (!reference) throw new Error('Missing annotation')
+      const scope =
+        reference.literatureItemId && reference.versionId
+          ? { literatureVersionId: reference.versionId }
+          : { projectId: reference.projectId }
+      const result = await window.api.pdfAnnotations.list({ ...scope, id, limit: 1 })
+      if (sequence !== tagAnnotationRequest.current) return
+      const annotation = result.items.find((item) => item.id === id)
+      if (!annotation) throw new Error('Missing annotation')
+      const item = createBookmarkPreviewItem({ id, kind: 'pdf', ...annotation.target })
+      if (!item) throw new Error('Missing source')
+      setTagAnnotationPreview({ annotation, item })
+    } catch {
+      if (sequence === tagAnnotationRequest.current)
+        setTagAnnotationError(t('PDF annotations are unavailable for this source.'))
+    } finally {
+      if (sequence === tagAnnotationRequest.current) setOpeningTagAnnotation(false)
+    }
+  }
   const providers = useSettingsStore((state) => state.providers)
   const agentFrameworkId = useSettingsStore((state) => state.agentFrameworkId)
   const frameworkEndpoints = useSettingsStore(selectFrameworkApiEndpoints)
+  const activeFramework = useSettingsStore(selectActiveAgentFramework)
   const customApiEndpoint = defaultCustomApiEndpoint(frameworkEndpoints)
   const opencode = useSettingsStore((state) => state.opencode)
   const isDetectingOpencode = useSettingsStore((state) => state.isDetectingOpencode)
@@ -356,6 +468,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   const detectCodeBuddy = useSettingsStore((state) => state.detectCodeBuddy)
   const encryptionAvailable = useSettingsStore((state) => state.encryptionAvailable)
   const load = useSettingsStore((state) => state.load)
+  const saveValidatedProvider = useSettingsStore((state) => state.saveValidatedProvider)
   const persistProvider = useSettingsStore((state) => state.persistProvider)
   const validateProvider = useSettingsStore((state) => state.validateProvider)
   const refreshProviderModels = useSettingsStore((state) => state.refreshProviderModels)
@@ -375,11 +488,41 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   // panel route, so unrelated panel views cannot form impossible combinations.
   const [history, setHistory] = useState<SettingsRoute[]>([INITIAL_SETTINGS_ROUTE])
   const [historyIndex, setHistoryIndex] = useState(0)
+  const skillLeaveReturnFocus = useRef<HTMLElement | null>(null)
+  const skillEditorLeaveState = useRef<SkillEditorLeaveState | null>(null)
+  const providerEditorLeaveState = useRef<SkillEditorLeaveState | null>(null)
+  const [skillEditorBusy, setSkillEditorBusy] = useState(false)
+  const [pendingSkillLeave, setPendingSkillLeave] = useState<(() => void) | null>(null)
+  const onSkillEditorLeaveStateChange = useCallback((state: SkillEditorLeaveState | null) => {
+    skillEditorLeaveState.current = state
+    setSkillEditorBusy(state?.busy ?? false)
+  }, [])
+  const requestLeave = useCallback((leave: () => void) => {
+    const state = providerEditorLeaveState.current ?? skillEditorLeaveState.current
+    if (state?.dirty || state?.busy) {
+      const focused = document.activeElement
+      if (
+        focused instanceof HTMLElement &&
+        !focused.closest('[data-testid="skill-discard-confirmation"]')
+      ) {
+        skillLeaveReturnFocus.current = focused
+      }
+      setPendingSkillLeave(() => leave)
+    } else leave()
+  }, [])
+  const requestClose = (): void => requestLeave(onClose)
   const returnFocusRef = useRef<HTMLElement | null>(null)
   // Whether the dialog is enlarged to near-fullscreen via the maximize control.
   const [isExpanded, setIsExpanded] = useState(false)
   const isMobile = useMediaQuery('(max-width: 767px)')
-  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false)
+  const [isMobileNavOpen, setIsMobileNavOpenState] = useState(false)
+  const isMobileNavOpenRef = useRef(false)
+  const setIsMobileNavOpen = useCallback((next: boolean) => {
+    // The dialog's Escape listener can retain an earlier render's callback.
+    // Update its navigation authority before scheduling the visual state change.
+    isMobileNavOpenRef.current = next
+    setIsMobileNavOpenState(next)
+  }, [])
   const mobileNavRef = useRef<HTMLElement | null>(null)
   const mobileNavTriggerRef = useRef<HTMLButtonElement | null>(null)
   const mobileNavWasOpenRef = useRef(false)
@@ -399,30 +542,38 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   const [formValue, setFormValue] = useState<ProviderFormValue>(() =>
     createEmptyProviderFormValue()
   )
+  const [providerDraftBaseline, setProviderDraftBaseline] = useState<ProviderFormValue>(() =>
+    createEmptyProviderFormValue()
+  )
+  const [providerBase, setProviderBase] = useState<ProviderView>()
   const [isSaving, setIsSaving] = useState(false)
   const [isRefreshingModels, setIsRefreshingModels] = useState(false)
   const [statusMessage, setStatusMessage] = useState<string | undefined>(undefined)
   const [statusOk, setStatusOk] = useState(false)
-  // Shared with ProvidersPanel: the post-save validation and the list's manual test both mark the
-  // provider busy so its card shows "Testing…".
   const [busyProviderId, setBusyProviderId] = useState<string | undefined>(undefined)
   const [postSaveValidationFailed, setPostSaveValidationFailed] = useState(false)
   const postSaveValidationGeneration = useRef(0)
   const postSaveValidationProviderId = useRef<string | undefined>(undefined)
-
   useEffect(() => {
     const providerId = postSaveValidationProviderId.current
     if (!providerId || providers.some((provider) => provider.id === providerId)) return
-
     postSaveValidationGeneration.current += 1
     postSaveValidationProviderId.current = undefined
     setBusyProviderId(undefined)
     setPostSaveValidationFailed(false)
   }, [providers])
+  const [isTestingConnection, setIsTestingConnection] = useState(false)
+  const [savedProviderWarning, setSavedProviderWarning] = useState<'reconnect' | 'refresh'>()
+  const [connectionResult, setConnectionResult] = useState<ValidateProviderResult>()
+  const formOperationGeneration = useRef(0)
+  const savingOperation = useRef(false)
 
   // Refresh settings whenever the dialog opens so external changes are reflected.
   useEffect(() => {
-    if (open) void load()
+    if (open) {
+      setSavedProviderWarning((current) => (current === 'refresh' ? undefined : current))
+      void load()
+    }
   }, [open, load])
 
   useEffect(() => {
@@ -449,29 +600,26 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
     mobileNavTriggerRef.current?.focus()
   }, [isMobile, isMobileNavOpen])
 
-  // External entry points publish one route intent with an event identity. Guard by request rather
-  // than target value so two separate requests for the same route are both honored.
-  const [seededIntentId, setSeededIntentId] = useState<number | undefined>()
-  if (
-    open &&
-    pendingSettingsIntent !== undefined &&
-    pendingSettingsIntent.requestId !== seededIntentId
-  ) {
-    setSeededIntentId(pendingSettingsIntent.requestId)
-    setHistory([pendingSettingsIntent.route])
-    setHistoryIndex(0)
-  }
-  if (!open && seededIntentId !== undefined) {
-    setSeededIntentId(undefined)
-  }
-
-  // Consume only the request applied above. A newer intent that arrives before this effect runs must
-  // remain pending for the next render.
+  // External route intents pass through the same draft protection as local navigation.
+  // Keep request identity independent of store consumption and Strict Mode effect replay.
+  const seededIntentId = useRef<number | undefined>(undefined)
   useEffect(() => {
-    if (open && pendingSettingsIntent !== undefined) {
-      consumePendingSettingsIntent(pendingSettingsIntent.requestId)
+    if (!open) {
+      seededIntentId.current = undefined
+      return
     }
-  }, [consumePendingSettingsIntent, open, pendingSettingsIntent])
+    if (!pendingSettingsIntent || pendingSettingsIntent.requestId === seededIntentId.current) return
+    seededIntentId.current = pendingSettingsIntent.requestId
+    consumePendingSettingsIntent(pendingSettingsIntent.requestId)
+    requestLeave(() => {
+      setHistory([pendingSettingsIntent.route])
+      setHistoryIndex(0)
+    })
+  }, [consumePendingSettingsIntent, open, pendingSettingsIntent, requestLeave])
+
+  useEffect(() => {
+    if (!open) setPendingSkillLeave(null)
+  }, [open])
 
   const currentRoute = history[historyIndex]
   const activePanel = currentRoute.panel
@@ -578,20 +726,26 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
 
   // Pushes a complete active route, dropping any forward entries. Routes contain only serializable
   // navigation values, so comparing the whole route automatically covers fields added later.
-  const navigate = (route: SettingsRoute): void => {
-    if (JSON.stringify(route) === JSON.stringify(currentRoute)) return
-    setHistory((entries) => [...entries.slice(0, historyIndex + 1), route])
-    setHistoryIndex((index) => index + 1)
-  }
-
-  // Internal panel transitions must use this dialog's history instead of reseeding an external
-  // entry point, so Back returns to the recovery panel the user just completed.
-  const navigatePanel = (panel: SettingsPanelId): void => {
-    if (panel === 'tags') {
-      navigate({ panel, view: { kind: 'list', tagId: browserSelectedTagId } })
+  const navigate = (route: SettingsRoute, onNavigated?: () => void): void => {
+    if (JSON.stringify(route) === JSON.stringify(currentRoute)) {
+      onNavigated?.()
       return
     }
-    navigate(settingsPanelRoute(panel))
+    requestLeave(() => {
+      setHistory((entries) => [...entries.slice(0, historyIndex + 1), route])
+      setHistoryIndex((index) => index + 1)
+      onNavigated?.()
+    })
+  }
+
+  // Internal transitions retain history instead of reseeding an external entry point.
+  const navigatePanel = (panel: SettingsPanelId, onNavigated?: () => void): void => {
+    navigate(
+      panel === 'tags'
+        ? { panel, view: { kind: 'list', tagId: browserSelectedTagId } }
+        : settingsPanelRoute(panel),
+      onNavigated
+    )
   }
 
   const navigateTag = (tagId: string): void => {
@@ -663,25 +817,35 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       const leaf =
         skillsView.kind === 'create'
           ? t('New skill')
-          : skillsView.kind === 'manage'
-            ? t('Manage skills')
-            : skillsView.kind === 'upload'
-              ? t('Upload skills')
-              : skillsView.kind === 'import'
-                ? t('Import from GitHub')
-                : skillsView.kind === 'import-agent-home'
-                  ? t('Import installed skills')
-                  : (() => {
-                      const name = skills.find((skill) => skill.id === skillsView.id)?.name ?? ''
-                      return skillsView.kind === 'edit' ? t('Edit {{name}}', { name }).trim() : name
-                    })()
+          : skillsView.kind === 'upload'
+            ? t('Upload skills')
+            : skillsView.kind === 'import'
+              ? t('Import from GitHub')
+              : skillsView.kind === 'import-agent-home'
+                ? t('Import installed skills')
+                : (() => {
+                    const name = skills.find((skill) => skill.id === skillsView.id)?.name ?? ''
+                    return skillsView.kind === 'edit' ? t('Edit {{name}}', { name }).trim() : name
+                  })()
       return {
         rootLabelKey: 'Skills',
         rootTo: { panel: 'skills', view: { kind: 'list' } },
         leaf
       }
     }
-    if (activePanel === 'model' && modelView.kind !== 'list') {
+    if (
+      activePanel === 'model' &&
+      (modelView.kind === 'classification-create' || modelView.kind === 'classification-edit')
+    )
+      return {
+        rootLabelKey: 'Model',
+        rootTo: { panel: 'model', view: { kind: 'classification' } },
+        leaf:
+          modelView.kind === 'classification-create'
+            ? t('Add model service')
+            : t('Edit model service')
+      }
+    if (activePanel === 'model' && (modelView.kind === 'create' || modelView.kind === 'edit')) {
       const name =
         modelView.kind === 'edit'
           ? (providers.find((provider) => provider.id === modelView.providerId)?.name ?? '')
@@ -785,26 +949,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         panel: 'specialists',
         view: { kind: 'list' }
       }
-      if (
-        specialistsView.kind === 'marketplace-sources' ||
-        specialistsView.kind === 'marketplace-release'
-      ) {
-        return {
-          rootLabelKey: 'Specialists',
-          rootTo,
-          parents: [
-            {
-              label: t('Marketplace'),
-              to: { panel: 'specialists', view: { kind: 'marketplace' } },
-              ariaLabel: t('Back to Marketplace')
-            }
-          ],
-          leaf:
-            specialistsView.kind === 'marketplace-sources'
-              ? t('Marketplace sources')
-              : specialistsView.id
-        }
-      }
+
       const editingSpecialist =
         specialistsView.kind === 'edit'
           ? specialistItems.find(
@@ -815,10 +960,10 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       const leaf =
         specialistsView.kind === 'create'
           ? t('New specialist')
-          : specialistsView.kind === 'marketplace'
-            ? t('Marketplace')
-            : specialistsView.kind === 'import'
-              ? t('Import ZIP')
+          : specialistsView.kind === 'import'
+            ? t('Import ZIP')
+            : specialistsView.kind === 'export'
+              ? t('Export ZIP')
               : (editingSpecialist?.name ?? t('Edit specialist'))
       return {
         rootLabelKey: 'Specialists',
@@ -880,15 +1025,16 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
 
   const goBack = (): void => {
     if (!canGoBack) return
-    setHistoryIndex((index) => index - 1)
+    requestLeave(() => setHistoryIndex((index) => index - 1))
   }
 
   const goForward = (): void => {
     if (!canGoForward) return
-    setHistoryIndex((index) => index + 1)
+    requestLeave(() => setHistoryIndex((index) => index + 1))
   }
 
   useImperativeHandle(ref, () => ({
+    requestLeave,
     closeActivePane: () => {
       if (!open) return false
       const activeDialog = Array.from(
@@ -896,7 +1042,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]'
         )
       )
-        .filter((dialog) => dialog.dataset.slot !== 'settings-surface')
+        .filter((dialog) => dialog.dataset.slot !== 'settings-dialog')
         .at(-1)
       if (activeDialog) {
         activeDialog.dispatchEvent(
@@ -909,15 +1055,17 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         return true
       }
       if (breadcrumb) {
-        if (canGoBack) setHistoryIndex((index) => index - 1)
+        if (canGoBack) goBack()
         else {
-          setHistory((entries) =>
-            entries.map((entry, index) => (index === historyIndex ? breadcrumb.rootTo : entry))
+          requestLeave(() =>
+            setHistory((entries) =>
+              entries.map((entry, index) => (index === historyIndex ? breadcrumb.rootTo : entry))
+            )
           )
         }
       } else {
         setIsMobileNavOpen(false)
-        onClose()
+        requestClose()
       }
       return true
     }
@@ -935,26 +1083,72 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   const providerEditTargetMissing = modelView.kind === 'edit' && editingProvider === undefined
   // Required-field errors for the open draft; a custom provider must be complete before it can save.
   const formErrors = getProviderFormErrors(formValue, { hasStoredKey: editingProvider?.hasKey })
-  const canSave = !isSaving && !providerEditTargetMissing && !hasProviderFormErrors(formErrors)
+  const providerConflict =
+    editingProvider &&
+    providerBase &&
+    (editingProvider.configRevision ?? 0) !== (providerBase.configRevision ?? 0)
+  const canSave =
+    !isSaving &&
+    !isTestingConnection &&
+    !providerEditTargetMissing &&
+    !providerConflict &&
+    !hasProviderFormErrors(formErrors)
 
   // Seed the form value when entering a create/edit sub-view (adjust-state-during-render, keyed on the
   // sub-view so typing isn't clobbered by background store updates; edit guards until the provider
   // loads). A create pre-selects the official vendor matching the active agent framework. Also
   // clears any stale status message on entry.
   const modelViewKey = modelView.kind === 'edit' ? `edit:${modelView.providerId}` : modelView.kind
-  const [seededModelView, setSeededModelView] = useState(modelViewKey)
-  if (modelViewKey !== seededModelView) {
+  const [seededModelView, setSeededModelView] = useState<string | undefined>(modelViewKey)
+  if (open && modelViewKey !== seededModelView) {
     setSeededModelView(modelViewKey)
     if (modelView.kind === 'create') {
-      setFormValue(
-        createEmptyProviderFormValue(providerKindPatch(defaultProviderKindKey(agentFrameworkId)))
+      const initial = createEmptyProviderFormValue(
+        providerKindPatch(defaultProviderKindKey(agentFrameworkId))
       )
+      setFormValue(initial)
+      setProviderDraftBaseline(initial)
     } else if (modelView.kind === 'edit') {
       const provider = providers.find((entry) => entry.id === modelView.providerId)
-      if (provider) setFormValue(toFormValue(provider))
+      if (provider) {
+        const initial = toFormValue(provider)
+        setFormValue(initial)
+        setProviderDraftBaseline(initial)
+      }
+      setProviderBase(provider)
     }
     setStatusMessage(undefined)
   }
+
+  const providerFormDirty = Object.entries({ ...providerDraftBaseline, ...formValue }).some(
+    ([key, value]) =>
+      key !== 'providerFormTouched' &&
+      value !== providerDraftBaseline[key as keyof ProviderFormValue]
+  )
+  useEffect(() => {
+    // This draft shares Settings' existing leave decision; the baseline contains no secret input.
+    providerEditorLeaveState.current =
+      open && isProviderFormOpen ? { dirty: providerFormDirty, busy: isSaving } : null
+  }, [open, isProviderFormOpen, providerFormDirty, isSaving])
+
+  // Invalidate observations when the user leaves, edits inputs, or the saved target changes.
+  useEffect(() => {
+    formOperationGeneration.current += 1
+    setConnectionResult(undefined)
+    setStatusMessage(undefined)
+    setIsTestingConnection(false)
+    setIsSaving(false)
+    savingOperation.current = false
+  }, [open, historyIndex, formValue])
+
+  useEffect(() => {
+    // A save can publish its own committed revision before the command returns.
+    // Main checks concurrent writes; only invalidate read-only tests here.
+    if (savingOperation.current) return
+    formOperationGeneration.current += 1
+    setConnectionResult(undefined)
+    setIsTestingConnection(false)
+  }, [editingProvider?.id, editingProvider?.configRevision])
 
   const openCreate = (): void => {
     postSaveValidationGeneration.current += 1
@@ -969,57 +1163,96 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
     postSaveValidationProviderId.current = undefined
     setBusyProviderId(undefined)
     setPostSaveValidationFailed(false)
-    navigate({
-      panel: 'model',
-      view: { kind: 'edit', providerId: provider.id }
-    })
+    navigate({ panel: 'model', view: { kind: 'edit', providerId: provider.id } })
   }
 
   const closeForm = (): void => navigate({ panel: 'model', view: { kind: 'list' } })
+  const canTestConnection = formValue.type === 'custom' || formValue.type === 'official'
+  const prospectiveRequest = (): UpsertProviderRequest => ({
+    ...toUpsertRequest(formValue, editingProvider?.id),
+    ...(modelView.kind === 'edit'
+      ? { requireExisting: true, expectedConfigRevision: providerBase?.configRevision ?? 0 }
+      : {})
+  })
+
+  const handleTestConnection = async (): Promise<void> => {
+    if (!canSave || !canTestConnection) return
+    const generation = ++formOperationGeneration.current
+    setIsTestingConnection(true)
+    setConnectionResult(undefined)
+    setStatusMessage(undefined)
+    try {
+      const result = await validateProvider({ edit: prospectiveRequest() })
+      if (generation === formOperationGeneration.current) {
+        if (result.applied === false) {
+          setStatusOk(false)
+          setStatusMessage(t('Provider configuration changed. Your draft has not been saved.'))
+          void load().catch(() => undefined)
+        } else {
+          setConnectionResult(result)
+        }
+      }
+    } catch {
+      if (generation === formOperationGeneration.current) {
+        setStatusOk(false)
+        setStatusMessage(t('Could not test the provider connection.'))
+      }
+    } finally {
+      if (generation === formOperationGeneration.current) setIsTestingConnection(false)
+    }
+  }
 
   const handleSave = async (): Promise<void> => {
-    if (providerEditTargetMissing) return
-    postSaveValidationGeneration.current += 1
-    postSaveValidationProviderId.current = undefined
-    setBusyProviderId(undefined)
+    if (!canSave) return
+    const generation = ++formOperationGeneration.current
+    savingOperation.current = true
     setIsSaving(true)
     setStatusMessage(undefined)
-    setPostSaveValidationFailed(false)
-
+    setConnectionResult(undefined)
     try {
-      // Persist first and return to the provider list immediately — don't hold the form open waiting
-      // for the connection test. The test then runs in the background and its result (green check or
-      // warning) lands on the provider's card.
-      const providerId = await persistProvider({
-        ...toUpsertRequest(formValue, editingProvider?.id),
-        ...(modelView.kind === 'edit' ? { requireExisting: true } : {})
-      })
-
-      navigate({ panel: 'model', view: { kind: 'list' } })
-
-      if (providerId) {
-        const validationGeneration = ++postSaveValidationGeneration.current
-        postSaveValidationProviderId.current = providerId
-        setBusyProviderId(providerId)
-        void validateProvider({ providerId })
-          .then(() => {
-            if (postSaveValidationGeneration.current === validationGeneration) {
-              postSaveValidationProviderId.current = undefined
-              setPostSaveValidationFailed(false)
-            }
-          })
-          .catch(() => {
-            if (postSaveValidationGeneration.current === validationGeneration) {
-              setPostSaveValidationFailed(true)
-            }
-          })
-          .finally(() => {
-            if (postSaveValidationGeneration.current === validationGeneration) {
-              setBusyProviderId(undefined)
-            }
-          })
+      if (canTestConnection) {
+        const result = await saveValidatedProvider(prospectiveRequest())
+        if (generation !== formOperationGeneration.current) return
+        if (!result.providerId) {
+          setConnectionResult(result.validation)
+          return
+        }
+        setSavedProviderWarning(
+          result.runtimeReconnectFailed ? 'reconnect' : result.refreshFailed ? 'refresh' : undefined
+        )
+      } else {
+        // Subscription authentication continues through its existing flow.
+        const providerId = await persistProvider(prospectiveRequest())
+        if (generation !== formOperationGeneration.current) return
+        if (providerId) {
+          const validationGeneration = ++postSaveValidationGeneration.current
+          postSaveValidationProviderId.current = providerId
+          setBusyProviderId(providerId)
+          void validateProvider({ providerId })
+            .then(() => {
+              if (postSaveValidationGeneration.current === validationGeneration) {
+                postSaveValidationProviderId.current = undefined
+                setPostSaveValidationFailed(false)
+              }
+            })
+            .catch(() => {
+              if (postSaveValidationGeneration.current === validationGeneration) {
+                setPostSaveValidationFailed(true)
+              }
+            })
+            .finally(() => {
+              if (postSaveValidationGeneration.current === validationGeneration)
+                setBusyProviderId(undefined)
+            })
+        }
       }
+      // The completed write has settled this draft. It must not prompt or honor an older leave request.
+      providerEditorLeaveState.current = null
+      skillLeaveReturnFocus.current = null
+      setPendingSkillLeave(null)
+      closeForm()
     } catch (error) {
+      if (generation !== formOperationGeneration.current) return
       setStatusOk(false)
       setStatusMessage(
         error instanceof Error
@@ -1027,7 +1260,10 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           : t('Could not save provider.')
       )
     } finally {
-      setIsSaving(false)
+      if (generation === formOperationGeneration.current) {
+        savingOperation.current = false
+        setIsSaving(false)
+      }
     }
   }
 
@@ -1067,16 +1303,23 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       onOpenChange={(next) => {
         if (next) return
         setIsMobileNavOpen(false)
-        onClose()
+        requestClose()
       }}
     >
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none" />
         <Dialog.Content
-          data-slot="settings-surface"
+          data-slot="settings-dialog"
+          className="pointer-events-none fixed inset-0 z-50 outline-none data-[state=closed]:animate-out motion-reduce:data-[state=closed]:animate-none"
           onOpenAutoFocus={() => {
+            const activeElement = document.activeElement
+            const capturedReturnFocus = takeSettingsReturnFocusTarget()
+            if (returnFocusRef.current?.isConnected) return
             returnFocusRef.current =
-              document.activeElement instanceof HTMLElement ? document.activeElement : null
+              capturedReturnFocus ??
+              (activeElement instanceof HTMLElement && activeElement !== document.body
+                ? activeElement
+                : null)
           }}
           onCloseAutoFocus={(event) => {
             const returnFocus = returnFocusRef.current
@@ -1092,490 +1335,405 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
           // closed intentionally via the ✕ button or Escape.
           onInteractOutside={(event) => event.preventDefault()}
           onEscapeKeyDown={(event) => {
-            if (!isMobileNavOpen) return
+            if (
+              event.target instanceof Element &&
+              event.target.closest('[data-testid="permission-undo-stack"]')
+            ) {
+              event.preventDefault()
+              return
+            }
+            // Radix observes Escape in capture, before the inline review can cancel itself.
+            if (
+              event.target instanceof Element &&
+              event.target.closest('[data-slot="batch-manage-review"]')
+            ) {
+              event.preventDefault()
+              return
+            }
+            // Global search: the combobox's own Escape closes the results list first; keep that
+            // keypress from also dismissing the whole dialog (Radix listens in capture phase).
+            if (
+              event.target instanceof HTMLElement &&
+              event.target.closest('[data-slot="settings-global-search"]') &&
+              document.querySelector('[data-slot="settings-global-search"] [role="listbox"]')
+            ) {
+              event.preventDefault()
+              return
+            }
+            if (!isMobileNavOpenRef.current) return
             event.preventDefault()
             setIsMobileNavOpen(false)
           }}
-          className={cn(
-            'fixed z-50 flex overflow-hidden overscroll-contain rounded-xl border border-border bg-card text-foreground shadow-dialog outline-none data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none',
-            isExpanded
-              ? 'inset-0 rounded-none md:inset-4 md:rounded-xl'
-              : 'inset-0 h-[100dvh] w-screen rounded-none md:bottom-auto md:left-1/2 md:right-auto md:top-1/2 md:h-[min(760px,calc(100vh-2rem))] md:w-[min(1080px,calc(100vw-2rem))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl'
-          )}
         >
-          {/* Radix requires a Title/Description for a11y; the visible panel title lives in the header. */}
-          <Dialog.Title className="sr-only">{t('Settings')}</Dialog.Title>
-          <Dialog.Description className="sr-only">
-            {t('Manage your agent runtime and model providers.')}
-          </Dialog.Description>
-
-          {isMobileNavOpen ? (
-            <button
-              type="button"
-              className="fixed inset-0 z-[65] bg-black/45 md:hidden"
-              aria-label={t('Close settings navigation')}
-              tabIndex={-1}
-              onClick={() => setIsMobileNavOpen(false)}
-            />
-          ) : null}
-
-          {/* Left navigation becomes an off-canvas drawer on narrow browser screens. */}
-          <FocusScope
-            asChild
-            loop={isMobile && isMobileNavOpen}
-            trapped={isMobile && isMobileNavOpen}
+          <motion.div
+            layoutRoot
+            data-slot="settings-surface"
+            data-state={open ? 'open' : 'closed'}
+            className={cn(
+              'pointer-events-auto fixed z-50 flex overflow-hidden overscroll-contain rounded-xl border border-border bg-card text-foreground shadow-dialog outline-none data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:fill-mode-forwards motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none',
+              isExpanded
+                ? 'inset-0 rounded-none md:inset-4 md:rounded-xl'
+                : 'inset-0 h-[100dvh] w-screen rounded-none md:bottom-auto md:left-1/2 md:right-auto md:top-1/2 md:h-[min(688px,calc(100vh-2rem))] md:w-[min(960px,calc(100vw-2rem))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl'
+            )}
           >
-            <div
-              data-slot="mobile-settings-navigation"
-              role={isMobile && isMobileNavOpen ? 'dialog' : undefined}
-              aria-modal={isMobile && isMobileNavOpen ? true : undefined}
-              aria-label={isMobile && isMobileNavOpen ? t('Settings navigation') : undefined}
-              className="contents"
-              onKeyDown={(event) => {
-                if (event.key !== 'Escape' || !isMobileNavOpen) return
-                event.preventDefault()
-                event.stopPropagation()
-                setIsMobileNavOpen(false)
-              }}
+            {/* Radix requires a Title/Description for a11y; the visible panel title lives in the header. */}
+            <Dialog.Title className="sr-only">{t('Settings')}</Dialog.Title>
+            <Dialog.Description className="sr-only">
+              {t('Manage your agent runtime and model providers.')}
+            </Dialog.Description>
+
+            {isMobileNavOpen ? (
+              <button
+                type="button"
+                className="fixed inset-0 z-[65] bg-black/45 md:hidden"
+                aria-label={t('Close settings navigation')}
+                tabIndex={-1}
+                onClick={() => setIsMobileNavOpen(false)}
+              />
+            ) : null}
+
+            {/* Left navigation becomes an off-canvas drawer on narrow browser screens. */}
+            <FocusScope
+              asChild
+              loop={isMobile && isMobileNavOpen}
+              trapped={isMobile && isMobileNavOpen}
             >
-              <nav
-                ref={mobileNavRef}
-                aria-label={t('Settings')}
-                aria-hidden={isMobile && !isMobileNavOpen ? true : undefined}
-                inert={isMobile && !isMobileNavOpen ? true : undefined}
-                className={cn(
-                  'fixed inset-y-0 left-0 z-[70] flex min-h-0 w-[min(86vw,320px)] shrink-0 flex-col overflow-hidden border-r border-border bg-background transition-transform duration-200 ease-out md:static md:z-auto md:w-56 md:translate-x-0',
-                  isMobileNavOpen ? 'translate-x-0' : '-translate-x-full'
-                )}
+              <div
+                data-slot="mobile-settings-navigation"
+                role={isMobile && isMobileNavOpen ? 'dialog' : undefined}
+                aria-modal={isMobile && isMobileNavOpen ? true : undefined}
+                aria-label={isMobile && isMobileNavOpen ? t('Settings navigation') : undefined}
+                className="contents"
+                onKeyDown={(event) => {
+                  if (event.key !== 'Escape' || !isMobileNavOpen) return
+                  event.preventDefault()
+                  event.stopPropagation()
+                  setIsMobileNavOpen(false)
+                }}
               >
-                <div
-                  data-slot="settings-navigation-scroll"
-                  className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto overscroll-contain p-4"
-                >
-                  {SETTINGS_GROUPS.map((group) => (
-                    <div key={group.labelKey} className="flex flex-col gap-0.5">
-                      <div className="px-2 pb-1 pt-1 text-xs font-medium text-muted-foreground">
-                        {t(group.labelKey)}
-                      </div>
-                      <ul className="flex flex-col gap-0.5">
-                        {group.panels.map(({ id, labelKey, Icon }) => {
-                          const isActive = activePanel === id
-                          return (
-                            <li key={id}>
-                              <button
-                                type="button"
-                                aria-current={isActive ? 'page' : undefined}
-                                onClick={() => {
-                                  setIsMobileNavOpen(false)
-                                  navigatePanel(id)
-                                }}
-                                className={`flex min-h-10 w-full items-center gap-3 rounded-md px-3 text-left text-sm ${
-                                  isActive
-                                    ? 'bg-primary/10 font-medium text-primary'
-                                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                                }`}
-                              >
-                                <Icon className="size-4 shrink-0" aria-hidden="true" />
-                                <span className="min-w-0 flex-1 truncate">{t(labelKey)}</span>
-                              </button>
-                            </li>
-                          )
-                        })}
-                      </ul>
-                    </div>
-                  ))}
-                </div>
-              </nav>
-            </div>
-          </FocusScope>
-
-          {/* Right column: header bar + scrollable panel content. */}
-          <div
-            data-slot="settings-main"
-            aria-hidden={isMobile && isMobileNavOpen ? true : undefined}
-            inert={isMobile && isMobileNavOpen ? true : undefined}
-            className="flex min-h-0 min-w-0 flex-1 flex-col bg-card"
-          >
-            <TooltipProvider delayDuration={300}>
-              <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border bg-card px-2 md:px-3">
-                <div className="flex min-w-0 items-center gap-1">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        ref={mobileNavTriggerRef}
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        onClick={() => setIsMobileNavOpen(true)}
-                        aria-label={t('Open settings navigation')}
-                        className="shrink-0 rounded-lg text-muted-foreground md:hidden"
-                      >
-                        <Menu className="size-4" aria-hidden="true" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>{t('Navigation')}</TooltipContent>
-                  </Tooltip>
-                  {/* Browser-like history controls for the settings navigation. */}
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        onClick={goBack}
-                        disabled={!canGoBack}
-                        aria-label={t('Back', { context: 'step' })}
-                        className="shrink-0 rounded-lg text-muted-foreground disabled:opacity-40"
-                      >
-                        <ArrowLeft className="size-4" aria-hidden="true" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>{t('Back', { context: 'step' })}</TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        onClick={goForward}
-                        disabled={!canGoForward}
-                        aria-label={t('Forward')}
-                        className="shrink-0 rounded-lg text-muted-foreground disabled:opacity-40"
-                      >
-                        <ArrowRight className="size-4" aria-hidden="true" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>{t('Forward')}</TooltipContent>
-                  </Tooltip>
-                  <span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-border" />
-                  {breadcrumb !== null ? (
-                    <div className="flex min-w-0 items-center gap-1.5 text-sm font-semibold">
-                      <button
-                        type="button"
-                        onClick={() => navigate(breadcrumb.rootTo)}
-                        aria-label={t('Back to {{panel}}', {
-                          panel: t(PANEL_NAME_LOWER[breadcrumb.rootLabelKey])
-                        })}
-                        className="shrink-0 text-muted-foreground transition-colors motion-reduce:transition-none hover:text-foreground"
-                      >
-                        {t(breadcrumb.rootLabelKey)}
-                      </button>
-                      {breadcrumb.parents?.map((parent) => (
-                        <span key={parent.label} className="contents">
-                          <span className="shrink-0 text-muted-foreground" aria-hidden="true">
-                            ›
-                          </span>
-                          <button
-                            type="button"
-                            onClick={parent.onClick ?? (() => navigate(parent.to))}
-                            aria-label={parent.ariaLabel}
-                            className="shrink-0 text-muted-foreground transition-colors motion-reduce:transition-none hover:text-foreground"
-                          >
-                            {parent.label}
-                          </button>
-                        </span>
-                      ))}
-                      <span className="shrink-0 text-muted-foreground" aria-hidden="true">
-                        ›
-                      </span>
-                      <span className="truncate text-foreground">{breadcrumb.leaf}</span>
-                    </div>
-                  ) : (
-                    <h2 className="truncate text-sm font-semibold text-foreground">
-                      {(() => {
-                        const panel = SETTINGS_PANELS.find((item) => item.id === activePanel)
-                        return panel ? t(panel.labelKey) : null
-                      })()}
-                    </h2>
+                <nav
+                  ref={mobileNavRef}
+                  aria-label={t('Settings')}
+                  aria-hidden={isMobile && !isMobileNavOpen ? true : undefined}
+                  inert={isMobile && !isMobileNavOpen ? true : undefined}
+                  className={cn(
+                    'fixed inset-y-0 left-0 z-[70] flex min-h-0 w-[min(86vw,320px)] shrink-0 flex-col overflow-hidden border-r border-border bg-background transition-transform duration-200 ease-out md:static md:z-auto md:w-48 md:translate-x-0',
+                    isMobileNavOpen ? 'translate-x-0' : '-translate-x-full'
                   )}
-                </div>
-                <div className="flex shrink-0 items-center gap-1">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        onClick={() => setIsExpanded((value) => !value)}
-                        aria-label={isExpanded ? t('Restore') : t('Maximize')}
-                        className="rounded-lg text-muted-foreground"
-                      >
-                        {isExpanded ? (
-                          <Minimize2 className="size-4" aria-hidden="true" />
-                        ) : (
-                          <Maximize2 className="size-4" aria-hidden="true" />
-                        )}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>{isExpanded ? t('Restore') : t('Maximize')}</TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <Dialog.Close asChild>
+                >
+                  <div
+                    data-slot="settings-navigation-scroll"
+                    className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain p-3"
+                  >
+                    {isMobile ? (
+                      <div data-slot="settings-global-search" className="mb-4">
+                        <SettingsGlobalSearch
+                          panels={SETTINGS_PANELS}
+                          onNavigate={(panel, onNavigated) => {
+                            navigatePanel(panel, () => {
+                              setIsMobileNavOpen(false)
+                              onNavigated()
+                            })
+                          }}
+                        />
+                      </div>
+                    ) : null}
+                    {SETTINGS_GROUPS.map((group) => (
+                      <div key={group.labelKey} className="flex flex-col gap-0.5">
+                        <div className="px-2 pb-1 pt-1 text-xs font-medium text-muted-foreground">
+                          {t(group.labelKey)}
+                        </div>
+                        <ul className="flex flex-col gap-0.5">
+                          {group.panels.map(({ id, labelKey, Icon }) => {
+                            const isActive = activePanel === id
+                            return (
+                              <li key={id}>
+                                <button
+                                  type="button"
+                                  aria-current={isActive ? 'page' : undefined}
+                                  onClick={() => {
+                                    navigatePanel(id, () => setIsMobileNavOpen(false))
+                                  }}
+                                  className={`flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-sm ${
+                                    isActive
+                                      ? 'bg-muted font-medium text-foreground'
+                                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                                  }`}
+                                >
+                                  <Icon
+                                    className="size-4 shrink-0 text-muted-foreground"
+                                    aria-hidden="true"
+                                  />
+                                  <span className="min-w-0 flex-1 truncate">{t(labelKey)}</span>
+                                </button>
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                  <div
+                    data-slot="settings-navigation-footer"
+                    className="shrink-0 border-t border-border px-3 py-2"
+                  >
+                    <a
+                      href={APP.links.githubFeedback}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+                    >
+                      <MessageSquare
+                        className="size-4 shrink-0 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                      <span className="min-w-0 flex-1 truncate">{t('Feedback')}</span>
+                    </a>
+                  </div>
+                </nav>
+              </div>
+            </FocusScope>
+
+            {/* Right column: header bar + scrollable panel content. */}
+            <div
+              data-slot="settings-main"
+              aria-hidden={isMobile && isMobileNavOpen ? true : undefined}
+              inert={isMobile && isMobileNavOpen ? true : undefined}
+              className="flex min-h-0 min-w-0 flex-1 flex-col bg-card"
+            >
+              <TooltipProvider>
+                <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border bg-card px-2 md:px-3">
+                  <div className="flex min-w-0 items-center gap-1">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          ref={mobileNavTriggerRef}
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => setIsMobileNavOpen(true)}
+                          aria-label={t('Open settings navigation')}
+                          className="shrink-0 rounded-lg text-muted-foreground md:hidden"
+                        >
+                          <Menu className="size-4" aria-hidden="true" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>{t('Navigation')}</TooltipContent>
+                    </Tooltip>
+                    {/* Browser-like history controls for the settings navigation. */}
+                    <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
                           type="button"
                           variant="ghost"
                           size="icon-sm"
-                          aria-label={t('Close settings')}
-                          className="rounded-lg text-muted-foreground"
+                          onClick={goBack}
+                          disabled={!canGoBack}
+                          aria-label={t('Back', { context: 'step' })}
+                          className="shrink-0 rounded-lg text-muted-foreground disabled:opacity-40"
                         >
-                          <X className="size-4" aria-hidden="true" />
+                          <ArrowLeft className="size-4" aria-hidden="true" />
                         </Button>
                       </TooltipTrigger>
-                    </Dialog.Close>
-                    <TooltipContent>{t('Close settings')}</TooltipContent>
-                  </Tooltip>
-                </div>
-              </div>
-
-              {preflightFailed ? (
-                <div
-                  role="alert"
-                  className="mx-5 mt-3 flex items-center gap-3 text-sm text-destructive"
-                >
-                  <p>
-                    {t('Could not refresh environment readiness. Saved settings are unchanged.')}
-                  </p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void refreshPreflight().catch(() => undefined)}
-                  >
-                    {t('Retry preflight')}
-                  </Button>
-                </div>
-              ) : null}
-
-              {settingsWriteError ? (
-                <div
-                  data-slot="settings-write-error"
-                  role="alert"
-                  className="mx-3 mt-3 flex items-start gap-2 rounded-lg border border-danger-000/30 bg-danger-000/10 px-3 py-2 text-xs text-danger-000"
-                >
-                  <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-                  <p className="min-w-0 flex-1 break-words py-0.5">
-                    {settingsWriteError ===
-                    'Could not save Vision model. Refresh the model catalog and try again.'
-                      ? t('Could not save Vision model. Refresh the model catalog and try again.')
-                      : settingsWriteError}
-                  </p>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={t('Dismiss settings error')}
-                        className="-my-1 -mr-1 shrink-0 rounded-md text-danger-000 hover:bg-danger-000/10 hover:text-danger-000"
-                        onClick={clearSettingsWriteError}
-                      >
-                        <X className="size-3.5" aria-hidden="true" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>{t('Close')}</TooltipContent>
-                  </Tooltip>
-                </div>
-              ) : null}
-            </TooltipProvider>
-
-            <div data-slot="settings-content-scroll" className="min-h-0 flex-1 overflow-y-auto">
-              <div
-                className={cn(
-                  'mx-auto w-full max-w-[880px]',
-                  activePanel === 'memory' || activePanel === 'tags' ? 'h-full' : 'min-h-full'
-                )}
-              >
-                <SettingsPanelLoadingBoundary
-                  panelKey={
-                    activePanel === 'connectors' &&
-                    (connectorsView.kind === 'add' || connectorsView.kind === 'edit') &&
-                    connectorsView.credentialView === 'create'
-                      ? `${activePanel}:${Math.max(0, historyIndex - 1)}`
-                      : `${activePanel}:${historyIndex}`
-                  }
-                  onClose={onClose}
-                >
-                  {activePanel === 'skills' ? (
-                    <SkillsPanel
-                      view={skillsView}
-                      onNavigate={navigateSkills}
-                      onOpenGitHubCredential={() =>
-                        navigate({
-                          panel: 'credentials',
-                          view: { kind: 'service', serviceId: 'github' }
-                        })
-                      }
-                      onOpenTag={navigateTag}
-                      onOpenSpecialist={(usage) =>
-                        navigate({
-                          panel: 'specialists',
-                          view:
-                            usage.kind === 'builtin'
-                              ? { kind: 'builtin', id: usage.id }
-                              : { kind: 'edit', id: usage.id }
-                        })
-                      }
-                      canImportInstalledSkills={canImportInstalledSkills}
-                    />
-                  ) : activePanel === 'specialists' ? (
-                    <SpecialistsPanel
-                      view={specialistsView}
-                      onNavigate={navigateSpecialists}
-                      onOpenTag={navigateTag}
-                      onOpenSkillDetail={(skillId) =>
-                        navigate({
-                          panel: 'skills',
-                          view: { kind: 'detail', id: skillId }
-                        })
-                      }
-                      onOpenConnectorDetail={(connectorId) =>
-                        navigate({
-                          panel: 'connectors',
-                          view: customServers.some((server) => server.id === connectorId)
-                            ? { kind: 'edit', id: connectorId }
-                            : { kind: 'detail', id: connectorId }
-                        })
-                      }
-                    />
-                  ) : activePanel === 'tags' ? (
-                    <TagsPanel
-                      view={tagsView}
-                      onNavigate={navigateTags}
-                      onSelectedTagChange={recordSelectedTag}
-                      onOpenResource={(reference) => {
-                        if (reference.resourceType === 'catalog.skill') {
-                          navigate({
-                            panel: 'skills',
-                            view: { kind: 'detail', id: reference.resourceId }
-                          })
-                          return
-                        }
-                        if (reference.resourceType === 'catalog.connector') {
-                          navigate({
-                            panel: 'connectors',
-                            view: customServers.some((server) => server.id === reference.resourceId)
-                              ? { kind: 'edit', id: reference.resourceId }
-                              : { kind: 'detail', id: reference.resourceId }
-                          })
-                          return
-                        }
-                        if (reference.resourceType === 'literature.item') {
-                          useNavigationStore
-                            .getState()
-                            .openLiteratureItem(reference.resourceId, 'user')
-                          onClose()
-                          return
-                        }
-                        const specialist = specialistItems.find(
-                          (item) => item.id === reference.resourceId
-                        )
-                        navigate({
-                          panel: 'specialists',
-                          view:
-                            specialist?.kind === 'builtin'
-                              ? { kind: 'builtin', id: reference.resourceId }
-                              : { kind: 'edit', id: reference.resourceId }
-                        })
-                      }}
-                    />
-                  ) : activePanel === 'memory' ? (
-                    <MemoryPanel
-                      view={memoryView}
-                      onNavigate={navigateMemory}
-                      onOpenProject={(projectId) => {
-                        useNavigationStore.getState().openProject(projectId, 'user', onClose)
-                      }}
-                    />
-                  ) : activePanel === 'connectors' ? (
-                    connectorsView.kind === 'detail' ? (
-                      <div>
-                        <ResourceTagSummary
-                          reference={{
-                            resourceType: 'catalog.connector',
-                            resourceId: connectorsView.id
-                          }}
-                          className="px-5 pt-5"
-                          onOpenTag={navigateTag}
-                        />
-                        <ConnectorDetailView
-                          key={connectorsView.id}
-                          id={connectorsView.id}
-                          onManagePermissions={() => navigatePanel('permissions')}
-                          onManageCredentials={() =>
-                            navigate({
-                              panel: 'credentials',
-                              view: { kind: 'service', serviceId: 'openalex' }
-                            })
-                          }
-                        />
-                      </div>
-                    ) : connectorsView.kind === 'add' ? (
-                      <ConnectorAddForm
-                        initialTransport={connectorsView.transport}
-                        initialTemplate={connectorsView.template}
-                        credentialViewOpen={connectorsView.credentialView === 'create'}
-                        onCredentialViewChange={(open) => {
-                          if (open) {
-                            navigateConnectors({ ...connectorsView, credentialView: 'create' })
-                          } else {
-                            goBack()
-                          }
-                        }}
-                        onDone={() => navigateConnectors({ kind: 'list' })}
-                        onCancel={() => navigateConnectors({ kind: 'list' })}
-                      />
-                    ) : connectorsView.kind === 'import' ? (
-                      <ConnectorImportView
-                        onUse={(template) =>
-                          navigateConnectors({
-                            kind: 'add',
-                            transport: template.transport === 'stdio' ? 'local' : 'remote',
-                            template
-                          })
-                        }
-                        onCancel={() => navigateConnectors({ kind: 'list' })}
-                      />
-                    ) : connectorsView.kind === 'export' ? (
-                      <ConnectorExportView
-                        key={connectorsView.id}
-                        id={connectorsView.id}
-                        onDone={() => navigateConnectors({ kind: 'list' })}
-                      />
-                    ) : connectorsView.kind === 'edit' ? (
-                      <div>
-                        {connectorsView.credentialView !== 'create' ? (
-                          <ResourceTagSummary
-                            reference={{
-                              resourceType: 'catalog.connector',
-                              resourceId: connectorsView.id
-                            }}
-                            className="px-5 pt-5"
-                            onOpenTag={navigateTag}
-                          />
-                        ) : null}
-                        <ConnectorAddForm
-                          editServer={customServers.find((s) => s.id === connectorsView.id)}
-                          editServerId={connectorsView.id}
-                          credentialViewOpen={connectorsView.credentialView === 'create'}
-                          onCredentialViewChange={(open) => {
-                            if (open) {
-                              navigateConnectors({ ...connectorsView, credentialView: 'create' })
-                            } else {
-                              goBack()
-                            }
-                          }}
-                          onDone={() => navigateConnectors({ kind: 'list' })}
-                          onCancel={() => navigateConnectors({ kind: 'list' })}
-                        />
+                      <TooltipContent>{t('Back', { context: 'step' })}</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={goForward}
+                          disabled={!canGoForward}
+                          aria-label={t('Forward')}
+                          className="shrink-0 rounded-lg text-muted-foreground disabled:opacity-40"
+                        >
+                          <ArrowRight className="size-4" aria-hidden="true" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>{t('Forward')}</TooltipContent>
+                    </Tooltip>
+                    <span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-border" />
+                    {breadcrumb !== null ? (
+                      <div className="flex min-w-0 items-center gap-1.5 text-sm font-semibold">
+                        <button
+                          type="button"
+                          onClick={() => navigate(breadcrumb.rootTo)}
+                          aria-label={t('Back to {{panel}}', {
+                            panel: t(PANEL_NAME_LOWER[breadcrumb.rootLabelKey])
+                          })}
+                          className="shrink-0 text-muted-foreground transition-colors motion-reduce:transition-none hover:text-foreground"
+                        >
+                          {t(breadcrumb.rootLabelKey)}
+                        </button>
+                        {breadcrumb.parents?.map((parent) => (
+                          <span key={parent.label} className="contents">
+                            <span className="shrink-0 text-muted-foreground" aria-hidden="true">
+                              ›
+                            </span>
+                            <button
+                              type="button"
+                              onClick={parent.onClick ?? (() => navigate(parent.to))}
+                              aria-label={parent.ariaLabel}
+                              className="shrink-0 text-muted-foreground transition-colors motion-reduce:transition-none hover:text-foreground"
+                            >
+                              {parent.label}
+                            </button>
+                          </span>
+                        ))}
+                        <span className="shrink-0 text-muted-foreground" aria-hidden="true">
+                          ›
+                        </span>
+                        <span className="truncate text-foreground">{breadcrumb.leaf}</span>
                       </div>
                     ) : (
-                      <ConnectorsPanel
-                        onNavigate={navigateConnectors}
-                        onOpenCredentials={() =>
+                      <h2 className="truncate text-sm font-semibold text-foreground">
+                        {(() => {
+                          const panel = SETTINGS_PANELS.find((item) => item.id === activePanel)
+                          return panel ? t(panel.labelKey) : null
+                        })()}
+                      </h2>
+                    )}
+                  </div>
+                  {!isMobile ? (
+                    <div
+                      data-slot="settings-global-search"
+                      className="min-w-0 flex-1 px-2 md:max-w-xs"
+                    >
+                      <SettingsGlobalSearch panels={SETTINGS_PANELS} onNavigate={navigatePanel} />
+                    </div>
+                  ) : null}
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => setIsExpanded((value) => !value)}
+                          aria-label={isExpanded ? t('Restore') : t('Maximize')}
+                          className="rounded-lg text-muted-foreground"
+                        >
+                          {isExpanded ? (
+                            <Minimize2 className="size-4" aria-hidden="true" />
+                          ) : (
+                            <Maximize2 className="size-4" aria-hidden="true" />
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>{isExpanded ? t('Restore') : t('Maximize')}</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <Dialog.Close asChild>
+                        <TooltipTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label={t('Close settings')}
+                            className="rounded-lg text-muted-foreground"
+                          >
+                            <X className="size-4" aria-hidden="true" />
+                          </Button>
+                        </TooltipTrigger>
+                      </Dialog.Close>
+                      <TooltipContent>{t('Close settings')}</TooltipContent>
+                    </Tooltip>
+                  </div>
+                </div>
+
+                {preflightFailed ? (
+                  <Notice
+                    inline
+                    level="error"
+                    role="alert"
+                    className="mx-3 mt-3"
+                    description={t(
+                      'Could not refresh environment readiness. Saved settings are unchanged.'
+                    )}
+                    primaryButton={{
+                      label: t('Retry preflight'),
+                      onClick: () => void refreshPreflight().catch(() => undefined)
+                    }}
+                  />
+                ) : null}
+
+                {settingsWriteError ? (
+                  <div data-slot="settings-write-error" className="mx-3 mt-3">
+                    <ErrorNotice
+                      tone="amber"
+                      role="alert"
+                      icon={AlertTriangle}
+                      title={t('Settings could not be saved')}
+                      description={settingsWriteError
+                        .split(' ')
+                        .map((code) => {
+                          const copyKey = SETTINGS_WRITE_ERROR_COPY[code as SettingsWriteErrorCode]
+                          return copyKey ? t(copyKey) : code
+                        })
+                        .join(' ')}
+                      dismissButton={{
+                        label: t('Dismiss settings error'),
+                        onClick: clearSettingsWriteError
+                      }}
+                    />
+                  </div>
+                ) : null}
+              </TooltipProvider>
+
+              <motion.div
+                layoutScroll
+                data-slot="settings-content-scroll"
+                data-settings-active-panel={activePanel}
+                className="min-h-0 flex-1 overflow-y-auto"
+              >
+                <div
+                  className={cn(
+                    'mx-auto w-full',
+                    'max-w-[880px]',
+                    (activePanel === 'model' &&
+                      (modelView.kind === 'classification-create' ||
+                        modelView.kind === 'classification-edit')) ||
+                      activePanel === 'memory' ||
+                      activePanel === 'tags'
+                      ? 'h-full'
+                      : 'min-h-full'
+                  )}
+                >
+                  <SettingsPanelLoadingBoundary
+                    resetKey={
+                      activePanel === 'model' ? `${historyIndex}:${modelView.kind}` : undefined
+                    }
+                    panelKey={
+                      activePanel === 'model' &&
+                      (modelView.kind === 'list' ||
+                        modelView.kind === 'local-models' ||
+                        modelView.kind === 'classification')
+                        ? 'model:tabs'
+                        : activePanel === 'connectors' &&
+                            (connectorsView.kind === 'add' || connectorsView.kind === 'edit') &&
+                            connectorsView.credentialView === 'create'
+                          ? `${activePanel}:${Math.max(0, historyIndex - 1)}`
+                          : `${activePanel}:${historyIndex}`
+                    }
+                    onClose={requestClose}
+                  >
+                    {activePanel === 'skills' ? (
+                      <SkillsPanel
+                        view={skillsView}
+                        onNavigate={navigateSkills}
+                        onEditorLeaveStateChange={onSkillEditorLeaveStateChange}
+                        onSaved={() => {
+                          // Only the completed write can bypass the dirty/pending guard.
+                          onSkillEditorLeaveStateChange(null)
+                          skillLeaveReturnFocus.current = null
+                          setPendingSkillLeave(null)
+                          navigateSkills({ kind: 'list' })
+                        }}
+                        onOpenGitHubCredential={() =>
                           navigate({
                             panel: 'credentials',
-                            view: { kind: 'service', serviceId: 'literature' }
+                            view: { kind: 'service', serviceId: 'github' }
                           })
                         }
                         onOpenTag={navigateTag}
@@ -1588,183 +1746,584 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
                                 : { kind: 'edit', id: usage.id }
                           })
                         }
+                        canImportInstalledSkills={canImportInstalledSkills}
                       />
-                    )
-                  ) : activePanel === 'compute' ? (
-                    computeView.kind === 'add' ? (
-                      <ComputeAddForm
-                        onCreated={(providerId) => navigateCompute({ kind: 'detail', providerId })}
-                        onCancel={() => navigateCompute({ kind: 'list' })}
-                      />
-                    ) : computeView.kind === 'detail' ? (
-                      <ComputeHostDetail
-                        providerId={computeView.providerId}
-                        authenticationFocus={computeView.authenticationFocus}
-                        authenticationRequestId={computeView.authenticationRequestId}
-                      />
-                    ) : (
-                      <ComputePanel onNavigate={navigateCompute} />
-                    )
-                  ) : activePanel === 'credentials' ? (
-                    <CredentialsPanel
-                      view={credentialsView}
-                      onNavigate={navigateCredentials}
-                      onOpenConnector={(id) =>
-                        navigate({ panel: 'connectors', view: { kind: 'edit', id } })
-                      }
-                      onOpenProvider={(provider) => openEdit(provider)}
-                    />
-                  ) : activePanel === 'storage' ? (
-                    <StoragePanel
-                      onContinueToAgent={() => {
-                        navigatePanel('agent')
-                      }}
-                    />
-                  ) : activePanel === 'permissions' ? (
-                    <PermissionsPanel
-                      onOpenSession={onOpenSession}
-                      onOpenConnector={(id) =>
-                        navigateConnectors(
-                          customServers.some((server) => server.id === id)
-                            ? { kind: 'edit', id }
-                            : { kind: 'detail', id }
-                        )
-                      }
-                    />
-                  ) : activePanel === 'archived' ? (
-                    <ArchivedPanel
-                      view={archivedView}
-                      onNavigate={navigateArchived}
-                      canDeleteProjects={canDeleteProjects}
-                      hasCompleteSessionCatalog={hasCompleteSessionCatalog}
-                      catalogRecovery={catalogRecovery}
-                      onRetryCatalogRecovery={onRetryCatalogRecovery}
-                    />
-                  ) : activePanel === 'runtimes' ? (
-                    <RuntimesPanel
-                      title={t('Notebook runtimes')}
-                      description={t(
-                        'Choose which Python and R environments notebooks and the Agent can use. App-managed environments are enabled by default.'
-                      )}
-                      onOpenNetworkProtection={
-                        notebookNetworkAvailable
-                          ? () => navigateNetwork({ kind: 'domains' })
-                          : undefined
-                      }
-                    />
-                  ) : activePanel === 'network' ? (
-                    <NetworkPanel
-                      view={networkView}
-                      onNavigate={navigateNetwork}
-                      notebookNetworkAvailable={notebookNetworkAvailable}
-                    />
-                  ) : activePanel === 'usage' ? (
-                    <TokenUsagePanel sessions={sessions} projects={projects} />
-                  ) : activePanel === 'general' ? (
-                    <GeneralPanel />
-                  ) : activePanel === 'agent' ? (
-                    <AgentPanel
-                      title={t('Agent framework')}
-                      description={t(
-                        "Choose which coding-agent backend drives your sessions. Select a card to switch; switching starts a fresh agent session, and open conversations have their transcript replayed to the new backend. The active runtime can't be uninstalled — switch to the other one first."
-                      )}
-                    />
-                  ) : isProviderFormOpen ? (
-                    // Add/edit provider is a secondary page reached via the shared back/forward arrows.
-                    <div className="p-5">
-                      {/* Secret writes fail closed when the OS keychain is unavailable. */}
-                      {!encryptionAvailable ? (
-                        <p className="mb-4 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-                          {t(
-                            'Secure key storage is unavailable. API keys cannot be saved until the system keychain is unlocked or authorized.'
-                          )}
-                        </p>
-                      ) : null}
-                      {providerEditTargetMissing ? (
-                        <p
-                          className="mb-4 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
-                          role="alert"
-                        >
-                          {t('This Provider no longer exists. Your draft has not been saved.')}
-                        </p>
-                      ) : null}
-                      <ProviderForm
-                        value={formValue}
-                        onChange={(patch) => setFormValue((current) => ({ ...current, ...patch }))}
-                        hasStoredKey={editingProvider?.hasKey}
-                        maskedKey={editingProvider?.maskedKey}
-                        needsKey={editingProvider?.needsKey}
-                        errors={formErrors}
-                        supportedModels={editingProvider?.models}
-                        onRefreshModels={
-                          editingProvider?.type === 'official' &&
-                          editingProvider.hasKey &&
-                          editingProvider.vendorId &&
-                          resolveVendorModelsUrl(editingProvider.vendorId, editingProvider.region)
-                            ? () => void handleRefreshModels(editingProvider.id)
-                            : undefined
+                    ) : activePanel === 'specialists' ? (
+                      <SpecialistsPanel
+                        view={specialistsView}
+                        onNavigate={navigateSpecialists}
+                        onOpenTag={navigateTag}
+                        onOpenSkillDetail={(skillId) =>
+                          navigate({
+                            panel: 'skills',
+                            view: { kind: 'detail', id: skillId }
+                          })
                         }
-                        isRefreshingModels={isRefreshingModels}
-                        disabled={isSaving}
-                        encryptionAvailable={encryptionAvailable}
-                        showCodexSubscriptions={
-                          agentFrameworkId === 'codex' && modelView.kind === 'create'
+                        onOpenConnectorDetail={(connectorId) =>
+                          navigate({
+                            panel: 'connectors',
+                            view: customServers.some((server) => server.id === connectorId)
+                              ? { kind: 'edit', id: connectorId }
+                              : { kind: 'detail', id: connectorId }
+                          })
                         }
-                        showClaudeIsolated={
-                          agentFrameworkId === 'claude-code' && modelView.kind === 'create'
-                        }
-                        defaultCustomApiEndpoint={customApiEndpoint}
                       />
-                      {statusMessage ? (
-                        <p
-                          className={`mt-3 text-sm ${statusOk ? 'text-primary' : 'text-destructive'}`}
-                          role="alert"
-                        >
-                          {statusMessage}
-                        </p>
-                      ) : null}
-                      <div className="mt-6 flex justify-end gap-2">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          onClick={closeForm}
-                          disabled={isSaving}
-                        >
-                          {t('Cancel')}
-                        </Button>
-                        <Button type="button" onClick={() => void handleSave()} disabled={!canSave}>
-                          {isSaving ? t('Saving…') : t('Save')}
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      {postSaveValidationFailed ? (
-                        <p className="mx-5 mt-5 text-sm text-destructive" role="alert">
-                          {t('Could not test the provider connection.')}
-                        </p>
-                      ) : null}
-                      <ProvidersPanel
-                        onCreateProvider={openCreate}
-                        onEditProvider={openEdit}
-                        busyProviderId={busyProviderId}
-                        onBusyProviderChange={(providerId) => {
-                          setBusyProviderId(providerId)
-                          if (providerId) {
-                            postSaveValidationGeneration.current += 1
-                            postSaveValidationProviderId.current = undefined
-                            setPostSaveValidationFailed(false)
-                          }
+                    ) : activePanel === 'tags' ? (
+                      <>
+                        {openingTagAnnotation ? (
+                          <div
+                            role="status"
+                            className="flex items-center gap-2 px-4 py-2 text-sm text-muted-foreground"
+                          >
+                            <Loader2
+                              className="size-4 animate-spin motion-reduce:animate-none"
+                              aria-hidden="true"
+                            />
+                            {t('Loading annotations…')}
+                          </div>
+                        ) : null}
+                        {tagAnnotationError ? (
+                          <ErrorNotice tone="amber" description={tagAnnotationError} />
+                        ) : null}
+                        <TagsPanel
+                          view={tagsView}
+                          onNavigate={navigateTags}
+                          onSelectedTagChange={recordSelectedTag}
+                          onOpenResource={(reference) => {
+                            if (reference.resourceType === 'catalog.skill') {
+                              navigate({
+                                panel: 'skills',
+                                view: { kind: 'detail', id: reference.resourceId }
+                              })
+                              return
+                            }
+                            if (reference.resourceType === 'catalog.connector') {
+                              navigate({
+                                panel: 'connectors',
+                                view: customServers.some(
+                                  (server) => server.id === reference.resourceId
+                                )
+                                  ? { kind: 'edit', id: reference.resourceId }
+                                  : { kind: 'detail', id: reference.resourceId }
+                              })
+                              return
+                            }
+                            if (reference.resourceType === 'pdf.annotation') {
+                              void openTaggedPdfAnnotation(reference.resourceId)
+                              return
+                            }
+                            if (reference.resourceType === 'literature.item') {
+                              useNavigationStore
+                                .getState()
+                                .openLiteratureItem(reference.resourceId, 'user')
+                              requestClose()
+                              return
+                            }
+                            const specialist = specialistItems.find(
+                              (item) => item.id === reference.resourceId
+                            )
+                            navigate({
+                              panel: 'specialists',
+                              view:
+                                specialist?.kind === 'builtin'
+                                  ? { kind: 'builtin', id: reference.resourceId }
+                                  : { kind: 'edit', id: reference.resourceId }
+                            })
+                          }}
+                        />
+                      </>
+                    ) : activePanel === 'memory' ? (
+                      <MemoryPanel
+                        view={memoryView}
+                        onNavigate={navigateMemory}
+                        onOpenProject={(projectId) => {
+                          useNavigationStore.getState().openProject(projectId, 'user', onClose)
                         }}
                       />
-                    </>
-                  )}
-                </SettingsPanelLoadingBoundary>
-              </div>
+                    ) : activePanel === 'connectors' ? (
+                      connectorsView.kind === 'detail' ? (
+                        <div>
+                          <ResourceTagSummary
+                            reference={{
+                              resourceType: 'catalog.connector',
+                              resourceId: connectorsView.id
+                            }}
+                            className="px-5 pt-5"
+                            onOpenTag={navigateTag}
+                          />
+                          <ConnectorDetailView
+                            onOpenSpecialist={(usage) =>
+                              navigate({
+                                panel: 'specialists',
+                                view:
+                                  usage.kind === 'builtin'
+                                    ? { kind: 'builtin', id: usage.id }
+                                    : { kind: 'edit', id: usage.id }
+                              })
+                            }
+                            key={connectorsView.id}
+                            id={connectorsView.id}
+                            onManagePermissions={() => navigatePanel('permissions')}
+                            onManageCredentials={() =>
+                              navigate({
+                                panel: 'credentials',
+                                view: { kind: 'service', serviceId: 'openalex' }
+                              })
+                            }
+                          />
+                        </div>
+                      ) : connectorsView.kind === 'add' ? (
+                        <ConnectorAddForm
+                          initialTransport={connectorsView.transport}
+                          initialTemplate={connectorsView.template}
+                          credentialViewOpen={connectorsView.credentialView === 'create'}
+                          onCredentialViewChange={(open) => {
+                            if (open) {
+                              navigateConnectors({ ...connectorsView, credentialView: 'create' })
+                            } else {
+                              goBack()
+                            }
+                          }}
+                          onDone={() => navigateConnectors({ kind: 'list' })}
+                          onCancel={() => navigateConnectors({ kind: 'list' })}
+                        />
+                      ) : connectorsView.kind === 'import' ? (
+                        <ConnectorImportView
+                          onUse={(template) =>
+                            navigateConnectors({
+                              kind: 'add',
+                              transport: template.transport === 'stdio' ? 'local' : 'remote',
+                              template
+                            })
+                          }
+                          onCancel={() => navigateConnectors({ kind: 'list' })}
+                        />
+                      ) : connectorsView.kind === 'export' ? (
+                        <ConnectorExportView
+                          key={connectorsView.id}
+                          id={connectorsView.id}
+                          onDone={() => navigateConnectors({ kind: 'list' })}
+                        />
+                      ) : connectorsView.kind === 'edit' ? (
+                        <div>
+                          {connectorsView.credentialView !== 'create' ? (
+                            <ResourceTagSummary
+                              reference={{
+                                resourceType: 'catalog.connector',
+                                resourceId: connectorsView.id
+                              }}
+                              className="px-5 pt-5"
+                              onOpenTag={navigateTag}
+                            />
+                          ) : null}
+                          <ConnectorAddForm
+                            editServer={customServers.find((s) => s.id === connectorsView.id)}
+                            editServerId={connectorsView.id}
+                            credentialViewOpen={connectorsView.credentialView === 'create'}
+                            onCredentialViewChange={(open) => {
+                              if (open) {
+                                navigateConnectors({ ...connectorsView, credentialView: 'create' })
+                              } else {
+                                goBack()
+                              }
+                            }}
+                            onDone={() => navigateConnectors({ kind: 'list' })}
+                            onCancel={() => navigateConnectors({ kind: 'list' })}
+                          />
+                        </div>
+                      ) : (
+                        <ConnectorsPanel
+                          onNavigate={navigateConnectors}
+                          onOpenTag={navigateTag}
+                          onOpenSpecialist={(usage) =>
+                            navigate({
+                              panel: 'specialists',
+                              view:
+                                usage.kind === 'builtin'
+                                  ? { kind: 'builtin', id: usage.id }
+                                  : { kind: 'edit', id: usage.id }
+                            })
+                          }
+                        />
+                      )
+                    ) : activePanel === 'compute' ? (
+                      computeView.kind === 'add' ? (
+                        // Revoke completion authority before the dialog's exit animation unmounts.
+                        open && (
+                          <ComputeAddForm
+                            onCreated={(providerId) =>
+                              navigateCompute({ kind: 'detail', providerId })
+                            }
+                            onCancel={() => navigateCompute({ kind: 'list' })}
+                          />
+                        )
+                      ) : computeView.kind === 'detail' ? (
+                        <ComputeHostDetail
+                          providerId={computeView.providerId}
+                          authenticationFocus={computeView.authenticationFocus}
+                          authenticationRequestId={computeView.authenticationRequestId}
+                        />
+                      ) : (
+                        <ComputePanel onNavigate={navigateCompute} />
+                      )
+                    ) : activePanel === 'credentials' ? (
+                      <CredentialsPanel
+                        view={credentialsView}
+                        onNavigate={navigateCredentials}
+                        onOpenConnector={(id) =>
+                          navigate({ panel: 'connectors', view: { kind: 'edit', id } })
+                        }
+                        onOpenProvider={(provider) => openEdit(provider)}
+                      />
+                    ) : activePanel === 'storage' ? (
+                      <StoragePanel
+                        onContinueToAgent={() => {
+                          navigatePanel('agent')
+                        }}
+                      />
+                    ) : activePanel === 'permissions' ? (
+                      <PermissionsPanel
+                        onOpenSession={onOpenSession}
+                        onOpenConnector={(id) =>
+                          navigateConnectors(
+                            customServers.some((server) => server.id === id)
+                              ? { kind: 'edit', id }
+                              : { kind: 'detail', id }
+                          )
+                        }
+                      />
+                    ) : activePanel === 'archived' ? (
+                      <ArchivedPanel
+                        view={archivedView}
+                        onNavigate={navigateArchived}
+                        canDeleteProjects={canDeleteProjects}
+                        hasCompleteSessionCatalog={hasCompleteSessionCatalog}
+                        catalogRecovery={catalogRecovery}
+                        onRetryCatalogRecovery={onRetryCatalogRecovery}
+                        sessionLoadError={sessionLoadError}
+                      />
+                    ) : activePanel === 'runtimes' ? (
+                      <RuntimesPanel
+                        title={t('Notebook runtimes')}
+                        description={t(
+                          'Choose which Python and R environments notebooks and the Agent can use. App-managed environments are enabled by default.'
+                        )}
+                        onOpenNetworkProtection={
+                          notebookNetworkAvailable
+                            ? () => navigateNetwork({ kind: 'domains' })
+                            : undefined
+                        }
+                      />
+                    ) : activePanel === 'network' ? (
+                      <NetworkPanel
+                        view={networkView}
+                        onNavigate={navigateNetwork}
+                        notebookNetworkAvailable={notebookNetworkAvailable}
+                      />
+                    ) : activePanel === 'usage' ? (
+                      <TokenUsagePanel sessions={sessions} projects={projects} />
+                    ) : activePanel === 'general' ? (
+                      <GeneralPanel />
+                    ) : activePanel === 'agent' ? (
+                      <AgentPanel
+                        title={t('Agent framework')}
+                        description={t(
+                          "Choose which coding-agent backend drives your sessions. Select a card to switch; switching starts a fresh agent session, and open conversations have their transcript replayed to the new backend. The active runtime can't be uninstalled — switch to the other one first."
+                        )}
+                      />
+                    ) : isProviderFormOpen ? (
+                      // Add/edit provider is a secondary page reached via the shared back/forward arrows.
+                      <div className="p-5">
+                        {/* Secret writes fail closed when the OS keychain is unavailable. */}
+                        {!encryptionAvailable ? (
+                          <ErrorNotice
+                            inline
+                            role="alert"
+                            tone="amber"
+                            className="mb-4"
+                            description={t(
+                              'Secure key storage is unavailable. API keys cannot be saved until the system keychain is unlocked or authorized.'
+                            )}
+                          />
+                        ) : null}
+                        {providerEditTargetMissing ? (
+                          <ErrorNotice
+                            inline
+                            role="alert"
+                            tone="amber"
+                            className="mb-4"
+                            description={t(
+                              'This Provider no longer exists. Your draft has not been saved.'
+                            )}
+                          />
+                        ) : null}
+                        {providerConflict ? (
+                          <ErrorNotice
+                            role="alert"
+                            className="mb-4"
+                            description={t(
+                              'Provider configuration changed. Your draft has not been saved.'
+                            )}
+                          >
+                            <details>
+                              <summary>{t('Latest saved configuration')}</summary>
+                              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+                                {[
+                                  [t('Provider type'), editingProvider.type],
+                                  [t('Name'), editingProvider.name],
+                                  [t('Base URL'), editingProvider.baseUrl],
+                                  [t('Model'), editingProvider.model],
+                                  [t('API format'), editingProvider.apiEndpoints?.join(', ')],
+                                  [t('Context window'), editingProvider.contextWindow],
+                                  [t('Maximum input tokens'), editingProvider.maxInputTokens],
+                                  [t('Maximum output tokens'), editingProvider.maxOutputTokens],
+                                  [
+                                    t('Image input'),
+                                    editingProvider.supportsImageInput
+                                      ? t('Enabled')
+                                      : t('Disabled')
+                                  ],
+                                  [
+                                    t('Supported effort levels'),
+                                    editingProvider.reasoningEffortPreset
+                                  ],
+                                  [
+                                    t('Reasoning request format'),
+                                    editingProvider.reasoningEffortTransport
+                                  ],
+                                  [t('Transport'), editingProvider.codexTransport],
+                                  [t('Vendor'), editingProvider.vendorId],
+                                  [t('Region'), editingProvider.region]
+                                ].map(([label, value]) => (
+                                  <div key={label} className="contents">
+                                    <dt>{label}</dt>
+                                    <dd className="break-all">
+                                      {value ?? t('Use provider default')}
+                                    </dd>
+                                  </div>
+                                ))}
+                              </dl>
+                            </details>
+                            <Button
+                              type="button"
+                              disabled={isSaving}
+                              onClick={() => {
+                                const base = toFormValue(providerBase)
+                                const latest = toFormValue(editingProvider)
+                                const changes = Object.fromEntries(
+                                  Object.entries(formValue).filter(
+                                    ([key, value]) => value !== base[key as keyof ProviderFormValue]
+                                  )
+                                )
+                                setFormValue({ ...latest, ...changes })
+                                setProviderDraftBaseline(latest)
+                                setProviderBase(editingProvider)
+                                setStatusMessage(undefined)
+                              }}
+                            >
+                              {t('Reapply my changes to the latest configuration')}
+                            </Button>
+                          </ErrorNotice>
+                        ) : null}
+                        <ProviderForm
+                          key={`${modelViewKey}:${providerBase?.configRevision ?? 'draft'}`}
+                          value={formValue}
+                          onChange={(patch) =>
+                            setFormValue((current) => ({ ...current, ...patch }))
+                          }
+                          hasStoredKey={editingProvider?.hasKey}
+                          maskedKey={editingProvider?.maskedKey}
+                          needsKey={editingProvider?.needsKey}
+                          errors={formErrors}
+                          supportedModels={
+                            editingProvider?.type === formValue.type &&
+                            editingProvider?.vendorId === formValue.vendorId &&
+                            editingProvider?.region === formValue.region
+                              ? editingProvider?.models
+                              : undefined
+                          }
+                          onRefreshModels={
+                            editingProvider?.type === 'official' &&
+                            editingProvider.hasKey &&
+                            editingProvider.vendorId &&
+                            resolveVendorModelsUrl(editingProvider.vendorId, editingProvider.region)
+                              ? () => void handleRefreshModels(editingProvider.id)
+                              : undefined
+                          }
+                          isRefreshingModels={isRefreshingModels}
+                          disabled={isSaving}
+                          encryptionAvailable={encryptionAvailable}
+                          showCodexSubscriptions={
+                            agentFrameworkId === 'codex' && modelView.kind === 'create'
+                          }
+                          showClaudeIsolated={
+                            agentFrameworkId === 'claude-code' && modelView.kind === 'create'
+                          }
+                          defaultCustomApiEndpoint={customApiEndpoint}
+                          framework={activeFramework}
+                        />
+                      </div>
+                    ) : (
+                      <ModelPanel
+                        view={modelView}
+                        navigate={(view) => navigate({ panel: 'model', view })}
+                        local={modelView.kind === 'local-models'}
+                        onChange={(local) =>
+                          navigate({
+                            panel: 'model',
+                            view: { kind: local ? 'local-models' : 'list' }
+                          })
+                        }
+                      >
+                        {postSaveValidationFailed ? (
+                          <ErrorNotice
+                            inline
+                            role="alert"
+                            className="mx-5 mt-5"
+                            description={t('Could not test the provider connection.')}
+                          />
+                        ) : null}
+                        {savedProviderWarning ? (
+                          <ErrorNotice
+                            inline
+                            role="alert"
+                            tone="amber"
+                            className="mx-5 mt-5"
+                            description={
+                              savedProviderWarning === 'reconnect'
+                                ? t(
+                                    'Provider saved, but the Agent could not reconnect. Your changes do not need to be saved again.'
+                                  )
+                                : t(
+                                    'Provider saved, but settings could not be refreshed. Reopen settings to refresh.'
+                                  )
+                            }
+                          />
+                        ) : null}
+                        <ProvidersPanel
+                          onCreateProvider={openCreate}
+                          onEditProvider={openEdit}
+                          busyProviderId={busyProviderId}
+                          onBusyProviderChange={(providerId) => {
+                            setBusyProviderId(providerId)
+                            if (providerId) {
+                              postSaveValidationGeneration.current += 1
+                              postSaveValidationProviderId.current = undefined
+                              setPostSaveValidationFailed(false)
+                            }
+                          }}
+                        />
+                      </ModelPanel>
+                    )}
+                  </SettingsPanelLoadingBoundary>
+                </div>
+              </motion.div>
+              {isProviderFormOpen ? (
+                <SettingsFormFooter data-slot="provider-form-footer">
+                  {connectionResult ? (
+                    <ProviderTestResultCard result={connectionResult} />
+                  ) : statusMessage ? (
+                    <ErrorNotice
+                      inline
+                      role={statusOk ? 'status' : 'alert'}
+                      level={statusOk ? 'success' : 'error'}
+                      description={statusMessage}
+                    />
+                  ) : null}
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      {canTestConnection ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={!canSave}
+                          onClick={() => void handleTestConnection()}
+                        >
+                          {isTestingConnection ? (
+                            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                          ) : null}
+                          {isTestingConnection ? t('Testing…') : t('Test connection')}
+                        </Button>
+                      ) : null}
+                    </div>
+                    <div className="flex gap-2">
+                      <Button type="button" variant="ghost" onClick={closeForm} disabled={isSaving}>
+                        {t('Cancel')}
+                      </Button>
+                      <Button type="button" onClick={() => void handleSave()} disabled={!canSave}>
+                        {isSaving ? (
+                          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                        ) : null}
+                        {isSaving ? t('Saving…') : t('Save')}
+                      </Button>
+                    </div>
+                  </div>
+                </SettingsFormFooter>
+              ) : null}
             </div>
+          </motion.div>
+          <div
+            hidden={isMobile && isMobileNavOpen}
+            inert={isMobile && isMobileNavOpen}
+            className="relative z-[60] max-md:[&_[data-testid=permission-undo-stack]]:max-w-[calc(100vw-7rem)]"
+          >
+            <ActionToastStack ref={undoHostRef} />
           </div>
         </Dialog.Content>
       </Dialog.Portal>
+      <ConfirmActionDialog
+        open={open && pendingSkillLeave !== null}
+        title={t('Discard unsaved changes?')}
+        description={
+          isProviderFormOpen
+            ? isSaving
+              ? t('Wait for the provider save to finish before leaving.')
+              : t('Your provider edits have not been saved. Discard them and leave the editor?')
+            : skillEditorBusy
+              ? t('Wait for the current skill operation to finish before leaving.')
+              : t('Your skill edits have not been saved. Discard them and leave the editor?')
+        }
+        cancelLabel={t('Keep editing')}
+        confirmLabel={t('Discard changes')}
+        loading={skillEditorBusy || (isProviderFormOpen && isSaving)}
+        loadingLabel={t('Please wait…')}
+        destructive
+        testId="skill-discard-confirmation"
+        onCancel={() => setPendingSkillLeave(null)}
+        onCloseAutoFocus={(event) => {
+          const target = skillLeaveReturnFocus.current
+          skillLeaveReturnFocus.current = null
+          if (!target?.isConnected) return
+          event.preventDefault()
+          target.focus({ preventScroll: true })
+        }}
+        onConfirm={() => {
+          if (skillEditorLeaveState.current?.busy || providerEditorLeaveState.current?.busy) return
+          if (isProviderFormOpen) {
+            // Settings stays mounted while closed. Clear the draft and seed a fresh saved revision
+            // on entry, even when closing does not change the current create/edit route.
+            const empty = createEmptyProviderFormValue()
+            setFormValue(empty)
+            setProviderDraftBaseline(empty)
+            setProviderBase(undefined)
+            setSeededModelView(undefined)
+            providerEditorLeaveState.current = null
+          }
+          const leave = pendingSkillLeave
+          skillLeaveReturnFocus.current = null
+          setPendingSkillLeave(null)
+          leave?.()
+        }}
+      />
+      {open && tagAnnotationPreview ? (
+        <Suspense fallback={null}>
+          <PdfAnnotationPreviewDialog
+            {...tagAnnotationPreview}
+            onClose={() => setTagAnnotationPreview(undefined)}
+            onError={setTagAnnotationError}
+          />
+        </Suspense>
+      ) : null}
     </Dialog.Root>
   )
 })

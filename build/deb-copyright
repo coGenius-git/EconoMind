@@ -1,0 +1,15 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: EconoMind (derived from AIPOCH Open Science)
+Source: https://github.com/coGenius-git/EconoMind
+
+Files: *
+Copyright: 2026 AIPOCH
+           2026 EconoMind contributors (modifications)
+License: Apache-2.0
+ Licensed under the Apache License, Version 2.0.
+ On Debian systems, the complete text of the Apache License, Version 2.0,
+ can be found in /usr/share/common-licenses/Apache-2.0.
+Comment:
+ EconoMind is a modified version of https://github.com/aipoch/open-science.
+ See the distributed NOTICE.txt and OPEN_SOURCE.md for attribution and changes.
+ Bundled third-party components retain their respective licenses and notices.

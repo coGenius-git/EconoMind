@@ -4,16 +4,23 @@ import * as acp from '@agentclientprotocol/sdk'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import JSZip from 'jszip'
+import { utils as spreadsheetUtils, write as writeSpreadsheet } from 'styled-exceljs'
+import { randomUUID } from 'node:crypto'
 import { appendFile, chmod, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
+import { researchPrompt, runResearchAnalysis } from './research-analysis.mjs'
 
+const autoReviewResumeCounts = new Map()
 const VERSION = '1.0.0'
+const WSL_SETUP_DIAGNOSTICS_PROMPT = 'Verify WSL setup diagnostic tools.'
+const WSL_SETUP_UNAVAILABLE_PROMPT = 'Verify WSL setup tools are unavailable.'
 const PERMISSION_PROMPT = 'Request fixture permission.'
 const SKILL_PERMISSION_PROMPT = 'Request fixture skill permission.'
 const MEMORY_RECALL_PROMPT = 'Verify automatic memory recall.'
 const MEMORY_RECALL_ENTRY = 'Keep every response concise and welcoming.'
 const PROVIDER_BRIDGE_PROMPT = 'Verify the provider bridge.'
+const PROVIDER_RUNTIME_FAILURE_PROMPT = 'Verify runtime provider failure synchronization.'
 const NOTEBOOK_LIFECYCLE_PROMPT = 'Verify the notebook lifecycle.'
 const PERFORMANCE_NOTEBOOK_LIFECYCLE_PROMPT = 'Profile the notebook lifecycle.'
 const NOTEBOOK_MUTATION_CANCELLATION_PROMPT = 'Verify Notebook mutation cancellation.'
@@ -22,6 +29,7 @@ const NOTEBOOK_REAL_ENVIRONMENT_PROMPT = 'Verify a real Notebook environment.'
 const NOTEBOOK_PACKAGE_CANCELLATION_PROMPT = 'Verify Notebook package cancellation.'
 const ARTIFACT_PROVENANCE_PROMPT = 'Create a provenance artifact.'
 const PREVIEW_CONTEXT_MENU_ARTIFACTS_PROMPT = 'Create preview context menu artifacts.'
+const SPREADSHEET_SEARCH_ARTIFACT_PROMPT = 'Create spreadsheet search fixture.'
 const PREVIEW_CONTEXT_MENU_DOCX_BASE64 =
   'UEsDBAoAAAAIABQ7HF15bjPX6AAAAK0BAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbH1QyU7DMBD9FWuuKHHggBCK0wPLETiUDxjZk8SqN3nc0v49Tlt6QIXjzFv1+tXeO7GjzDYGBbdtB4KCjsaGScHn+rV5AMEFg0EXAyk4EMNq6NeHRCyqNrCCuZT0KCXrmTxyGxOFiowxeyz1zJNMqDc4kbzrunupYygUSlMWDxj6Zxpx64p42df3qUcmxyCeTsQlSwGm5KzGUnG5C+ZXSnNOaKvyyOHZJr6pBJBXExbk74Cz7r0Ok60h8YG5vKGvLPkVs5Em6q2vyvZ/mys94zhaTRf94pZy1MRcF/euvSAebfjpL49zD99QSwMECgAAAAAAFDscXQAAAAAAAAAAAAAAAAYAAABfcmVscy9QSwMECgAAAAgAFDscXZv9N+qtAAAAKQEAAAsAAABfcmVscy8ucmVsc43POw7CMAwG4KtE3mlaBoRQ0y4IqSsqB7ASN61oHkrCo7cnAwNFDIy2f3+W6/ZpZnanECdnBVRFCYysdGqyWsClP232wGJCq3B2lgQsFKFt6jPNmPJKHCcfWTZsFDCm5A+cRzmSwVg4TzZPBhcMplwGzT3KK2ri27Lc8fBpwNpknRIQOlUB6xdP/9huGCZJRydvhmz6ceIrkWUMmpKAhwuKq3e7yCzwpuarF5sXUEsDBAoAAAAAABQ7HF0AAAAAAAAAAAAAAAAFAAAAd29yZC9QSwMECgAAAAgAFDscXX5QYG+1AAAA9wAAABEAAAB3b3JkL2RvY3VtZW50LnhtbEWOO27DMAxAryJob+R2KALDdraszdAeQJHoRIBFGiQdO7ev5AxZHsHfI7vTlifzAJZE2NvPQ2MNYKCY8Nbbv9/zx9EaUY/RT4TQ2yeIPQ3d2kYKSwZUUwQo7drbu+rcOifhDtnLgWbA0huJs9eS8s2txHFmCiBS/HlyX03z7bJPaKvySvFZ41zBFTpcGB4JVhMIFTY15eRifsYxBTBj2nRh6FwdrOSd+7pA0Au7vfDyuvfPwz9QSwECFAAKAAAACAAUOxxdeW4z1+gAAACtAQAAEwAAAAAAAAAAAAAAAAAAAAAAW0NvbnRlbnRfVHlwZXNdLnhtbFBLAQIUAAoAAAAAABQ7HF0AAAAAAAAAAAAAAAAGAAAAAAAAAAAAEAAAABkBAABfcmVscy9QSwECFAAKAAAACAAUOxxdm/036q0AAAApAQAACwAAAAAAAAAAAAAAAAA9AQAAX3JlbHMvLnJlbHNQSwECFAAKAAAAAAAUOxxdAAAAAAAAAAAAAAAABQAAAAAAAAAAABAAAAATAgAAd29yZC9QSwECFAAKAAAACAAUOxxdflBgb7UAAAD3AAAAEQAAAAAAAAAAAAAAAAA2AgAAd29yZC9kb2N1bWVudC54bWxQSwUGAAAAAAUABQAgAQAAGgMAAAAA'
 
@@ -54,6 +62,8 @@ const DELEGATION_ARTIFACT_VERSION_INPUT_PROMPT =
   'Run the production Artifact Version input delegation journey.'
 const DELEGATION_BOUNDED_COLLECT_PROMPT = 'Run the production bounded collect journey.'
 const DELEGATION_BOUNDED_RECOLLECT_PROMPT = 'Collect the running Subagent in Turn B.'
+const DELEGATION_SCROLL_INTENT_PROMPT = 'Run the production Subagent scroll intent journey.'
+const DELEGATED_SCROLL_INTENT_TASK = 'Stream the delegated scroll intent fixture.'
 const DELEGATION_PERMISSION_PROMPT = 'Run the production delegated permission journey.'
 const DELEGATION_USER_QUESTION_PROMPT = 'Run the production delegated user question journey.'
 const DELEGATION_STOP_PROMPT = 'Run the production delegation Stop journey.'
@@ -62,13 +72,12 @@ const DELEGATION_BRANCH_B_PROMPT = 'Start the active-branch partial Stop certifi
 const DELEGATION_UNAVAILABLE_PROMPT = 'Verify unsupported delegation admission.'
 const DELEGATION_STRUCTURED_OUTPUT_PROMPT = 'Run the production structured output journey.'
 const RELIABLE_MESSAGING_PROMPT = 'Run the production reliable messaging journey.'
-const RELIABLE_BRANCH_PARK_PROMPT = 'Start the reliable messaging branch park journey.'
-const RELIABLE_BRANCH_WAKE_PROMPT = 'Wake the reliable messaging branch park journey.'
 const RELIABLE_FAILURE_PROMPT = 'Start the reliable messaging post-fence failure journey.'
 const RELIABLE_FAILURE_OBSERVE_PROMPT = 'Observe the reliable messaging post-fence failure.'
 const RELIABLE_FAIRNESS_PROMPT = 'Start the reliable messaging fairness journey.'
 const LONG_STREAM_PROMPT = 'Stream the long scroll journey.'
 const RUNTIME_RESOURCE_STRESS_PROMPT = 'Run the runtime resource stress journey.'
+const MARKDOWN_PARSER_PROMPT = 'Run the native Markdown parser journey.'
 const QUEUE_GATE_PROMPT = 'Hold the queue until the reveal finishes.'
 const TOOL_ORDER_PROMPT = 'Run the ordered slow tool journey.'
 const TOOL_LAYOUT_SHIFT_PROMPT = 'Run the tool layout stability journey.'
@@ -105,12 +114,20 @@ const DELEGATED_WAIT_NAME = 'Delegated fixture A'
 const DELEGATED_WAIT_NAME_TWO = 'Delegated fixture B'
 const DELEGATED_STRUCTURED_OUTPUT_TASK = 'Create certified structured evidence.'
 const DELEGATED_RELIABLE_MESSAGING_TASK = 'Send a reliable question to Main.'
-const DELEGATED_RELIABLE_PARK_TASK = 'Queue a reliable question for branch parking.'
 const DELEGATED_RELIABLE_FAILURE_TASK = 'Queue a reliable question for post-fence failure.'
 const DELEGATED_RELIABLE_FAILURE_NAME = 'Post-fence reliable question'
 const DELEGATED_RELIABLE_FAIRNESS_TASK_A = 'Queue reliable fairness question A.'
 const DELEGATED_RELIABLE_FAIRNESS_TASK_B = 'Queue reliable fairness question B.'
 const RELIABLE_CHILD_DIRECTIVE = 'Use the renderer-visible reliable evidence.'
+const RELIABLE_CONTROL_MARKERS = [
+  RELIABLE_CHILD_DIRECTIVE,
+  'Child reliable question reached Main',
+  'Main answered the reliable child question',
+  'Parked reliable child question',
+  'Trigger reliable post-fence persistence failure',
+  'Reliable fairness child A',
+  'Reliable fairness child B'
+]
 const DELEGATED_BRANCH_A_TASK = `${DELEGATED_WAIT_MARKER} inactive branch child A.`
 const DELEGATED_BRANCH_B_TASK = `${DELEGATED_WAIT_MARKER} active branch child B1.`
 const DELEGATED_BRANCH_B_TASK_TWO = `${DELEGATED_WAIT_MARKER} active branch child B2.`
@@ -125,6 +142,19 @@ const sessionCancellationResolvers = new Map()
 const reliableMessagingChildren = new Map()
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+
+const waitForReleaseFile = async (releaseFile, timeout = 30_000) => {
+  const deadline = Date.now() + timeout
+  while (true) {
+    try {
+      await readFile(releaseFile)
+      break
+    } catch (error) {
+      if (error.code !== 'ENOENT' || Date.now() >= deadline) throw error
+      await delay(50)
+    }
+  }
+}
 
 const suspendSessionWrites = async () => {
   const sessionsRoot = join(process.env.OPEN_SCIENCE_STORAGE_ROOT ?? '', 'sessions')
@@ -172,7 +202,7 @@ const parseMcpResponse = (body) => {
   return json ? JSON.parse(json) : {}
 }
 
-const submitReviewerPass = async (mcpServers) => {
+const submitReviewerPass = async (mcpServers, prompt = '') => {
   const server = mcpServers.find(
     (candidate) =>
       candidate.type === 'http' &&
@@ -235,7 +265,58 @@ const submitReviewerPass = async (mcpServers) => {
     }
     return payload.result
   }
-  await callTool('read_turn', {})
+  const turn = await callTool('read_turn', {})
+  const blocks = JSON.parse(turn.content?.[0]?.text ?? '[]')
+  const reproBlock = blocks.find(
+    (block) => block.role === 'agent' && block.content?.startsWith('AUTO_REVIEW_REPRO_')
+  )
+  if (reproBlock) {
+    await callTool('submit_findings', {
+      checks: [
+        {
+          status: 'fail',
+          claim: reproBlock.content,
+          evidence: 'Controlled reviewer finding for Stop / Resume reproduction.',
+          locator: {
+            blockRef: { blockIndex: reproBlock.blockIndex },
+            contentHash: reproBlock.contentHash
+          }
+        }
+      ]
+    })
+    return true
+  }
+  const trackedIds = [...prompt.matchAll(/"sourceFindingId":"([^"]+)"/gu)].map((match) => match[1])
+  if (trackedIds.length > 0) {
+    const unresolvedBlock = blocks.find(
+      (block) => block.content === 'Recovered execution still needs correction.'
+    )
+    await callTool('submit_findings', {
+      checks: [...new Set(trackedIds)].map((sourceFindingId) => ({
+        sourceFindingId,
+        ...(unresolvedBlock
+          ? {
+              locator: {
+                blockRef: { blockIndex: unresolvedBlock.blockIndex },
+                contentHash: unresolvedBlock.contentHash
+              }
+            }
+          : {}),
+        status: blocks.some(
+          (block) => block.content === 'Recovered execution still needs correction.'
+        )
+          ? 'fail'
+          : 'pass',
+        claim: blocks.some(
+          (block) => block.content === 'Recovered execution still needs correction.'
+        )
+          ? 'AUTO_REVIEW_REPRO_REFLAG: remaining issue'
+          : 'The controlled correction completed.',
+        evidence: 'The corrected answer is present in the frozen turn.'
+      }))
+    })
+    return true
+  }
   await callTool('submit_findings', {
     checks: [
       {
@@ -284,6 +365,81 @@ const executeControlCode = async (sessionId, code) =>
       })
     )
   )
+
+// Keep only this deterministic provider task's progress across real process restarts. The calls
+// themselves still use the production app-owned MCP, durable permission, and Notebook paths.
+const permissionHandoffTask = async (context, prompt) => {
+  const sessionId = context.params.sessionId
+  const captureRoot = process.env.OPEN_SCIENCE_E2E_HANDOFF_CAPTURE_ROOT
+  if (!captureRoot) return undefined
+  const progressPath = join(captureRoot, `permission-handoff-${sessionId}.json`)
+  let progress
+  try {
+    progress = JSON.parse(await readFile(progressPath, 'utf8'))
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
+  if (!progress && !prompt.includes('Verify consecutive permissions after restart.'))
+    return undefined
+  if (!progress) {
+    progress = { firstCompleted: false, secondCompleted: false }
+    await mkdir(captureRoot, { recursive: true })
+    await writeFile(progressPath, JSON.stringify(progress))
+  }
+  if (prompt.includes('The user explicitly denied this operation.')) {
+    if (!progress.firstCompleted || progress.secondCompleted)
+      throw new Error('The denied handoff did not stop before the second operation.')
+    return 'Permission handoff: second call denied without execution.'
+  }
+  const executeApprovedCode = async (code) => {
+    const toolCall = {
+      toolCallId: `permission-handoff-${randomUUID()}`,
+      title: `${frameworkServerName('open-science-notebook')}_repl_execute`,
+      kind: 'other',
+      rawInput: { code, timeoutMs: 120_000 }
+    }
+    await context.client.notify(acp.methods.client.session.update, {
+      sessionId,
+      update: { sessionUpdate: 'tool_call', ...toolCall, status: 'pending' }
+    })
+    const permission = await context.client.request(acp.methods.client.session.requestPermission, {
+      sessionId,
+      // OpenCode sends the executable arguments on tool_call; its permission request is sparse.
+      // Exercise the production input-restoration path consistently before and after restart.
+      toolCall: { ...toolCall, rawInput: {} },
+      options: [
+        { kind: 'allow_once', name: 'Allow once', optionId: 'allow-once' },
+        { kind: 'reject_once', name: 'Deny', optionId: 'deny-once' }
+      ]
+    })
+    if (permission.outcome.outcome !== 'selected' || permission.outcome.optionId !== 'allow-once')
+      throw new Error('The fixture execution was not explicitly approved.')
+    const value = controlResultValue(await executeControlCode(sessionId, code))
+    await context.client.notify(acp.methods.client.session.update, {
+      sessionId,
+      update: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: toolCall.toolCallId,
+        status: 'completed'
+      }
+    })
+    return value
+  }
+  if (!progress.firstCompleted) {
+    const first = await executeApprovedCode('return { marker: "permission-handoff-first" }')
+    if (first.marker !== 'permission-handoff-first') throw new Error('First call did not execute.')
+    progress.firstCompleted = true
+    await writeFile(progressPath, JSON.stringify(progress))
+  }
+  if (!progress.secondCompleted) {
+    const second = await executeApprovedCode('return { marker: "permission-handoff-second" }')
+    if (second.marker !== 'permission-handoff-second')
+      throw new Error('Second call did not execute.')
+    progress.secondCompleted = true
+    await writeFile(progressPath, JSON.stringify(progress))
+  }
+  return 'Permission handoff: both calls executed once.'
+}
 
 const controlResultValue = (execution) => {
   if (execution?.status !== 'completed') {
@@ -384,6 +540,40 @@ const verifyProviderBridge = () => {
   return 'Provider bridge verified through the Agent process.'
 }
 
+// Opt-in integration probe: use the real app-provided loopback transport instead of manufacturing
+// an ACP error. This exercises the app bridge's original-status observation before terminalizing.
+const rejectThroughProviderBridge = async () => {
+  const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? '{}')
+  const route = Object.values(config.provider ?? {}).find(
+    (provider) => provider?.models?.['runtime-health-model']
+  )
+  const credentialName = route?.options?.apiKey?.match(/^\{env:([^}]+)\}$/)?.[1]
+  const credential = credentialName ? process.env[credentialName] : undefined
+  if (!route?.options?.baseURL || !credential)
+    throw new Error('Runtime health fixture route missing.')
+  const url = new URL(route.options.baseURL)
+  if (url.hostname !== '127.0.0.1') throw new Error('Runtime health fixture requires loopback.')
+  const response = await fetch(`${route.options.baseURL.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: 'runtime-health-model',
+      messages: [{ role: 'user', content: 'synthetic runtime health probe' }]
+    })
+  })
+  await response.text()
+  if (
+    response.status !== 400 ||
+    !['401', '403'].includes(response.headers.get('x-open-science-upstream-status') ?? '')
+  ) {
+    throw new Error('Runtime health fixture did not receive the bridged upstream 401/403.')
+  }
+  throw acp.RequestError.internalError(
+    { errorKind: 'provider-error' },
+    'Synthetic upstream authentication rejected.'
+  )
+}
+
 const assertValidModelLimits = () => {
   const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? '{}')
   for (const [providerId, provider] of Object.entries(config.provider ?? {})) {
@@ -398,6 +588,25 @@ const assertValidModelLimits = () => {
       }
     }
   }
+}
+
+const inlineThinkingModelOptions = () => {
+  const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? '{}')
+  const route = Object.entries(config.provider ?? {}).find(
+    ([, provider]) => provider?.models?.['MiniMax-M3']
+  )
+  if (!route) return []
+  const value = `${route[0]}/MiniMax-M3`
+  return [
+    {
+      type: 'select',
+      id: 'model',
+      category: 'model',
+      name: 'Model',
+      currentValue: value,
+      options: [{ value, name: 'MiniMax-M3' }]
+    }
+  ]
 }
 
 const verifyNotebookLifecycle = async (sessionId, delayMs = 0) =>
@@ -431,6 +640,51 @@ const verifyNotebookLifecycle = async (sessionId, delayMs = 0) =>
       throw new Error('The Notebook lifecycle did not preserve its session and output.')
     }
     return `Notebook lifecycle verified for ${initial.sessionId}.`
+  })
+
+const verifyGlobalNpmTools = async (sessionId, mode) =>
+  withMcpClient(sessionId, 'open-science-notebook', async (client) => {
+    const execute = async (command) => {
+      const result = toolResult(
+        'bash_execute',
+        await client.callTool({
+          name: 'bash_execute',
+          arguments: { command }
+        })
+      )
+      if (result.exitCode !== 0)
+        throw new Error(`npm application check failed: ${JSON.stringify(result)}`)
+      return result.stdout ?? ''
+    }
+    const node = (code) =>
+      `node -e "eval(Buffer.from('${Buffer.from(code).toString('base64')}','base64').toString())"`
+    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+    const invoke = process.platform === 'win32' ? 'os-npm-app-fixture.cmd' : 'os-npm-app-fixture'
+    if (mode !== 'restart') {
+      await execute(
+        node(`
+        const fs = require('node:fs');
+        fs.mkdirSync('npm-fixture', { recursive: true });
+        fs.writeFileSync('npm-fixture/package.json', JSON.stringify({ name: 'os-npm-app-fixture', version: '1.0.0', bin: { 'os-npm-app-fixture': 'cli.js' } }));
+        fs.writeFileSync('npm-fixture/cli.js', '#!/usr/bin/env node\\nprocess.stdout.write("npm-application-tool");\\n');
+      `)
+      )
+      await execute(`${npm} pack ./npm-fixture --offline --ignore-scripts`)
+      await execute(
+        `${npm} install ${mode === 'install' ? '-g ' : ''}./os-npm-app-fixture-1.0.0.tgz --offline --ignore-scripts --no-audit --no-fund`
+      )
+      if (mode === 'local') {
+        await execute(
+          node(
+            `if (!require('node:fs').existsSync('node_modules/os-npm-app-fixture/package.json')) throw new Error('Local npm package escaped the project');`
+          )
+        )
+      }
+    }
+    if (!(await execute(invoke)).includes('npm-application-tool')) {
+      throw new Error('The global npm command was not available in this Session.')
+    }
+    return `Application npm ${mode} verified through sandboxed Shell.`
   })
 
 const readMicromambaEvents = async (path) =>
@@ -564,11 +818,21 @@ const verifyNotebookMutationCancellation = async (sessionId) =>
     await waitForProcessesToExit([started.pid, started.descendantPid])
 
     const retryRequest = { ...request, arguments: { ...request.arguments, packages: [] } }
-    const retry = toolResult(
-      'manage_environments',
-      await client.callTool(retryRequest, undefined, { timeout: 15_000 })
-    )
-    if (retry.created?.name !== 'e2e-cxl' || retry.created?.runnable !== true) {
+    const retryDeadline = Date.now() + 30_000
+    let retry
+    while (Date.now() < retryDeadline) {
+      try {
+        retry = toolResult(
+          'manage_environments',
+          await client.callTool(retryRequest, undefined, { timeout: 20_000 })
+        )
+        break
+      } catch (error) {
+        if (!String(error).includes('ENVIRONMENT_MUTATION_ALREADY_PENDING')) throw error
+        await delay(100)
+      }
+    }
+    if (retry?.created?.name !== 'e2e-cxl' || retry.created?.runnable !== true) {
       throw new Error(`Mutation retry did not succeed: ${JSON.stringify(retry)}`)
     }
     return `Notebook mutation cancellation verified; stopped PIDs ${started.pid} and ${started.descendantPid}.`
@@ -787,7 +1051,7 @@ const createProvenanceArtifact = async (sessionId) => {
       'bash_execute',
       await client.callTool({
         name: 'bash_execute',
-        arguments: { command: "printf 'artifact-provenance-e2e\\n'" }
+        arguments: { command: "echo 'artifact-provenance-e2e'" }
       })
     )
     const state = toolResult(
@@ -881,6 +1145,64 @@ const createPreviewContextMenuArtifacts = async (sessionId) => {
   return 'Preview context menu artifacts created.'
 }
 
+const createSpreadsheetSearchArtifacts = async (sessionId) => {
+  const workbook = spreadsheetUtils.book_new()
+  const firstSheet = spreadsheetUtils.aoa_to_sheet([['Overview']])
+  spreadsheetUtils.sheet_add_aoa(firstSheet, [['CaseProbe'], ['caseprobe'], ['CaseProbeSuffix']], {
+    origin: 'A2'
+  })
+  spreadsheetUtils.sheet_add_aoa(firstSheet, [['Needle in far row']], { origin: 'A551' })
+  spreadsheetUtils.book_append_sheet(workbook, firstSheet, 'Deep')
+  spreadsheetUtils.book_append_sheet(
+    workbook,
+    spreadsheetUtils.aoa_to_sheet([['Overview'], ['Needle in another sheet']]),
+    'Other'
+  )
+  spreadsheetUtils.book_append_sheet(
+    workbook,
+    spreadsheetUtils.aoa_to_sheet([['Needle in hidden sheet']]),
+    'Hidden'
+  )
+  spreadsheetUtils.book_set_sheet_visibility(workbook, 'Hidden', 1)
+  const stored = await withMcpClient(sessionId, 'open-science-artifacts', async (client) => {
+    const versions = []
+    for (const file of [
+      {
+        filename: 'search-feasibility.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        bookType: 'xlsx'
+      },
+      {
+        filename: 'search-feasibility.xls',
+        mimeType: 'application/vnd.ms-excel',
+        bookType: 'biff8'
+      }
+    ]) {
+      const content = Buffer.from(
+        writeSpreadsheet(workbook, { type: 'buffer', bookType: file.bookType })
+      ).toString('base64')
+      versions.push(
+        toolResult(
+          'write_artifact_file',
+          await client.callTool({
+            name: 'write_artifact_file',
+            arguments: {
+              filename: file.filename,
+              mimeType: file.mimeType,
+              content,
+              encoding: 'base64'
+            }
+          })
+        )
+      )
+    }
+    return versions
+  })
+  if (stored.some((item) => !item.artifact?.version_id))
+    throw new Error('Spreadsheet search artifacts were not finalized.')
+  return 'Spreadsheet search fixture created.'
+}
+
 const runArtifactVersionInputDelegation = async (sessionId) => {
   const produced = controlResultValue(
     await runProductionDelegationRequest(
@@ -924,8 +1246,14 @@ if (process.argv.includes('--version')) {
   process.stdout.write(`${VERSION}\n`)
 } else {
   assertValidModelLimits()
+  // OpenCode Sessions can run in separate processes. Keep their Session, message, and tool-call
+  // identities distinct across processes, including after the app restarts.
+  const fixtureInstanceId = `${randomUUID()}-`
   let nextMessageId = 1
   let nextSessionId = 1
+  let nextToolCallId = 1
+
+  const makeToolCallId = (kind) => `e2e-${kind}-${fixtureInstanceId}${nextToolCallId++}`
 
   const app = acp
     .agent({ name: 'open-science-e2e-agent' })
@@ -939,15 +1267,18 @@ if (process.argv.includes('--version')) {
     }))
     .onRequest(acp.methods.agent.authenticate, () => ({}))
     .onRequest(acp.methods.agent.session.new, async (context) => {
-      const sessionId = `e2e-session-${nextSessionId++}`
+      const sessionId = `e2e-session-${fixtureInstanceId}${nextSessionId++}`
       const mcpServers = context.params.mcpServers ?? []
       sessionRoutes.set(sessionId, {
         cwd: context.params.cwd,
         mcpServers,
         ...(await delegatedArtifactHandoff(mcpServers))
       })
-      return { sessionId }
+      return { sessionId, configOptions: inlineThinkingModelOptions() }
     })
+    .onRequest(acp.methods.agent.session.setConfigOption, () => ({
+      configOptions: inlineThinkingModelOptions()
+    }))
     .onRequest(acp.methods.agent.session.resume, async (context) => {
       const mcpServers = context.params.mcpServers ?? []
       sessionRoutes.set(context.params.sessionId, {
@@ -958,10 +1289,182 @@ if (process.argv.includes('--version')) {
       return {}
     })
     .onRequest(acp.methods.agent.session.prompt, async (context) => {
-      const prompt = context.params.prompt
+      const rawPrompt = context.params.prompt
         .map((content) => (content.type === 'text' ? content.text : ''))
         .join('')
+      // Continuation prompts replay the originating turn so the provider can retain context. Keep
+      // the latest reliable-message control marker as the routing input; otherwise its historical
+      // delegate task text wins the first matching branch and the continuation starts a duplicate
+      // child instead of handling the delivered message.
+      const controlStart = Math.max(
+        ...RELIABLE_CONTROL_MARKERS.map((marker) => rawPrompt.lastIndexOf(marker))
+      )
+      const prompt = controlStart >= 0 ? rawPrompt.slice(controlStart) : rawPrompt
       await captureProviderPrompt(context.params.sessionId, prompt)
+      if (prompt.includes('Cold recovery held child.')) {
+        await waitForSessionCancellation(context.params.sessionId)
+        return { stopReason: 'cancelled' }
+      }
+      if (prompt.includes('Run delegated cold recovery regression.')) {
+        const resumed = prompt.includes('Continue the interrupted turn from where it stopped.')
+        const code = resumed
+          ? 'const children = await host.children(); const child = children.find(c => c.name === "Cold recovery child"); if (!child) throw new Error("missing original child"); const receipt = await host.sendFrameMessage(child.frameId, "Continue explicitly after application restart."); return { before: child.status, receipt };'
+          : 'return await host.delegate({ task: "Cold recovery held child.", name: "Cold recovery child" }, { wait: false })'
+        const value = controlResultValue(await executeControlCode(context.params.sessionId, code))
+        await context.client.notify(acp.methods.client.session.update, {
+          sessionId: context.params.sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: `e2e-message-${fixtureInstanceId}${nextMessageId++}`,
+            content: {
+              type: 'text',
+              text: resumed
+                ? 'Cold recovery resumed: ' + JSON.stringify(value)
+                : 'Cold recovery ready for exit.'
+            }
+          }
+        })
+        if (!resumed) {
+          await waitForSessionCancellation(context.params.sessionId)
+          return { stopReason: 'cancelled' }
+        }
+        return { stopReason: 'end_turn' }
+      }
+
+      if (prompt.includes('Delegation resume held child task.')) {
+        await waitForSessionCancellation(context.params.sessionId)
+        return { stopReason: 'cancelled' }
+      }
+      if (
+        prompt.includes('Audit delegation after Stop Resume.') ||
+        prompt.includes('Audit delegation without Stop.') ||
+        prompt.includes('Audit delegation explicit continuation.')
+      ) {
+        const resumed = prompt.includes('Continue the interrupted turn from where it stopped.')
+        const continuation = prompt.includes('Audit delegation explicit continuation.')
+        const shouldDelegate = resumed || prompt.includes('Audit delegation without Stop.')
+        let text = 'Delegation audit ready for Stop.'
+        if (continuation && !resumed) {
+          const created = controlResultValue(
+            await executeControlCode(
+              context.params.sessionId,
+              'return await host.delegate({ task: "Delegation resume held child task.", name: "Interrupted child" }, { wait: false })'
+            )
+          )
+          globalThis.delegationResumeChild = created.children[0]
+        }
+        if (shouldDelegate) {
+          const code = continuation
+            ? `const before = await host.children(); const receipt = await host.sendFrameMessage(${JSON.stringify(globalThis.delegationResumeChild?.frameId)}, "Finish the explicitly continued task."); return { outcome: "continued", before, receipt };`
+            : 'const value = await host.delegate({ task: "Return a short confirmation for the resume audit.", name: "Resume audit child" }, { wait: false }); return { outcome: "admitted", value };'
+          const result = await executeControlCode(
+            context.params.sessionId,
+            `try { ${code} } catch (error) { return { outcome: "rejected", code: error.code, message: error.message }; }`
+          )
+          text = 'Delegation audit result: ' + JSON.stringify(controlResultValue(result))
+        }
+        await context.client.notify(acp.methods.client.session.update, {
+          sessionId: context.params.sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: `e2e-message-${fixtureInstanceId}${nextMessageId++}`,
+            content: { type: 'text', text }
+          }
+        })
+        if (!shouldDelegate) {
+          await waitForSessionCancellation(context.params.sessionId)
+          return { stopReason: 'cancelled' }
+        }
+        return { stopReason: 'end_turn' }
+      }
+
+      const reviewerRoute = sessionRoutes
+        .get(context.params.sessionId)
+        ?.mcpServers?.some((server) => server.name.replaceAll('_', '-') === 'open-science-reviewer')
+      const reproScenario =
+        !reviewerRoute &&
+        (prompt.includes('Run auto review ordinary stop scenario.') ||
+          prompt.includes('Run auto review correction stop scenario.') ||
+          prompt.includes('Run auto review correction complete scenario.') ||
+          prompt.includes('Run auto review correction repeat stop scenario.') ||
+          prompt.includes('Run auto review correction disabled stop scenario.') ||
+          prompt.includes('Run auto review correction reflag stop scenario.') ||
+          prompt.includes('AUTO_REVIEW_REPRO_'))
+      if (reproScenario) {
+        const resumed = prompt.includes('Continue the interrupted turn from where it stopped.')
+        const correction = prompt.includes('[Auditor] A fresh-context reviewer')
+        const resumeCount = resumed
+          ? (autoReviewResumeCounts.get(context.params.sessionId) ?? 0) + 1
+          : 0
+        if (resumed) autoReviewResumeCounts.set(context.params.sessionId, resumeCount)
+        const repeatedStop =
+          resumed && prompt.includes('AUTO_REVIEW_REPRO_REPEAT_STOP') && resumeCount === 1
+        const waitForStop =
+          repeatedStop ||
+          (!resumed &&
+            (prompt.includes('Run auto review ordinary stop scenario.') ||
+              (correction &&
+                /AUTO_REVIEW_REPRO_(?:REPEAT_|DISABLED_|REFLAG_)?STOP/u.test(prompt) &&
+                !(
+                  prompt.includes('AUTO_REVIEW_REPRO_REFLAG_STOP') &&
+                  (autoReviewResumeCounts.get(context.params.sessionId) ?? 0) > 0
+                ))))
+        const text = resumed
+          ? repeatedStop
+            ? 'Recovered correction is running; ready for Stop.'
+            : prompt.includes('AUTO_REVIEW_REPRO_REFLAG_STOP')
+              ? 'Recovered execution still needs correction.'
+              : 'Recovered execution completed successfully.'
+          : correction
+            ? waitForStop
+              ? 'Correction is running; ready for Stop.'
+              : 'Correction completed successfully.'
+            : waitForStop
+              ? 'Ordinary execution is running; ready for Stop.'
+              : prompt.includes('Run auto review correction repeat stop scenario.')
+                ? 'AUTO_REVIEW_REPRO_REPEAT_STOP: this controlled answer needs a correction.'
+                : prompt.includes('Run auto review correction disabled stop scenario.')
+                  ? 'AUTO_REVIEW_REPRO_DISABLED_STOP: this controlled answer needs a correction.'
+                  : prompt.includes('Run auto review correction reflag stop scenario.')
+                    ? 'AUTO_REVIEW_REPRO_REFLAG_STOP: this controlled answer needs a correction.'
+                    : prompt.includes('Run auto review correction stop scenario.')
+                      ? 'AUTO_REVIEW_REPRO_STOP: this controlled answer needs a correction.'
+                      : 'AUTO_REVIEW_REPRO_COMPLETE: this controlled answer needs a correction.'
+        await context.client.notify(acp.methods.client.session.update, {
+          sessionId: context.params.sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: `e2e-message-${fixtureInstanceId}${nextMessageId++}`,
+            content: { type: 'text', text }
+          }
+        })
+        if (waitForStop) {
+          await waitForSessionCancellation(context.params.sessionId)
+          return { stopReason: 'cancelled' }
+        }
+        return { stopReason: 'end_turn' }
+      }
+      if (prompt.includes(PROVIDER_RUNTIME_FAILURE_PROMPT)) await rejectThroughProviderBridge()
+      // Use the supported mid-response interruption wrapper: generic provider errors are terminal
+      // failures and intentionally do not offer Resume. Let this escape the reply fixture catch.
+      if (
+        prompt.includes('Create a PNG after provider execution failure.') &&
+        !prompt.includes('Continue the interrupted turn from where it stopped.')
+      ) {
+        await context.client.notify(acp.methods.client.session.update, {
+          sessionId: context.params.sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: `e2e-message-${fixtureInstanceId}${nextMessageId++}`,
+            content: { type: 'text', text: 'PNG recovery checkpoint reached.' }
+          }
+        })
+        await delay(2_000)
+        throw acp.RequestError.internalError(
+          { errorKind: 'provider-error' },
+          'API Error: Connection closed mid-response'
+        )
+      }
 
       if (prompt.includes(DELEGATED_WAIT_MARKER)) {
         await captureDelegatedHandoff(
@@ -984,7 +1487,7 @@ if (process.argv.includes('--version')) {
           sessionId: context.params.sessionId,
           update: {
             sessionUpdate: 'agent_message_chunk',
-            messageId: `e2e-message-${nextMessageId++}`,
+            messageId: `e2e-message-${fixtureInstanceId}${nextMessageId++}`,
             content: { type: 'text', text: 'Delegated immutable Artifact Version input verified.' }
           }
         })
@@ -1004,8 +1507,25 @@ if (process.argv.includes('--version')) {
           sessionId: context.params.sessionId,
           update: {
             sessionUpdate: 'agent_message_chunk',
-            messageId: `e2e-message-${nextMessageId++}`,
+            messageId: `e2e-message-${fixtureInstanceId}${nextMessageId++}`,
             content: { type: 'text', text: 'Production delegation is running.' }
+          }
+        })
+        await waitForSessionCancellation(context.params.sessionId)
+        return { stopReason: 'cancelled' }
+      }
+
+      if (prompt.includes('Publish then wait for cancellation.')) {
+        const publication = await createProvenanceArtifact(context.params.sessionId)
+        await context.client.notify(acp.methods.client.session.update, {
+          sessionId: context.params.sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: `e2e-message-${fixtureInstanceId}${nextMessageId++}`,
+            content: {
+              type: 'text',
+              text: `${publication}\nArtifact published; waiting for cancellation.`
+            }
           }
         })
         await waitForSessionCancellation(context.params.sessionId)
@@ -1014,7 +1534,132 @@ if (process.argv.includes('--version')) {
 
       let reply = 'Deterministic reply: Summarize the deterministic fixture.'
       try {
-        if (prompt.includes(MERMAID_BLOCK_PROMPT)) {
+        const handoffReply = await permissionHandoffTask(context, prompt)
+        if (handoffReply) {
+          reply = handoffReply
+        } else if (prompt.includes('Verify interaction follow-up.')) {
+          reply = 'Interaction follow-up completed.'
+        } else if (prompt.includes('Request restart verification permission.')) {
+          const toolCall = {
+            toolCallId: 'restart-permission-tool',
+            title: 'mcp__skills__load_skill',
+            kind: 'read',
+            rawInput: { skill: 'fixture-skill' }
+          }
+          await context.client.notify(acp.methods.client.session.update, {
+            sessionId: context.params.sessionId,
+            update: { sessionUpdate: 'tool_call', ...toolCall, status: 'pending' }
+          })
+          const permission = await context.client.request(
+            acp.methods.client.session.requestPermission,
+            {
+              sessionId: context.params.sessionId,
+              toolCall,
+              options: [
+                { kind: 'allow_once', name: 'Allow once', optionId: 'allow-once' },
+                { kind: 'reject_once', name: 'Deny', optionId: 'deny-once' }
+              ]
+            }
+          )
+          reply =
+            permission.outcome.optionId === 'allow-once'
+              ? 'Restart verification: Permission approval delivered.'
+              : 'Restart verification: Permission denial delivered.'
+        } else if (prompt.includes('The user approved the pending tool permission')) {
+          reply = 'Restart verification: Permission approval delivered.'
+        } else if (prompt.includes('The user explicitly denied this operation.')) {
+          reply = 'Restart verification: Permission denial delivered.'
+        } else if (prompt.includes('The user approved the pending Session Plan.')) {
+          reply = 'Restart verification: Plan approval delivered.'
+        } else if (prompt.includes('The user rejected the pending Session Plan.')) {
+          reply = 'Restart verification: Plan dismissal delivered.'
+        } else if (
+          prompt.includes('The user provided review feedback for the pending Session Plan.')
+        ) {
+          reply = 'Restart verification: Plan feedback delivered.'
+        } else if (
+          prompt.includes('The user answered the pending question: Restart verification dataset?')
+        ) {
+          reply = 'Restart verification: Question answer delivered.'
+        } else if (prompt.includes('Create a restart verification Plan.')) {
+          const argumentsForPlan = {
+            task_summary: 'Restart verification Plan',
+            phases: [
+              {
+                name: 'Analysis',
+                delegations: [
+                  {
+                    name: 'Main',
+                    steps: [
+                      {
+                        title: 'Verify delivery',
+                        description: 'Produce one confirmation and verify its persistence.'
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            desired_outputs: ['Delivery confirmation'],
+            feasibility: { confidence: 'high', rationale: 'Deterministic local fixture.' }
+          }
+          const toolCallId = 'e2e-restart-plan-generation'
+          // Real providers publish the tool activity before the MCP call waits for approval.
+          // Keep that transcript witness so restart tests also exercise Plan history rendering.
+          await context.client.notify(acp.methods.client.session.update, {
+            sessionId: context.params.sessionId,
+            update: {
+              sessionUpdate: 'tool_call',
+              toolCallId,
+              title: 'open_science_plan_generate_plan',
+              kind: 'other',
+              status: 'in_progress',
+              rawInput: argumentsForPlan
+            }
+          })
+          const outcome = await Promise.race([
+            withMcpClient(context.params.sessionId, 'open-science-plan', async (client) =>
+              toolResult(
+                'generate_plan',
+                await client.callTool({ name: 'generate_plan', arguments: argumentsForPlan })
+              )
+            ).then(() => 'reviewed'),
+            waitForSessionCancellation(context.params.sessionId).then(() => 'cancelled')
+          ])
+          sessionCancellationResolvers.delete(context.params.sessionId)
+          if (outcome === 'cancelled') {
+            await context.client.notify(acp.methods.client.session.update, {
+              sessionId: context.params.sessionId,
+              update: { sessionUpdate: 'tool_call_update', toolCallId, status: 'failed' }
+            })
+            return { stopReason: 'cancelled' }
+          }
+          await context.client.notify(acp.methods.client.session.update, {
+            sessionId: context.params.sessionId,
+            update: { sessionUpdate: 'tool_call_update', toolCallId, status: 'completed' }
+          })
+          reply = 'Restart verification: Plan review returned.'
+        } else if (prompt.includes('Ask a restart verification question.')) {
+          await withMcpClient(context.params.sessionId, 'open-science-notebook', async (client) =>
+            toolResult(
+              'ask_user_question',
+              await client.callTool({
+                name: 'ask_user_question',
+                arguments: {
+                  questions: [
+                    {
+                      question: 'Restart verification dataset?',
+                      options: [{ label: 'Dataset Alpha' }, { label: 'Dataset Beta' }]
+                    }
+                  ]
+                }
+              })
+            )
+          )
+          reply = 'Restart verification: Waiting for the answer.'
+        } else if (prompt.includes('Discuss alternatives without approving main.')) {
+          reply = 'Deterministic reply: Discuss alternatives without approving main.'
+        } else if (prompt.includes(MERMAID_BLOCK_PROMPT)) {
           // A wide left-to-right flowchart: intrinsic width exceeds the conversation column, so
           // zooming must stay clipped by the block, and the source view must keep its frame.
           reply = [
@@ -1025,13 +1670,108 @@ if (process.argv.includes('--version')) {
             '  A[begin] --> B[a node with a fairly long label] --> C[another node with an even longer label here] --> D[end]',
             '```'
           ].join('\n')
+        } else if (prompt.includes('Verify application npm global install.')) {
+          reply = await verifyGlobalNpmTools(context.params.sessionId, 'install')
+        } else if (prompt.includes('Verify application npm shared tool and local install.')) {
+          reply = await verifyGlobalNpmTools(context.params.sessionId, 'local')
+        } else if (prompt.includes('Verify application npm tool after restart.')) {
+          reply = await verifyGlobalNpmTools(context.params.sessionId, 'restart')
+        } else if (prompt.includes('Verify WSL background cancellation.')) {
+          await withMcpClient(context.params.sessionId, 'open-science-notebook', async (client) => {
+            // Compute lists persistent kernels, not stateless Shell Runs. Keep a real REPL
+            // alive beside WSL so the inbox consumer can be verified through actual events.
+            toolResult(
+              'repl_execute',
+              await client.callTool({
+                name: 'repl_execute',
+                arguments: { code: "console.log('wsl-event-inbox')" }
+              })
+            )
+            const run = toolResult(
+              'bash_execute',
+              await client.callTool({
+                name: 'bash_execute',
+                arguments: {
+                  command: "printf 'background-completion-e2e\\n'; sleep 60",
+                  background: true
+                }
+              })
+            )
+            if (!run.runId) throw new Error('WSL background admission has no runId')
+          })
+          reply = 'WSL background task submitted for cancellation.'
+        } else if (prompt.includes('Verify real WSL Bash execution.')) {
+          await withMcpClient(context.params.sessionId, 'open-science-notebook', async (client) => {
+            const execution = toolResult(
+              'bash_execute',
+              await client.callTool({
+                name: 'bash_execute',
+                arguments: { command: "printf 'wsl-bash-live\\n'; uname -s; id -u" }
+              })
+            )
+            if (
+              execution.exitCode !== 0 ||
+              !/^wsl-bash-live\r?\nLinux\r?\n[1-9][0-9]*\s*$/u.test(execution.stdout ?? '')
+            ) {
+              throw new Error('The application did not execute Bash as a non-root Linux user.')
+            }
+          })
+          reply = 'Real WSL Bash execution passed: Linux, non-root user, exit code 0.'
+        } else if (prompt.includes(WSL_SETUP_UNAVAILABLE_PROMPT)) {
+          await withMcpClient(context.params.sessionId, 'open-science-notebook', async (client) => {
+            const catalog = await client.listTools()
+            if (catalog.tools.some((tool) => tool.name.startsWith('wsl_setup_'))) {
+              throw new Error('Ordinary Session unexpectedly received WSL setup tools.')
+            }
+          })
+          reply = 'WSL setup tools are unavailable in this ordinary conversation.'
+        } else if (prompt.includes(WSL_SETUP_DIAGNOSTICS_PROMPT)) {
+          await withMcpClient(context.params.sessionId, 'open-science-notebook', async (client) => {
+            const catalog = await client.listTools()
+            if (!catalog.tools.some((tool) => tool.name === 'wsl_setup_diagnostics')) {
+              throw new Error('Setup Session is missing its WSL diagnostics tool.')
+            }
+            const shell = catalog.tools.find((tool) => tool.name === 'bash_execute')
+            if (!shell?.description?.includes('Windows PowerShell 5.1')) {
+              throw new Error('Setup Session did not retain its Windows PowerShell binding.')
+            }
+            const execution = toolResult(
+              'bash_execute',
+              await client.callTool({
+                name: 'bash_execute',
+                arguments: {
+                  command:
+                    "Write-Output ('wsl-setup-powershell-' + $PSVersionTable.PSVersion.Major + '.' + $PSVersionTable.PSVersion.Minor)"
+                }
+              })
+            )
+            if (!execution.stdout?.includes('wsl-setup-powershell-5.1')) {
+              throw new Error(
+                'Setup Session did not execute its command in Windows PowerShell 5.1.'
+              )
+            }
+            const diagnostics = toolResult(
+              'wsl_setup_diagnostics',
+              await client.callTool({ name: 'wsl_setup_diagnostics', arguments: {} })
+            )
+            if (
+              diagnostics.schemaVersion !== 1 ||
+              !diagnostics.capturedAt ||
+              !diagnostics.windows ||
+              !diagnostics.checks ||
+              Object.hasOwn(diagnostics, 'setupSessionToken')
+            ) {
+              throw new Error('WSL diagnostics are incomplete or expose the setup token.')
+            }
+          })
+          reply = 'WSL setup diagnostics completed through the application tools.'
         } else if (prompt.includes(MEMORY_RECALL_PROMPT)) {
           if (!prompt.includes('<memory_records>') || !prompt.includes(MEMORY_RECALL_ENTRY)) {
             throw new Error('Automatic memory recall did not reach the provider prompt.')
           }
           reply = 'Automatic memory recall reached the provider.'
         } else if (prompt.includes(BUFFERED_TEXT_TOOL_LAYOUT_SHIFT_PROMPT)) {
-          const intentMessageId = `e2e-message-${nextMessageId++}`
+          const intentMessageId = `e2e-message-${fixtureInstanceId}${nextMessageId++}`
           await context.client.notify(acp.methods.client.session.update, {
             sessionId: context.params.sessionId,
             update: {
@@ -1095,7 +1835,7 @@ if (process.argv.includes('--version')) {
           }
           await delay(prompt.includes(TOOL_STATUS_LAYOUT_SHIFT_PROMPT) ? 2_000 : 750)
 
-          const finalMessageId = `e2e-message-${nextMessageId++}`
+          const finalMessageId = `e2e-message-${fixtureInstanceId}${nextMessageId++}`
           await context.client.notify(acp.methods.client.session.update, {
             sessionId: context.params.sessionId,
             update: {
@@ -1107,9 +1847,13 @@ if (process.argv.includes('--version')) {
           reply = ''
         } else if (prompt.includes(TOOL_ORDER_PROMPT)) {
           // Mirrors a real agent turn: intent text, a slow tool call, then follow-up text.
-          const intentMessageId = `e2e-message-${nextMessageId++}`
-          // A long intent text, chunked quickly so live pacing trails far behind arrival.
-          for (let chunk = 0; chunk < 30; chunk += 1) {
+          const intentMessageId = `e2e-message-${fixtureInstanceId}${nextMessageId++}`
+          const layoutGate = prompt.match(/^Layout completion gate: (.+)$/m)
+          // The layout sampling variant needs the complete intent before the tool. The order
+          // assertion instead samples a tool emitted during the stream, before the remaining
+          // intent chunks arrive, so it does not depend on renderer scheduling speed.
+          const intentChunksBeforeTool = layoutGate ? 30 : 1
+          for (let chunk = 0; chunk < intentChunksBeforeTool; chunk += 1) {
             await context.client.notify(acp.methods.client.session.update, {
               sessionId: context.params.sessionId,
               update: {
@@ -1134,7 +1878,6 @@ if (process.argv.includes('--version')) {
             }
           })
           await delay(2_000)
-          const layoutGate = prompt.match(/^Layout completion gate: (.+)$/m)
           if (layoutGate) {
             const gatePath = JSON.parse(layoutGate[1])
             const deadline = Date.now() + 30_000
@@ -1158,7 +1901,22 @@ if (process.argv.includes('--version')) {
               status: 'completed'
             }
           })
-          const followUpMessageId = `e2e-message-${nextMessageId++}`
+          if (!layoutGate) {
+            for (let chunk = intentChunksBeforeTool; chunk < 30; chunk += 1) {
+              await context.client.notify(acp.methods.client.session.update, {
+                sessionId: context.params.sessionId,
+                update: {
+                  sessionUpdate: 'agent_message_chunk',
+                  messageId: intentMessageId,
+                  content: {
+                    type: 'text',
+                    text: `Intent paragraph ${chunk}: I will now run the slow tool for you.\n\n`
+                  }
+                }
+              })
+            }
+          }
+          const followUpMessageId = `e2e-message-${fixtureInstanceId}${nextMessageId++}`
           await context.client.notify(acp.methods.client.session.update, {
             sessionId: context.params.sessionId,
             update: {
@@ -1170,8 +1928,25 @@ if (process.argv.includes('--version')) {
           // Paint the final fragment before the prompt-completion response reaches the renderer.
           await delay(150)
           reply = ''
+        } else if (prompt.includes(MARKDOWN_PARSER_PROMPT)) {
+          // Exercise parser cost with bounded rich text, independently of the resource soak.
+          // Keep the turn open until the test observes a real nonempty Worker response.
+          const parserMessageId = `e2e-message-${fixtureInstanceId}${nextMessageId++}`
+          for (let chunk = 0; chunk < 8; chunk += 1) {
+            await context.client.notify(acp.methods.client.session.update, {
+              sessionId: context.params.sessionId,
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                messageId: parserMessageId,
+                content: { type: 'text', text: '**sample** and `code` '.repeat(64) + '\n' }
+              }
+            })
+            await delay(50)
+          }
+          await waitForReleaseFile(JSON.parse(prompt.split('Release file: ')[1]))
+          reply = 'Native Markdown parser journey complete.'
         } else if (prompt.includes(RUNTIME_RESOURCE_STRESS_PROMPT)) {
-          const stressMessageId = `e2e-message-${nextMessageId++}`
+          const stressMessageId = `e2e-message-${fixtureInstanceId}${nextMessageId++}`
           const payload = 'x'.repeat(2_048)
           for (let chunk = 0; chunk < 90; chunk += 1) {
             await context.client.notify(acp.methods.client.session.update, {
@@ -1188,11 +1963,38 @@ if (process.argv.includes('--version')) {
             await delay(30)
           }
           reply = 'Runtime resource stress journey complete.'
+        } else if (prompt.includes('Render the sanitized message images.')) {
+          // The fixture is generated 1024 × 1024 geometry, with no user content or metadata.
+          const stored = await withMcpClient(
+            context.params.sessionId,
+            'open-science-artifacts',
+            async (client) =>
+              toolResult(
+                'write_artifact_file',
+                await client.callTool({
+                  name: 'write_artifact_file',
+                  arguments: {
+                    filename: 'sanitized-performance.png',
+                    mimeType: 'image/png',
+                    content: (
+                      await readFile(new URL('./sanitized-performance.png', import.meta.url))
+                    ).toString('base64'),
+                    encoding: 'base64'
+                  }
+                })
+              )
+          )
+          reply = [1, 2, 3]
+            .map(
+              (index) =>
+                `Synthetic figure ${index}. This image contains generated geometry only.\n\n![Sanitized message figure ${index}]({{artifact:${stored.artifact.artifact_id}}})`
+            )
+            .join('\n\n')
         } else if (prompt.includes(LONG_STREAM_PROMPT)) {
           // Mirror a real agent turn: text segment -> tool call -> second text segment ->
           // tool completion -> trailing segment, with separate message ids per segment.
           const streamSegment = async (segment, paragraphs) => {
-            const streamMessageId = `e2e-message-${nextMessageId++}`
+            const streamMessageId = `e2e-message-${fixtureInstanceId}${nextMessageId++}`
             for (let chunk = 0; chunk < paragraphs; chunk += 1) {
               await context.client.notify(acp.methods.client.session.update, {
                 sessionId: context.params.sessionId,
@@ -1237,7 +2039,7 @@ if (process.argv.includes('--version')) {
           // Regression journey for queue dispatch gating: a slow lead-in, then one large final
           // chunk so the renderer's paced reveal trails the store-complete state by seconds.
           // An ungated queue would dispatch the next message mid-reveal.
-          const gateMessageId = `e2e-message-${nextMessageId++}`
+          const gateMessageId = `e2e-message-${fixtureInstanceId}${nextMessageId++}`
           for (let chunk = 0; chunk < 4; chunk += 1) {
             await context.client.notify(acp.methods.client.session.update, {
               sessionId: context.params.sessionId,
@@ -1249,6 +2051,9 @@ if (process.argv.includes('--version')) {
             })
             await delay(50)
           }
+          // Hold only the fake stream until the test has queued the follow-up through the UI.
+          const releaseFile = JSON.parse(prompt.split('Release file: ')[1])
+          await waitForReleaseFile(releaseFile)
           await context.client.notify(acp.methods.client.session.update, {
             sessionId: context.params.sessionId,
             update: {
@@ -1270,7 +2075,10 @@ if (process.argv.includes('--version')) {
           reply =
             '| PMID | Journal |\n| --- | --- |\n| [42668673](https://citation.example/paper) | Bioact Mater |\n| [42537459](https://unadmitted.example/paper) | Biomaterials |'
         } else if (
-          await submitReviewerPass(sessionRoutes.get(context.params.sessionId)?.mcpServers ?? [])
+          await submitReviewerPass(
+            sessionRoutes.get(context.params.sessionId)?.mcpServers ?? [],
+            prompt
+          )
         ) {
           reply = ''
         } else if (prompt.includes(CONTEXT_COMPACTION_PROMPT)) {
@@ -1299,6 +2107,83 @@ if (process.argv.includes('--version')) {
           reply = 'Compaction preview complete.'
         } else if (prompt.includes(PROVIDER_BRIDGE_PROMPT)) {
           reply = verifyProviderBridge()
+        } else if (
+          prompt.includes('Background execution outcomes are now available for this Session.')
+        ) {
+          if (!prompt.includes('background-completion-e2e'))
+            throw new Error('Missing background output')
+          reply = 'Background completion received with execution output.'
+        } else if (prompt.includes('Verify Python background completion delivery.')) {
+          await withMcpClient(context.params.sessionId, 'open-science-notebook', async (client) => {
+            const listed = toolResult(
+              'list_notebook_runtimes',
+              await client.callTool({ name: 'list_notebook_runtimes', arguments: {} })
+            )
+            const python = listed.runtimes.find(
+              (runtime) =>
+                runtime.language === 'python' && runtime.source === 'external' && runtime.runnable
+            )
+            if (!python) throw new Error(`No runnable external Python: ${JSON.stringify(listed)}`)
+            toolResult(
+              'notebook_bind_runtime',
+              await client.callTool({
+                name: 'notebook_bind_runtime',
+                arguments: { language: 'python', runtimeId: python.runtimeId }
+              })
+            )
+            const run = toolResult(
+              'notebook_execute',
+              await client.callTool({
+                name: 'notebook_execute',
+                arguments: {
+                  language: 'python',
+                  code: "import time\ntime.sleep(3)\nprint('background-completion-e2e')",
+                  background: true
+                }
+              })
+            )
+            if (!run.runId) throw new Error('Python background admission has no runId')
+          })
+          reply = 'Background execution submitted.'
+        } else if (prompt.includes('Verify SSH background completion delivery.')) {
+          const providerId = `ssh:${process.env.COMPUTE_TEST_SSH_ALIAS}`
+          await withMcpClient(context.params.sessionId, 'open-science-notebook', async (client) => {
+            toolResult(
+              'repl_execute',
+              await client.callTool({
+                name: 'repl_execute',
+                arguments: {
+                  code: `console.log(JSON.stringify(await host.compute.create(${JSON.stringify(providerId)}).submitJob('background-completion-e2e', "sleep 3; printf 'background-completion-e2e\\n'", { timeoutSeconds: 30 })))`
+                }
+              })
+            )
+          })
+          reply = 'Background execution submitted.'
+        } else if (prompt.includes('Verify background completion delivery.')) {
+          const run = await withMcpClient(
+            context.params.sessionId,
+            'open-science-notebook',
+            async (client) =>
+              toolResult(
+                'bash_execute',
+                await client.callTool({
+                  name: 'bash_execute',
+                  arguments: {
+                    command: `node -e "setTimeout(() => console.log('background-completion-e2e'), 3000)"`,
+                    background: true
+                  }
+                })
+              )
+          )
+          if (!run.runId) throw new Error('Background admission has no runId')
+          reply = 'Background execution submitted.'
+        } else if (prompt.includes(researchPrompt)) {
+          reply = await runResearchAnalysis(
+            context.params.sessionId,
+            prompt,
+            withMcpClient,
+            toolResult
+          )
         } else if (prompt.includes(NOTEBOOK_LIFECYCLE_PROMPT)) {
           reply = await verifyNotebookLifecycle(context.params.sessionId)
         } else if (prompt.includes(PERFORMANCE_NOTEBOOK_LIFECYCLE_PROMPT)) {
@@ -1311,10 +2196,58 @@ if (process.argv.includes('--version')) {
           reply = await verifyRealNotebookEnvironment(context.params.sessionId)
         } else if (prompt.includes(NOTEBOOK_PACKAGE_CANCELLATION_PROMPT)) {
           reply = await verifyNotebookPackageCancellation(context.params.sessionId)
+        } else if (
+          prompt.includes('Create a PNG without interruption.') ||
+          prompt.includes('Create a PNG after interrupted recovery.') ||
+          prompt.includes('Create a PNG after provider execution failure.')
+        ) {
+          if (
+            !prompt.includes('Create a PNG without interruption.') &&
+            !prompt.includes('Continue the interrupted turn from where it stopped.')
+          ) {
+            await context.client.notify(acp.methods.client.session.update, {
+              sessionId: context.params.sessionId,
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                messageId: `e2e-message-${fixtureInstanceId}${nextMessageId++}`,
+                content: { type: 'text', text: 'PNG recovery checkpoint reached.' }
+              }
+            })
+            await delay(5_000)
+            reply = 'PNG initial attempt finished.'
+          } else {
+            await withMcpClient(
+              context.params.sessionId,
+              'open-science-artifacts',
+              async (client) =>
+                toolResult(
+                  'write_artifact_file',
+                  await client.callTool({
+                    name: 'write_artifact_file',
+                    arguments: {
+                      // Fixed 160 × 112 chart makes manual full-preview acceptance visible.
+                      filename: 'resumed-figure.png',
+                      mimeType: 'image/png',
+                      content:
+                        'iVBORw0KGgoAAAANSUhEUgAAAKAAAABwCAIAAAAWk+xVAAABGUlEQVR42u3RsQmAMBRAwfTiRA7gBA7hGlYOYO2WikgKXcBCviAJB2+Cd+k4syouWQBYgAVYgAVYgAUYsAALsAALsAALMOBX9cN4Zx9gARZgARZgwIABA35sW5t4gAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAGXCtxNezzAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMOCPgdtljgcYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMGDAgAEDBgwYMOBKgPVXgAHHgFVKgAELsAALsAALsAADFmABFmABFmABBizAKrALzKf11GbKuOoAAAAASUVORK5CYII=',
+                      encoding: 'base64'
+                    }
+                  })
+                )
+            )
+            reply = prompt.includes('Create a PNG without interruption.')
+              ? 'PNG artifact created.'
+              : 'Resumed PNG artifact created.'
+          }
         } else if (prompt.includes(ARTIFACT_PROVENANCE_PROMPT)) {
+          if (prompt.includes('Observe the Task before publication.')) {
+            await new Promise((resolve) => setTimeout(resolve, 8_000))
+          }
           reply = await createProvenanceArtifact(context.params.sessionId)
         } else if (prompt.includes(PREVIEW_CONTEXT_MENU_ARTIFACTS_PROMPT)) {
           reply = await createPreviewContextMenuArtifacts(context.params.sessionId)
+        } else if (prompt.includes(SPREADSHEET_SEARCH_ARTIFACT_PROMPT)) {
+          reply = await createSpreadsheetSearchArtifacts(context.params.sessionId)
         } else if (prompt.includes(DELEGATION_TERMINAL_PROMPT)) {
           const delegated = await runProductionDelegation(
             context.params.sessionId,
@@ -1329,20 +2262,38 @@ if (process.argv.includes('--version')) {
         } else if (prompt.includes(DELEGATION_ARTIFACT_VERSION_INPUT_PROMPT)) {
           reply = await runArtifactVersionInputDelegation(context.params.sessionId)
         } else if (prompt.includes(DELEGATION_BOUNDED_COLLECT_PROMPT)) {
+          const releaseFile = JSON.parse(prompt.split('Release file: ')[1])
+          const slowTask = `${DELEGATED_BOUNDED_SLOW_TASK}\nRelease file: ${JSON.stringify(releaseFile)}`
           const dispatched = controlResultValue(
             await executeControlCode(
               context.params.sessionId,
-              `globalThis.s2Pending = await host.delegate([{ task: ${JSON.stringify(DELEGATED_TERMINAL_TASK)}, name: "Bounded terminal child" }, { task: ${JSON.stringify(DELEGATED_BOUNDED_SLOW_TASK)}, name: ${JSON.stringify(DELEGATED_BOUNDED_SLOW_TASK)} }], { timeoutSeconds: 1 }); return globalThis.s2Pending`
+              `globalThis.s2Pending = await host.delegate([{ task: ${JSON.stringify(DELEGATED_TERMINAL_TASK)}, name: "Bounded terminal child" }, { task: ${JSON.stringify(slowTask)}, name: ${JSON.stringify(DELEGATED_BOUNDED_SLOW_TASK)} }], { timeoutSeconds: 1 }); return globalThis.s2Pending`
             )
           )
           if (
             dispatched.kind !== 'observations' ||
             dispatched.children.length !== 2 ||
-            dispatched.children[0].status !== 'completed' ||
+            !['running', 'completed'].includes(dispatched.children[0].status) ||
             dispatched.children[1].status !== 'running' ||
             Object.hasOwn(dispatched.children[1], 'artifactsCreated')
           ) {
             throw new Error(`Timed delegate observation failed: ${JSON.stringify(dispatched)}`)
+          }
+          // Startup time is not part of the bounded-observation contract. Wait for the fast
+          // child explicitly while the slow child's release file keeps its state deterministic.
+          const mixed = controlResultValue(
+            await executeControlCode(
+              context.params.sessionId,
+              `const handles = globalThis.s2Pending.children.map(({ frameId, attemptId }) => ({ frameId, attemptId })); await host.collect([handles[0]], { timeoutSeconds: 30 }); return await host.collect(handles, { timeoutSeconds: 0 })`
+            )
+          )
+          if (
+            mixed.length !== 2 ||
+            mixed[0].status !== 'completed' ||
+            mixed[1].status !== 'running' ||
+            Object.hasOwn(mixed[1], 'artifactsCreated')
+          ) {
+            throw new Error(`Mixed bounded observation failed: ${JSON.stringify(mixed)}`)
           }
           reply = 'Production bounded delegate returned while a Subagent kept running.'
         } else if (prompt.includes(DELEGATION_BOUNDED_RECOLLECT_PROMPT)) {
@@ -1356,6 +2307,17 @@ if (process.argv.includes('--version')) {
             throw new Error(`Bounded terminal recollect failed: ${JSON.stringify(terminal)}`)
           }
           reply = 'Production bounded collect journey completed.'
+        } else if (prompt.includes(DELEGATION_SCROLL_INTENT_PROMPT)) {
+          const releaseFiles = JSON.parse(prompt.split('Release files: ')[1])
+          await runProductionDelegationRequest(
+            context.params.sessionId,
+            {
+              task: `${DELEGATED_SCROLL_INTENT_TASK}\nRelease files: ${JSON.stringify(releaseFiles)}`,
+              name: 'Scroll intent child'
+            },
+            false
+          )
+          reply = 'Production Subagent scroll intent journey started.'
         } else if (prompt.includes(DELEGATION_PERMISSION_PROMPT)) {
           await runProductionDelegation(
             context.params.sessionId,
@@ -1439,36 +2401,6 @@ if (process.argv.includes('--version')) {
             throw new Error(`Reliable downward delivery failed: ${JSON.stringify(downward)}`)
           }
           reply = 'Production reliable downward message was accepted.'
-        } else if (prompt.includes(RELIABLE_BRANCH_PARK_PROMPT)) {
-          await runProductionDelegationRequest(
-            context.params.sessionId,
-            { task: DELEGATED_RELIABLE_PARK_TASK, name: DELEGATED_RELIABLE_PARK_TASK },
-            false
-          )
-          await delay(500)
-          await context.client.notify(acp.methods.client.session.update, {
-            sessionId: context.params.sessionId,
-            update: {
-              sessionUpdate: 'agent_message_chunk',
-              messageId: `e2e-message-${nextMessageId++}`,
-              content: { type: 'text', text: 'Branch park upward message queued.' }
-            }
-          })
-          await delay(2_000)
-          reply = 'Reliable branch park source turn completed.'
-        } else if (prompt.includes(RELIABLE_BRANCH_WAKE_PROMPT)) {
-          const receipt = controlResultValue(
-            await executeControlCode(
-              context.params.sessionId,
-              `return await host.messageReceipt("e2e-child-park", { timeoutSeconds: 0 })`
-            )
-          )
-          if (receipt.status !== 'queued') {
-            throw new Error(
-              `Reliable parked receipt changed before wake: ${JSON.stringify(receipt)}`
-            )
-          }
-          reply = 'Reliable branch wake admitted.'
         } else if (prompt.includes(RELIABLE_FAILURE_PROMPT)) {
           await runProductionDelegationRequest(
             context.params.sessionId,
@@ -1507,11 +2439,11 @@ if (process.argv.includes('--version')) {
             sessionId: context.params.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
-              messageId: `e2e-message-${nextMessageId++}`,
-              content: { type: 'text', text: 'Two upward lanes are queued.' }
+              messageId: `e2e-message-${fixtureInstanceId}${nextMessageId++}`,
+              content: { type: 'text', text: 'Two upward lanes are starting.' }
             }
           })
-          await delay(1_500)
+          await waitForReleaseFile(JSON.parse(prompt.split('Release file: ')[1]))
           reply = 'Reliable fairness source turn completed.'
         } else if (prompt.includes(SUBAGENT_MODEL_BATCH_PROMPT)) {
           const delegated = controlResultValue(
@@ -1641,17 +2573,6 @@ if (process.argv.includes('--version')) {
             throw new Error(`Reliable upward admission failed: ${JSON.stringify(upward)}`)
           }
           reply = 'Child sent a reliable question.'
-        } else if (prompt.includes(DELEGATED_RELIABLE_PARK_TASK)) {
-          const upward = controlResultValue(
-            await executeControlCode(
-              context.params.sessionId,
-              `return await host.sendFrameMessage("parent", "Parked reliable child question", { kind: "question", requestId: "e2e-child-park" })`
-            )
-          )
-          if (upward.status !== 'queued') {
-            throw new Error(`Reliable parked admission failed: ${JSON.stringify(upward)}`)
-          }
-          reply = 'Child queued a branch-bound reliable question.'
         } else if (prompt.includes(DELEGATED_RELIABLE_FAILURE_TASK)) {
           await executeControlCode(
             context.params.sessionId,
@@ -1694,7 +2615,7 @@ if (process.argv.includes('--version')) {
               sessionId: context.params.sessionId,
               update: {
                 sessionUpdate: 'agent_message_chunk',
-                messageId: `e2e-message-${nextMessageId++}`,
+                messageId: `e2e-message-${fixtureInstanceId}${nextMessageId++}`,
                 content: { type: 'text', text: 'Provider acceptance crossed the durable fence.' }
               }
             })
@@ -1702,7 +2623,18 @@ if (process.argv.includes('--version')) {
           } finally {
             await restoreWrites()
           }
-          reply = 'Persistence sabotage released.'
+          await context.client.notify(acp.methods.client.session.update, {
+            sessionId: context.params.sessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              messageId: `e2e-message-${fixtureInstanceId}${nextMessageId++}`,
+              content: { type: 'text', text: 'Persistence sabotage released.' }
+            }
+          })
+          // Keep the provider call in flight until the test crashes Main. Completing it would
+          // provide fresh acceptance evidence and legitimately settle the receipt after recovery.
+          await waitForSessionCancellation(context.params.sessionId)
+          return { stopReason: 'cancelled' }
         } else if (prompt.includes('Reliable fairness child A')) {
           reply = 'Main rendered reliable fairness child A.'
         } else if (prompt.includes('Reliable fairness child B')) {
@@ -1710,15 +2642,57 @@ if (process.argv.includes('--version')) {
         } else if (prompt.includes(RELIABLE_FAIRNESS_USER_PROMPT)) {
           reply = 'Concurrent real user prompt completed.'
         } else if (prompt.includes(DELEGATED_BOUNDED_SLOW_TASK)) {
-          await new Promise((resolve) => setTimeout(resolve, 3_000))
+          await waitForReleaseFile(JSON.parse(prompt.split('Release file: ')[1]), 120_000)
           reply = 'Delayed bounded child completed.'
+        } else if (prompt.includes(DELEGATED_SCROLL_INTENT_TASK)) {
+          const releaseFiles = JSON.parse(prompt.split('Release files: ')[1])
+          const messageId = `e2e-message-${fixtureInstanceId}${nextMessageId++}`
+          const emit = async (text) =>
+            context.client.notify(acp.methods.client.session.update, {
+              sessionId: context.params.sessionId,
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                messageId,
+                content: { type: 'text', text }
+              }
+            })
+          await waitForReleaseFile(releaseFiles[0], 120_000)
+          if (releaseFiles[4]) {
+            await context.client.notify(acp.methods.client.session.update, {
+              sessionId: context.params.sessionId,
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                messageId: `${messageId}-plan`,
+                content: { type: 'text', text: 'Historical plan before preview.' }
+              }
+            })
+            for (const status of ['in_progress', 'completed']) {
+              await context.client.notify(acp.methods.client.session.update, {
+                sessionId: context.params.sessionId,
+                update: {
+                  sessionUpdate: 'tool_call',
+                  toolCallId: `${messageId}-read`,
+                  title: 'Read historical evidence',
+                  kind: 'read',
+                  status
+                }
+              })
+            }
+          }
+          await emit('Initial delegated evidence.\n\n'.repeat(60))
+          await waitForReleaseFile(releaseFiles[1], 120_000)
+          await emit('Reading-position update arrived.\n\n'.repeat(20))
+          await waitForReleaseFile(releaseFiles[2], 120_000)
+          await emit('Follow-end update arrived.\n\n'.repeat(20))
+          if (releaseFiles[3]) await waitForReleaseFile(releaseFiles[3], 120_000)
+          reply = ''
         } else if (prompt.includes(DELEGATED_PERMISSION_TASK)) {
           const permission = await context.client.request(
             acp.methods.client.session.requestPermission,
             {
               sessionId: context.params.sessionId,
               toolCall: {
-                toolCallId: 'e2e-delegated-permission-tool',
+                toolCallId: makeToolCallId('delegated-permission-tool'),
                 title: 'Read delegated evidence'
               },
               options: [
@@ -1810,7 +2784,7 @@ if (process.argv.includes('--version')) {
             {
               sessionId: context.params.sessionId,
               toolCall: {
-                toolCallId: 'e2e-permission-tool',
+                toolCallId: makeToolCallId('permission-tool'),
                 title: 'Write fixture output'
               },
               options: [
@@ -1832,7 +2806,7 @@ if (process.argv.includes('--version')) {
             {
               sessionId: context.params.sessionId,
               toolCall: {
-                toolCallId: 'e2e-skill-permission-tool',
+                toolCallId: makeToolCallId('skill-permission-tool'),
                 title: 'mcp__skills__load_skill',
                 rawInput: { skill: 'fixture-skill' }
               },
@@ -1852,11 +2826,25 @@ if (process.argv.includes('--version')) {
         reply = `E2E fixture failure: ${error instanceof Error ? error.message : String(error)}`
       }
 
+      const replyMessageId = `e2e-message-${fixtureInstanceId}${nextMessageId++}`
+      if (prompt.includes('Replay inline thinking.')) {
+        for (const text of ['<thi', 'nk>Synthetic reasoning only.', '</thi', 'nk>']) {
+          await context.client.notify(acp.methods.client.session.update, {
+            sessionId: context.params.sessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              messageId: replyMessageId,
+              content: { type: 'text', text }
+            }
+          })
+          await delay(40)
+        }
+      }
       await context.client.notify(acp.methods.client.session.update, {
         sessionId: context.params.sessionId,
         update: {
           sessionUpdate: 'agent_message_chunk',
-          messageId: `e2e-message-${nextMessageId++}`,
+          messageId: replyMessageId,
           content: { type: 'text', text: reply }
         }
       })

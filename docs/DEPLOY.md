@@ -4,7 +4,7 @@ EconoMind 的桌面与本地 Web 模式共享 Electron 主进程、数据存储�
 
 ## 依赖与桌面启动
 
-准备 Node.js 22、npm 和 Git。Windows 本机模块构建还需要 Python 与 Visual Studio C++ Build Tools。
+准备 Node.js 24、npm 和 Git。Windows 本机模块构建还需要 Python 与 Visual Studio C++ Build Tools。
 
 ```bash
 npm ci

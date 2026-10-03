@@ -1,3 +1,5 @@
+import { FOCUS_COMPOSER_EVENT } from './composer-focus-events'
+import { ErrorNotice } from '@/components/error-notice'
 // Hallmark · pre-emit critique: P5 H5 E4 S5 R5 V4
 import type { TFunction } from 'i18next'
 import { ChevronDown, LayoutGrid, List, Maximize2, Minimize2, Search, X } from 'lucide-react'
@@ -5,7 +7,6 @@ import { ToggleGroup } from 'radix-ui'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { ActionToast } from '@/components/ActionToast'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -35,6 +36,7 @@ import {
 } from './project-files-preview-owner'
 import {
   ProjectFileItems,
+  ProjectFilesEmptyState,
   ProjectFilesFilterMenu,
   type ProjectFilesViewMode
 } from './project-files-presentation-owner'
@@ -127,15 +129,12 @@ const PageLoadError = ({
 }): React.JSX.Element => {
   const { t } = useTranslation()
   return (
-    <div
-      role="alert"
-      aria-atomic="true"
-      className="flex items-start justify-between gap-3 px-4 py-3 text-[11px] text-danger-000"
-    >
-      <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{message}</span>
-      <Button type="button" variant="outline" className="h-7 shrink-0 px-2.5" onClick={onRetry}>
-        {t('Retry')}
-      </Button>
+    <div className="px-4 py-3">
+      <ErrorNotice
+        role="alert"
+        description={message}
+        primaryButton={{ label: t('Retry'), onClick: onRetry }}
+      />
     </div>
   )
 }
@@ -524,6 +523,30 @@ const ProjectFilesViewContent = ({
 
   return (
     <div data-testid="files-view" className="flex h-full min-h-0 w-full flex-col bg-bg-10">
+      {grantedRootMutationError ? (
+        <div
+          className="m-2 shrink-0 max-h-[40%] overflow-y-auto"
+          data-testid="granted-root-error-toast"
+        >
+          <ErrorNotice
+            role="alert"
+            title={grantedRootMutationErrorTitle!}
+            description={grantedRootMutationError.detail}
+            primaryButton={{
+              label: t('Retry'),
+              onClick: () =>
+                void runGrantedRootMutation(
+                  grantedRootMutationError.kind,
+                  grantedRootMutationError.retry
+                )
+            }}
+            dismissButton={{
+              label: t('Close'),
+              onClick: () => setGrantedRootMutationError(undefined)
+            }}
+          />
+        </div>
+      ) : null}
       <div
         className={cn(
           'flex shrink-0 items-center justify-between gap-3 px-4 pb-2',
@@ -682,7 +705,7 @@ const ProjectFilesViewContent = ({
       ) : (
         <div data-testid="project-files-scroll" className="min-h-0 flex-1 overflow-y-auto pb-4">
           {!catalogIndex.overview.isIndexComplete ? (
-            <div className="mx-4 mb-2 flex items-center justify-between gap-3 border-l-2 border-warning-000 px-3 py-2 text-[11px] text-text-200">
+            <div className="mx-4 mb-2 flex items-center justify-between gap-3 border-l-2 border-status-warning-foreground/30 dark:border-status-warning-dark-foreground/30 px-3 py-2 text-[11px] text-text-200">
               <span className="min-w-0 flex-1">
                 {catalogIndex.repairError ?? t('Some files could not be indexed yet.')}
               </span>
@@ -711,11 +734,18 @@ const ProjectFilesViewContent = ({
           catalogIndex.overview.isIndexComplete &&
           visibleFileCount === 0 &&
           !hasPageError ? (
-            <div className="flex h-full items-center justify-center px-6 text-center text-[12px] text-text-300">
-              {isSearchActive
-                ? t('No files match “{{query}}”', { query: debouncedSearchQuery })
-                : t('No files yet')}
-            </div>
+            <ProjectFilesEmptyState
+              query={isSearchActive ? debouncedSearchQuery : undefined}
+              onAction={() => {
+                if (isSearchActive) setSearchQuery('')
+                else {
+                  setToolItemExpanded(null)
+                  requestAnimationFrame(() =>
+                    window.dispatchEvent(new CustomEvent(FOCUS_COMPOSER_EVENT))
+                  )
+                }
+              }}
+            />
           ) : null}
 
           {showsUploadsSection ? (
@@ -848,22 +878,6 @@ const ProjectFilesViewContent = ({
         onOpenChange={setGrantDialogOpen}
         onGranted={handleSelectGrantedRoot}
       />
-      {grantedRootMutationError ? (
-        <ActionToast
-          title={grantedRootMutationErrorTitle!}
-          detail={grantedRootMutationError.detail}
-          actionLabel={t('Retry')}
-          dismissLabel={t('Close')}
-          onAction={() =>
-            void runGrantedRootMutation(
-              grantedRootMutationError.kind,
-              grantedRootMutationError.retry
-            )
-          }
-          onDismiss={() => setGrantedRootMutationError(undefined)}
-          testId="granted-root-error-toast"
-        />
-      ) : null}
     </div>
   )
 }

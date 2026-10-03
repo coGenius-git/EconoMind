@@ -1,15 +1,47 @@
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  createPermissionGrantRegistry,
+  type PermissionGrantRegistry
+} from '../permission-grants/registry'
+import { createProjectDbClient, migrateApplicationDatabase } from '../projects/prisma-client'
+import {
   AcpPermissionBroker,
   ConversationPermissionGrantStore,
   permissionRequestFingerprint,
-  type DurablePermissionWaitCandidate
+  resolveCategoryKey,
+  type DurablePermissionWaitCandidate,
+  type RestoredPermissionContinuation
 } from './permission-broker'
-import { withTrustedNativeToolIdentity } from './permission-policy'
+import {
+  withTrustedMcpToolIdentity,
+  withTrustedNativeToolIdentity,
+  type PermissionPolicyContext
+} from './permission-policy'
+import { initLogger, flushLogs } from '../logger'
+import * as mainLogger from '../logger'
+import {
+  logPermissionDiagnostic,
+  type PermissionDiagnostic
+} from '../permission-grants/diagnostics'
+import type { SessionPermissionRuntimeContext } from '../../shared/session-persistence'
 
 type EmittedPermissionRequest = Parameters<ConstructorParameters<typeof AcpPermissionBroker>[0]>[0]
+
+const permissionRoutes: PermissionPolicyContext[] = [
+  { profile: 'ask', frameworkId: 'claude-code', modelRoute: 'claude-anthropic' },
+  { profile: 'ask', frameworkId: 'opencode', modelRoute: 'opencode-anthropic' },
+  { profile: 'ask', frameworkId: 'opencode', modelRoute: 'opencode-openai' },
+  { profile: 'ask', frameworkId: 'codebuddy', modelRoute: 'codebuddy-openai' },
+  { profile: 'ask', frameworkId: 'codex', modelRoute: 'codex-responses' },
+  { profile: 'ask', frameworkId: 'codex', modelRoute: 'codex-responses-compatibility' },
+  { profile: 'ask', frameworkId: 'codex', modelRoute: 'codex-bridge' }
+]
 
 const getSessionOptionId = (request: EmittedPermissionRequest): string => {
   const optionId = request.options.find((option) => option.scope === 'session')?.optionId
@@ -143,7 +175,140 @@ const createCodexMcpPermissionRequest = (sessionId = 'session-1'): RequestPermis
   ]
 })
 
+const restoredContinuationFixture = async (): Promise<{
+  permission: SessionPermissionRuntimeContext
+  continuation: RestoredPermissionContinuation
+  policy: PermissionPolicyContext
+  providerRequest: RequestPermissionRequest
+}> => {
+  const emitted: EmittedPermissionRequest[] = []
+  const broker = new AcpPermissionBroker((request) => emitted.push(request))
+  const providerRequest = createToolPermissionRequest({
+    title: 'python verify.py',
+    providerToolName: 'Bash',
+    kind: 'execute',
+    rawInput: { command: 'python verify.py' }
+  })
+  const response = broker.requestPermission(providerRequest, { profile: 'ask', cwd: '/workspace' })
+  const request = emitted[0]
+  broker.cancelAllPending()
+  await response
+  const permission = {
+    state: 'continuing' as const,
+    request,
+    originatingPromptMessageId: 'prompt-1',
+    fingerprint: permissionRequestFingerprint(request)!,
+    categoryKey: resolveCategoryKey(providerRequest, [], true),
+    createdAt: 1
+  }
+  const continuation: RestoredPermissionContinuation = {
+    projectId: 'project-1',
+    sessionId: request.sessionId,
+    requestId: request.requestId,
+    promptMessageId: 'prompt-1',
+    fingerprint: permission.fingerprint,
+    interactionSequence: 7,
+    agentFrameId: 'frame-1',
+    messageBranchId: 'branch-1',
+    isCurrent: () => true,
+    released: false,
+    handoffStarted: false,
+    handedOff: false
+  }
+  const policy = {
+    profile: 'ask' as const,
+    cwd: '/workspace',
+    projectId: 'project-1',
+    promptMessageId: 'prompt-1',
+    interactionSequence: 7
+  }
+  return { permission, continuation, policy, providerRequest }
+}
+
 describe('ACP permission broker', () => {
+  it.each(['claude-code', 'opencode', 'codex'] as const)(
+    'denies unapproved %s tools without parking or persisting unattended work',
+    async (frameworkId) => {
+      const emit = vi.fn()
+      const settled = vi.fn()
+      const persist = vi.fn(async () => true)
+      const broker = new AcpPermissionBroker(emit, undefined, undefined, settled, {
+        persist,
+        settleLive: vi.fn()
+      })
+      const request = createToolPermissionRequest({
+        providerToolName: 'Bash',
+        kind: 'execute',
+        rawInput: { command: 'unknown-mutation' }
+      })
+      await expect(
+        broker.requestPermission(request, {
+          profile: 'ask',
+          frameworkId,
+          permissionPrompts: 'none',
+          projectId: 'p',
+          promptMessageId: 'm'
+        })
+      ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'reject-once' } })
+      expect(settled).toHaveBeenCalledWith(
+        expect.any(String),
+        'rejected',
+        expect.objectContaining({ toolCallId: request.toolCall.toolCallId })
+      )
+      expect(emit).not.toHaveBeenCalled()
+      expect(persist).not.toHaveBeenCalled()
+      expect(broker.getPendingRequests()).toEqual([])
+      // A subsequent interactive request still waits: policy is scoped to one execution.
+      const next = broker.requestPermission(request, { profile: 'ask', frameworkId })
+      await vi.waitFor(() => expect(emit).toHaveBeenCalledOnce())
+      await broker.respond({ requestId: emit.mock.calls[0][0].requestId, cancelled: true })
+      await next
+    }
+  )
+
+  it('keeps full and conservative auto authorization effective without prompts', async () => {
+    const emit = vi.fn()
+    const broker = new AcpPermissionBroker(emit)
+    const request = createToolPermissionRequest({
+      providerToolName: 'Read',
+      kind: 'read',
+      rawInput: { file_path: '/workspace/file.txt' },
+      locations: [{ path: '/workspace/file.txt' }]
+    })
+    for (const profile of ['full', 'auto'] as const) {
+      await expect(
+        broker.requestPermission(request, {
+          profile,
+          cwd: '/workspace',
+          autoReviewStrategy: 'conservative',
+          permissionPrompts: 'none'
+        })
+      ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } })
+    }
+    expect(emit).not.toHaveBeenCalled()
+  })
+
+  it('denies app approvals and cancels providers with no rejection option', async () => {
+    const emit = vi.fn()
+    const settled = vi.fn()
+    const broker = new AcpPermissionBroker(emit, undefined, undefined, settled)
+    await expect(
+      broker.requestAppApproval({
+        sessionId: 's',
+        title: 'Change specialist',
+        rawInput: {},
+        permissionPrompts: 'none'
+      })
+    ).resolves.toBe(false)
+    const request = createToolPermissionRequest()
+    request.options = request.options.filter((option) => !option.kind.startsWith('reject'))
+    await expect(
+      broker.requestPermission(request, { profile: 'ask', permissionPrompts: 'none' })
+    ).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    expect(settled).toHaveBeenLastCalledWith(expect.any(String), 'cancelled', expect.any(Object))
+    expect(emit).not.toHaveBeenCalled()
+  })
+
   it('persists a prompt-bound request before publishing it and clears authority before release', async () => {
     const emitted: EmittedPermissionRequest[] = []
     let finishPersist!: (persisted: boolean) => void
@@ -468,18 +633,123 @@ describe('ACP permission broker', () => {
     expect(broker.getPendingRequests()).toEqual([])
   })
 
+  it.each(['match', 'miss'] as const)(
+    'cancels a late registry %s after its restored continuation ends',
+    async (result) => {
+      const { permission, continuation, policy } = await restoredContinuationFixture()
+      const emitted = vi.fn()
+      const persist = vi.fn(async () => true)
+      let complete!: (value: Awaited<ReturnType<PermissionGrantRegistry['resolve']>>) => void
+      const resolve = vi.fn(
+        () =>
+          new Promise<Awaited<ReturnType<PermissionGrantRegistry['resolve']>>>((done) => {
+            complete = done
+          })
+      )
+      const registry = { resolve } as unknown as PermissionGrantRegistry
+      const broker = new AcpPermissionBroker(emitted, undefined, registry, undefined, {
+        persist,
+        settleLive: vi.fn(async () => undefined)
+      })
+      await broker.prepareRestoredDecision(
+        permission,
+        permission.request.options[0],
+        'project-1',
+        continuation
+      )
+      const response = broker.requestPermission(
+        withTrustedMcpToolIdentity(
+          createNotebookPermissionRequest(
+            'session-1',
+            'mcp__open-science-notebook__notebook_execute',
+            { language: 'python', code: 'print(2)' }
+          ),
+          'open-science-notebook/notebook_execute'
+        ),
+        { ...policy, mcpServerNames: ['open-science-notebook'] }
+      )
+      expect(resolve).toHaveBeenCalledOnce()
+      continuation.isCurrent = () => false
+      complete(
+        result === 'match'
+          ? {
+              matchedScope: 'project',
+              grant: {
+                id: 'grant',
+                capability: { kind: 'execution', key: 'python' },
+                scope: { kind: 'project', projectId: 'project-1' },
+                revision: 1
+              }
+            }
+          : undefined
+      )
+      await expect(response).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+      expect(continuation.released).toBe(false)
+      expect(persist).not.toHaveBeenCalled()
+      expect(emitted).not.toHaveBeenCalled()
+    }
+  )
+
+  it('does not reuse a restored Once in a different admitted interaction', async () => {
+    const { permission, continuation, policy, providerRequest } =
+      await restoredContinuationFixture()
+    const emitted = vi.fn()
+    const broker = new AcpPermissionBroker(emitted)
+    await broker.prepareRestoredDecision(
+      permission,
+      permission.request.options[0],
+      'project-1',
+      continuation
+    )
+    await expect(
+      broker.requestPermission(providerRequest, { ...policy, interactionSequence: 8 })
+    ).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    expect(continuation.released).toBe(false)
+    expect(emitted).not.toHaveBeenCalled()
+    await expect(broker.requestPermission(providerRequest, policy)).resolves.toEqual({
+      outcome: { outcome: 'selected', optionId: 'allow-once' }
+    })
+    expect(continuation.released).toBe(true)
+  })
+
+  it('does not clear a new restored decision when an older continuation finishes', async () => {
+    const { permission, continuation, policy, providerRequest } =
+      await restoredContinuationFixture()
+    const broker = new AcpPermissionBroker(vi.fn())
+    await broker.prepareRestoredDecision(
+      permission,
+      permission.request.options[0],
+      'project-1',
+      continuation
+    )
+    const next = { ...continuation }
+    await broker.prepareRestoredDecision(
+      permission,
+      permission.request.options[0],
+      'project-1',
+      next
+    )
+    expect(broker.clearRestoredDecision('session-1', continuation)).toBe(false)
+    await expect(broker.requestPermission(providerRequest, policy)).resolves.toEqual({
+      outcome: { outcome: 'selected', optionId: 'allow-once' }
+    })
+    expect(next.released).toBe(true)
+    expect(continuation.released).toBe(false)
+  })
+
   it('releases a restored allow-once only for the exact parked tool fingerprint', async () => {
     const emitted: EmittedPermissionRequest[] = []
     const broker = new AcpPermissionBroker((request) => emitted.push(request))
-    const originalProviderResponse = broker.requestPermission(
-      createToolPermissionRequest({
-        title: 'python verify.py',
-        providerToolName: 'Bash',
-        kind: 'execute',
-        rawInput: { command: 'python verify.py' }
-      }),
-      { profile: 'ask', cwd: '/workspace' }
-    )
+    const originalRequest = createToolPermissionRequest({
+      title: 'python verify.py',
+      providerToolName: 'Bash',
+      kind: 'execute',
+      rawInput: { command: 'python verify.py' }
+    })
+    const originalProviderResponse = broker.requestPermission(originalRequest, {
+      profile: 'ask',
+      cwd: '/workspace'
+    })
     const original = emitted[0]
     const fingerprint = permissionRequestFingerprint(original)
     expect(fingerprint).toMatch(/^[a-f0-9]{64}$/)
@@ -491,6 +761,7 @@ describe('ACP permission broker', () => {
         request: original,
         originatingPromptMessageId: 'prompt-1',
         fingerprint: fingerprint!,
+        categoryKey: resolveCategoryKey(originalRequest, [], true),
         createdAt: 1
       },
       original.options.find((option) => option.scope === 'once'),
@@ -523,6 +794,167 @@ describe('ACP permission broker', () => {
       outcome: { outcome: 'selected', optionId: 'allow-once' }
     })
     expect(emitted).toHaveLength(2)
+  })
+
+  it('does not consume a restored WSL2 allow-once after the Shell backend changes', async () => {
+    const emitted: EmittedPermissionRequest[] = []
+    const broker = new AcpPermissionBroker((request) => emitted.push(request))
+    const request = createNotebookPermissionRequest(
+      'session-1',
+      'mcp__open-science-notebook__bash_execute',
+      { command: 'pwd' }
+    )
+    const originalResponse = broker.requestPermission(request, {
+      profile: 'ask',
+      notebookShellRuntime: 'wsl2-bash'
+    })
+    const original = emitted[0]
+    broker.cancelAllPending()
+    await expect(originalResponse).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    await broker.prepareRestoredDecision(
+      {
+        state: 'pending',
+        request: original,
+        originatingPromptMessageId: 'prompt-1',
+        fingerprint: permissionRequestFingerprint(original)!,
+        categoryKey: resolveCategoryKey(request, [], true, 'wsl2-bash'),
+        createdAt: 1
+      },
+      original.options.find((option) => option.scope === 'once'),
+      'project-1'
+    )
+
+    const afterSwitch = broker.requestPermission(request, {
+      profile: 'ask',
+      notebookShellRuntime: 'powershell'
+    })
+
+    expect(emitted).toHaveLength(2)
+    await broker.respond({ requestId: emitted[1].requestId, cancelled: true })
+    await expect(afterSwitch).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+  })
+
+  it('replays a legacy runtime-invariant Notebook allow-once without a category', async () => {
+    const emitted: EmittedPermissionRequest[] = []
+    const broker = new AcpPermissionBroker((request) => emitted.push(request))
+    const request = createNotebookPermissionRequest(
+      'session-1',
+      'mcp__open-science-notebook__notebook_execute',
+      { language: 'python', code: 'print(1)' }
+    )
+    const originalResponse = broker.requestPermission(request, { profile: 'ask' })
+    const original = emitted[0]
+    broker.cancelAllPending()
+    await expect(originalResponse).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    await broker.prepareRestoredDecision(
+      {
+        state: 'pending',
+        request: original,
+        originatingPromptMessageId: 'prompt-1',
+        fingerprint: permissionRequestFingerprint(original)!,
+        createdAt: 1
+      },
+      original.options.find((option) => option.scope === 'once'),
+      'project-1'
+    )
+
+    await expect(broker.requestPermission(request, { profile: 'ask' })).resolves.toEqual({
+      outcome: { outcome: 'selected', optionId: 'allow-once' }
+    })
+    expect(emitted).toHaveLength(1)
+  })
+
+  it.each([
+    ['default Bash', {}],
+    ['PowerShell', { notebookShellRuntime: 'powershell' as const }],
+    ['WSL2 Bash', { notebookShellRuntime: 'wsl2-bash' as const }],
+    [
+      'a qualified WSL2 profile',
+      {
+        notebookShellRuntime: 'wsl2-bash' as const,
+        notebookShellRuntimeQualifier: 'wsl2-bash@wsl2-aaaaaaaaaaaaaaaaaaaaaaaa'
+      }
+    ]
+  ])(
+    'does not consume a legacy Shell allow-once without a recorded runtime category for %s',
+    async (_runtime, policyContext) => {
+      const emitted: EmittedPermissionRequest[] = []
+      const broker = new AcpPermissionBroker((request) => emitted.push(request))
+      const request = createNotebookPermissionRequest(
+        'session-1',
+        'mcp__open-science-notebook__bash_execute',
+        { command: 'pwd' }
+      )
+      const originalResponse = broker.requestPermission(request, {
+        profile: 'ask',
+        ...policyContext
+      })
+      const original = emitted[0]
+      broker.cancelAllPending()
+      await expect(originalResponse).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+      await broker.prepareRestoredDecision(
+        {
+          state: 'pending',
+          request: original,
+          originatingPromptMessageId: 'prompt-1',
+          fingerprint: permissionRequestFingerprint(original)!,
+          createdAt: 1
+        },
+        original.options.find((option) => option.scope === 'once'),
+        'project-1'
+      )
+
+      const replay = broker.requestPermission(request, {
+        profile: 'ask',
+        ...policyContext
+      })
+
+      expect(emitted).toHaveLength(2)
+      await broker.respond({ requestId: emitted[1].requestId, cancelled: true })
+      await expect(replay).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    }
+  )
+
+  it('does not consume a restored WSL2 allow-once after the activated profile changes', async () => {
+    const emitted: EmittedPermissionRequest[] = []
+    const broker = new AcpPermissionBroker((request) => emitted.push(request))
+    const request = createNotebookPermissionRequest(
+      'session-1',
+      'mcp__open-science-notebook__bash_execute',
+      { command: 'pwd' }
+    )
+    const profileA = 'wsl2-bash@wsl2-aaaaaaaaaaaaaaaaaaaaaaaa'
+    const profileB = 'wsl2-bash@wsl2-bbbbbbbbbbbbbbbbbbbbbbbb'
+    const originalResponse = broker.requestPermission(request, {
+      profile: 'ask',
+      notebookShellRuntime: 'wsl2-bash',
+      notebookShellRuntimeQualifier: profileA
+    })
+    const original = emitted[0]
+    broker.cancelAllPending()
+    await expect(originalResponse).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    await broker.prepareRestoredDecision(
+      {
+        state: 'pending',
+        request: original,
+        originatingPromptMessageId: 'prompt-1',
+        fingerprint: permissionRequestFingerprint(original)!,
+        categoryKey: resolveCategoryKey(request, [], true, profileA),
+        createdAt: 1
+      },
+      original.options.find((option) => option.scope === 'once'),
+      'project-1'
+    )
+
+    const afterSwitch = broker.requestPermission(request, {
+      profile: 'ask',
+      notebookShellRuntime: 'wsl2-bash',
+      notebookShellRuntimeQualifier: profileB
+    })
+
+    expect(emitted).toHaveLength(2)
+    await broker.respond({ requestId: emitted[1].requestId, cancelled: true })
+    await expect(afterSwitch).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
   })
 
   it('projects legacy command-group grants as readable shell grants', () => {
@@ -886,7 +1318,7 @@ describe('ACP permission broker', () => {
     ])
   })
 
-  it('silently allows OpenCode native skill loading without remembering a grant', async () => {
+  it('routes verified OpenCode native skill loading through managed approval without a grant', async () => {
     const emitted: EmittedPermissionRequest[] = []
     const broker = new AcpPermissionBroker((request) => emitted.push(request))
     const skillRequest = (): RequestPermissionRequest =>
@@ -899,7 +1331,8 @@ describe('ACP permission broker', () => {
       profile: 'ask',
       frameworkId: 'opencode'
     })
-    expect(emitted).toEqual([])
+    expect(emitted).toHaveLength(1)
+    await broker.respond({ requestId: emitted[0].requestId, optionId: 'allow-once' })
     await expect(response).resolves.toEqual({
       outcome: { outcome: 'selected', optionId: 'allow-once' }
     })
@@ -1797,6 +2230,164 @@ describe('ACP permission broker', () => {
     expect(emitted).toHaveLength(2)
   })
 
+  it('does not carry Shell grant authority between WSL2 Bash and PowerShell', async () => {
+    const emitted: EmittedPermissionRequest[] = []
+    const broker = new AcpPermissionBroker((request) => emitted.push(request))
+    const request = createNotebookPermissionRequest(
+      'session-1',
+      'mcp__open-science-notebook__bash_execute',
+      { command: 'pwd' }
+    )
+
+    const wsl = broker.requestPermission(request, {
+      profile: 'ask',
+      notebookShellRuntime: 'wsl2-bash'
+    })
+    broker.respond({ requestId: emitted[0].requestId, optionId: getSessionOptionId(emitted[0]) })
+    await wsl
+
+    const powershell = broker.requestPermission(request, {
+      profile: 'ask',
+      notebookShellRuntime: 'powershell'
+    })
+    expect(emitted).toHaveLength(2)
+    broker.respond({ requestId: emitted[1].requestId, optionId: getSessionOptionId(emitted[1]) })
+    await powershell
+
+    expect(broker.listGrants('session-1')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          categoryKey: 'mcp:open-science-notebook/bash_execute:bash'
+        }),
+        expect.objectContaining({
+          categoryKey: 'mcp:open-science-notebook/bash_execute:wsl2-bash',
+          label: 'Notebook shell (Bash)'
+        })
+      ])
+    )
+  })
+
+  it('offers durable grant scopes for native and WSL2-bound notebook Shell capabilities', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'open-science-wsl2-permission-'))
+    const client = createProjectDbClient(storageRoot)
+    try {
+      await migrateApplicationDatabase(client)
+      await client.project.create({ data: { id: 'project-1', name: 'Project one' } })
+      let grantId = 0
+      const registry = await createPermissionGrantRegistry({
+        getClient: async () => client,
+        createId: () => `shell-grant-${++grantId}`
+      })
+      const emitted: EmittedPermissionRequest[] = []
+      const broker = new AcpPermissionBroker(
+        (request) => emitted.push(request),
+        undefined,
+        registry
+      )
+
+      const response = broker.requestPermission(
+        withTrustedMcpToolIdentity(
+          createNotebookPermissionRequest('session-1', 'mcp__open-science-notebook__bash_execute', {
+            command: 'pwd'
+          }),
+          'open-science-notebook/bash_execute'
+        ),
+        {
+          profile: 'ask',
+          projectId: 'project-1',
+          mcpServerNames: ['open-science-notebook'],
+          notebookShellRuntime: 'wsl2-bash'
+        }
+      )
+
+      await vi.waitFor(() => expect(emitted).toHaveLength(1))
+      expect(emitted[0].options.map((option) => option.scope).filter(Boolean)).toEqual([
+        'once',
+        'session',
+        'project',
+        'global'
+      ])
+      await broker.respond({
+        requestId: emitted[0].requestId,
+        optionId: getSessionOptionId(emitted[0])
+      })
+      await expect(response).resolves.toEqual({
+        outcome: { outcome: 'selected', optionId: 'allow-once' }
+      })
+
+      await expect(
+        broker.requestPermission(
+          withTrustedMcpToolIdentity(
+            createNotebookPermissionRequest(
+              'session-1',
+              'mcp__open-science-notebook__bash_execute',
+              { command: 'ls' }
+            ),
+            'open-science-notebook/bash_execute'
+          ),
+          {
+            profile: 'ask',
+            projectId: 'project-1',
+            mcpServerNames: ['open-science-notebook'],
+            notebookShellRuntime: 'wsl2-bash'
+          }
+        )
+      ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } })
+      expect(emitted).toHaveLength(1)
+
+      const nativeResponse = broker.requestPermission(
+        withTrustedMcpToolIdentity(
+          createNotebookPermissionRequest('session-1', 'mcp__open-science-notebook__bash_execute', {
+            command: 'pwd'
+          }),
+          'open-science-notebook/bash_execute'
+        ),
+        {
+          profile: 'ask',
+          projectId: 'project-1',
+          mcpServerNames: ['open-science-notebook'],
+          notebookShellRuntime: 'native-posix'
+        }
+      )
+      await vi.waitFor(() => expect(emitted).toHaveLength(2))
+      expect(emitted[1].options.map((option) => option.scope).filter(Boolean)).toEqual([
+        'once',
+        'session',
+        'project',
+        'global'
+      ])
+      await broker.respond({
+        requestId: emitted[1].requestId,
+        optionId: getSessionOptionId(emitted[1])
+      })
+      await nativeResponse
+
+      await expect(registry.list()).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            capability: {
+              kind: 'mcp_tool',
+              key: 'mcp:open-science-notebook/bash_execute',
+              qualifier: { mode: 'category', value: 'wsl2-bash' }
+            },
+            scope: { kind: 'session', projectId: 'project-1', sessionId: 'session-1' }
+          }),
+          expect.objectContaining({
+            capability: {
+              kind: 'mcp_tool',
+              key: 'mcp:open-science-notebook/bash_execute',
+              qualifier: { mode: 'category', value: 'bash' }
+            },
+            scope: { kind: 'session', projectId: 'project-1', sessionId: 'session-1' }
+          })
+        ])
+      )
+    } finally {
+      await client.$disconnect()
+      await rm(storageRoot, { recursive: true, force: true })
+    }
+  })
+
   it('keeps a per-tool session grant when the composer profile changes between calls', async () => {
     const emitted: EmittedPermissionRequest[] = []
     const broker = new AcpPermissionBroker((request) => emitted.push(request))
@@ -2209,4 +2800,375 @@ describe('ACP permission broker', () => {
     )
     expect(emittedRequests).toHaveLength(countBeforeWrite + 1)
   })
+})
+
+it('reuses registered file grants for provider metadata aliases on every framework route', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'permission-file-aliases-'))
+  const client = createProjectDbClient(root)
+  const emit = vi.fn()
+  const logging = vi.spyOn(mainLogger, 'createLogger')
+  let broker: AcpPermissionBroker | undefined
+  try {
+    await migrateApplicationDatabase(client)
+    const registry = await createPermissionGrantRegistry({ getClient: async () => client })
+    broker = new AcpPermissionBroker(emit, undefined, registry)
+    for (const operation of ['read', 'write', 'edit', 'notebook_edit', 'delete', 'move']) {
+      await registry.remember({
+        capability: { kind: 'file_operation', key: `file:${operation}` },
+        scope: { kind: 'global' }
+      })
+    }
+    for (const context of permissionRoutes) {
+      for (const name of [
+        'Read',
+        'read',
+        'Write',
+        'write',
+        'Edit',
+        'edit',
+        'MultiEdit',
+        'multiedit',
+        'NotebookEdit',
+        'notebookedit'
+      ]) {
+        const request = createToolPermissionRequest({ providerToolName: name })
+        request.toolCall._meta = { toolName: name }
+        await expect(broker.requestPermission(request, context)).resolves.toEqual({
+          outcome: { outcome: 'selected', optionId: 'allow-once' }
+        })
+      }
+      for (const kind of ['read', 'edit', 'delete', 'move'] as const) {
+        await expect(
+          broker.requestPermission(createToolPermissionRequest({ kind }), context)
+        ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } })
+      }
+    }
+    expect(emit).not.toHaveBeenCalled()
+    expect(logging.mock.calls.filter(([scope]) => scope === 'permission')).toEqual([])
+    // Neither display names nor a separate provider directory guard inherit a file grant.
+    for (const request of [
+      createToolPermissionRequest({ title: 'write' }),
+      createToolPermissionRequest({ providerToolName: 'delete' }),
+      createToolPermissionRequest({ providerToolName: 'move' }),
+      createToolPermissionRequest({
+        providerToolName: 'external_directory',
+        kind: 'other',
+        locations: [{ path: '/private/path' }]
+      }),
+      createToolPermissionRequest({ providerToolName: 'mcp__custom__write', kind: 'edit' })
+    ]) {
+      const pending = broker.requestPermission(request, {
+        profile: 'ask',
+        frameworkId: 'opencode',
+        mcpServerNames: ['custom']
+      })
+      await vi.waitFor(() => expect(broker!.getPendingRequests()).toHaveLength(1))
+      broker.cancelAllPending()
+      await expect(pending).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    }
+  } finally {
+    logging.mockRestore()
+    broker?.cancelAllPending()
+    await client.$disconnect()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+it('classifies unmapped permissions across tools and framework routes without granting them', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'permission-fallback-reasons-'))
+  initLogger({ logDir: root, mirrorToConsole: false })
+  const registry = { resolve: vi.fn(async () => undefined) } as unknown as PermissionGrantRegistry
+  const broker = new AcpPermissionBroker(vi.fn(), undefined, registry)
+  const lastDecision = async (): Promise<Record<string, unknown>> => {
+    await flushLogs()
+    const events = (await readFile(join(root, 'main.log'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    return events
+      .filter((event) => event.scope === 'permission' && event.data.stage === 'decision')
+      .at(-1)?.data
+  }
+  const cases = [
+    ['tool_identity_missing', createToolPermissionRequest({ title: 'private-title' })],
+    ['tool_kind_unsupported', createToolPermissionRequest({ kind: 'search' })],
+    ['native_tool_unsupported', createToolPermissionRequest({ providerToolName: 'private-tool' })],
+    ['command_input_unavailable', createToolPermissionRequest({ kind: 'execute' })],
+    [
+      'command_not_rememberable',
+      createToolPermissionRequest({
+        kind: 'execute',
+        rawInput: { command: 'python private-script.py' }
+      })
+    ],
+    [
+      'native_web_unverified',
+      createToolPermissionRequest({ providerToolName: 'WebFetch', kind: 'fetch' })
+    ],
+    [
+      'mcp_identity_unverified',
+      createToolPermissionRequest({ title: 'mcp__private-server__private-tool' })
+    ],
+    [
+      'capability_not_registered',
+      createToolPermissionRequest({ providerToolName: 'mcp__open-science-notebook__private-tool' })
+    ],
+    [
+      'execution_runtime_unresolved',
+      createToolPermissionRequest({ providerToolName: 'mcp__open-science-notebook__bash_execute' })
+    ]
+  ] as const
+  try {
+    for (const context of permissionRoutes) {
+      for (const [reason, request] of cases) {
+        const pending = broker.requestPermission(request, {
+          ...context,
+          projectId: 'project-1',
+          mcpServerNames: ['open-science-notebook'],
+          notebookShellRuntimeQualifier: 'private-unsupported-runtime'
+        })
+        const [prompt] = broker.getPendingRequests()
+        expect(
+          prompt.options
+            .filter((option) => option.kind.startsWith('allow'))
+            .map((option) => option.scope)
+        ).toEqual(['once'])
+        await broker.respond({ requestId: prompt.requestId, optionId: 'reject-once' })
+        await pending
+        expect(await lastDecision()).toMatchObject({
+          frameworkId: context.frameworkId,
+          modelRoute: context.modelRoute,
+          reason,
+          fallback: true,
+          outcome: 'approval_required'
+        })
+      }
+    }
+    expect(registry.resolve).not.toHaveBeenCalled()
+    for (const projectId of [undefined, 'project-1']) {
+      const previousDecision = await lastDecision()
+      const pending = broker.requestPermission(
+        createToolPermissionRequest({ providerToolName: 'write' }),
+        { profile: 'ask', projectId }
+      )
+      await vi.waitFor(() => expect(broker.getPendingRequests()).toHaveLength(1))
+      if (projectId) {
+        expect(await lastDecision()).toEqual(previousDecision)
+      } else {
+        expect(await lastDecision()).toMatchObject({
+          reason: 'project_context_unavailable',
+          fallback: true,
+          hasReportedToolName: true,
+          hasRawInput: false,
+          hasLocations: false
+        })
+      }
+      broker.cancelAllPending()
+      await pending
+    }
+    expect(await readFile(join(root, 'main.log'), 'utf8')).not.toContain('private-')
+  } finally {
+    broker.cancelAllPending()
+    await flushLogs()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+it('records only permission anomalies without provider payloads or routine settlements', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'permission-decision-log-'))
+  initLogger({ logDir: root, mirrorToConsole: false })
+  const emitted: EmittedPermissionRequest[] = []
+  const broker = new AcpPermissionBroker((request) => emitted.push(request))
+  try {
+    const params = createPermissionRequest('private-session-canary')
+    params.toolCall = {
+      toolCallId: 'private-tool-canary',
+      title: 'private-title-canary',
+      kind: 'other',
+      rawInput: { command: 'private-command-canary', token: 'private-token-canary' },
+      _meta: { toolName: 'private-name-canary' }
+    }
+    const pending = broker.requestPermission(params, {
+      profile: 'ask',
+      frameworkId: 'codex',
+      modelRoute: 'codex-bridge'
+    })
+    expect(emitted).toHaveLength(1)
+    await broker.respond({ requestId: emitted[0].requestId, optionId: 'reject-once' })
+    await pending
+    await broker.requestPermission(params, {
+      profile: 'full',
+      frameworkId: 'codex',
+      modelRoute: 'codex-responses'
+    })
+    const mapped = broker.requestPermission(
+      {
+        ...params,
+        toolCall: { ...params.toolCall, kind: 'edit', _meta: { toolName: 'Write' } }
+      },
+      { profile: 'ask', frameworkId: 'claude-code' }
+    )
+    await broker.respond({ requestId: emitted[1].requestId, optionId: 'reject-once' })
+    await mapped
+    const registry = { resolve: vi.fn(async () => undefined) } as unknown as PermissionGrantRegistry
+    const managedBroker = new AcpPermissionBroker(vi.fn(), undefined, registry)
+    for (const context of permissionRoutes) {
+      for (const optionId of ['allow-once', 'reject-once', undefined]) {
+        const managed = managedBroker.requestPermission(
+          createToolPermissionRequest({ providerToolName: 'Write' }),
+          { ...context, projectId: 'project-1' }
+        )
+        await vi.waitFor(() => expect(managedBroker.getPendingRequests()).toHaveLength(1))
+        if (optionId) {
+          await managedBroker.respond({
+            requestId: managedBroker.getPendingRequests()[0].requestId,
+            optionId
+          })
+        } else {
+          managedBroker.cancelAllPending()
+        }
+        await managed
+      }
+    }
+    await flushLogs()
+    const contents = await readFile(join(root, 'main.log'), 'utf8')
+    const events = contents
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter((record) => record.scope === 'permission')
+      .map((record) => record.data)
+    expect(events).toEqual([
+      expect.objectContaining({
+        stage: 'decision',
+        modelRoute: 'codex-bridge',
+        authority: 'human',
+        fallback: true,
+        reason: 'native_tool_unsupported',
+        outcome: 'approval_required'
+      }),
+      expect.objectContaining({
+        stage: 'decision',
+        frameworkId: 'claude-code',
+        fallback: true,
+        reason: 'registry_unavailable',
+        capabilityKind: 'file_operation',
+        outcome: 'approval_required'
+      })
+    ])
+    expect(new Set(events.map((event) => event.toolCallRef)).size).toBe(1)
+    expect(contents).not.toContain('private-')
+  } finally {
+    broker.cancelAllPending()
+    await flushLogs()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+it('logs durable permission persistence failures without exposing storage error details', async () => {
+  const info = vi.fn()
+  const logger = mainLogger.createLogger('permission')
+  const logging = vi.spyOn(mainLogger, 'createLogger').mockReturnValue({ ...logger, info })
+  const error = new Error('private-storage-error')
+  const emit = vi.fn()
+  const broker = new AcpPermissionBroker(emit, undefined, undefined, undefined, {
+    persist: vi.fn().mockRejectedValue(error),
+    settleLive: vi.fn()
+  })
+  try {
+    await expect(
+      broker.requestPermission(createCodexExecutePermissionRequest('python private-script.py'), {
+        profile: 'ask',
+        frameworkId: 'codex',
+        projectId: 'project-1',
+        promptMessageId: 'prompt-1'
+      })
+    ).rejects.toBe(error)
+    expect(emit).not.toHaveBeenCalled()
+    expect(broker.getPendingRequests()).toEqual([])
+    expect(info).toHaveBeenCalledWith(
+      'permission decision trace',
+      expect.objectContaining({ reason: 'permission_settlement_failed', outcome: 'cancelled' })
+    )
+    expect(JSON.stringify(info.mock.calls)).not.toContain('private-')
+  } finally {
+    logging.mockRestore()
+    broker.cancelAllPending()
+  }
+})
+
+it('filters normal permission events before logging and retains fallback and failure evidence', () => {
+  const logging = vi.spyOn(mainLogger, 'createLogger')
+  const normal: Omit<PermissionDiagnostic, 'sessionId'>[] = [
+    { stage: 'request' },
+    { stage: 'decision', authority: 'registry_grant', outcome: 'allowed' },
+    { stage: 'decision', authority: 'automatic_policy', outcome: 'allowed' },
+    { stage: 'decision', authority: 'legacy_session', outcome: 'allowed' },
+    { stage: 'decision', authority: 'restored_once', outcome: 'allowed' },
+    { stage: 'decision', authority: 'connector_policy', outcome: 'rejected' },
+    { stage: 'decision', authority: 'human', fallback: false, reason: 'grant_not_matched' },
+    { stage: 'settlement', authority: 'human', outcome: 'allowed' },
+    { stage: 'settlement', authority: 'human', outcome: 'rejected' },
+    { stage: 'settlement', authority: 'system', outcome: 'cancelled' },
+    { stage: 'context', fallback: false, reason: 'context_ready' },
+    { stage: 'context', fallback: false, reason: 'context_cancelled' },
+    { stage: 'profile', fallback: true, reason: 'provider_interception_unavailable' }
+  ]
+  const anomalies: Omit<PermissionDiagnostic, 'sessionId'>[] = [
+    { stage: 'decision', fallback: true, reason: 'registry_unavailable' },
+    { stage: 'decision', fallback: true, reason: 'approval_unavailable' },
+    { stage: 'decision', fallback: true, reason: 'allow_once_unavailable' },
+    { stage: 'context', fallback: true, reason: 'context_timeout' },
+    { stage: 'decision', reason: 'permission_settlement_failed', outcome: 'cancelled' }
+  ]
+  try {
+    for (const event of normal) logPermissionDiagnostic({ sessionId: 'session', ...event })
+    expect(logging).not.toHaveBeenCalled()
+    const info = vi.fn()
+    logging.mockReturnValue({ ...mainLogger.createLogger('permission'), info })
+    logging.mockClear()
+    for (const event of anomalies) logPermissionDiagnostic({ sessionId: 'session', ...event })
+    expect(info).toHaveBeenCalledTimes(anomalies.length)
+    for (const [index, event] of anomalies.entries()) {
+      expect(info).toHaveBeenNthCalledWith(
+        index + 1,
+        'permission decision trace',
+        expect.objectContaining(event)
+      )
+    }
+  } finally {
+    logging.mockRestore()
+  }
+})
+
+it('does not change permission outcomes when diagnostic logging fails', async () => {
+  const create = mainLogger.createLogger
+  const logging = vi.spyOn(mainLogger, 'createLogger').mockImplementation((scope) =>
+    scope === 'permission'
+      ? {
+          ...create(scope),
+          info: () => {
+            throw new Error('log unavailable')
+          }
+        }
+      : create(scope)
+  )
+  const emit = vi.fn()
+  const broker = new AcpPermissionBroker(emit)
+  try {
+    const pending = broker.requestPermission(createPermissionRequest(), { profile: 'ask' })
+    expect(emit).toHaveBeenCalledOnce()
+    await broker.respond({ requestId: emit.mock.calls[0][0].requestId, optionId: 'reject-once' })
+    await expect(pending).resolves.toEqual({
+      outcome: { outcome: 'selected', optionId: 'reject-once' }
+    })
+    await expect(
+      broker.requestPermission(createPermissionRequest(), { profile: 'full' })
+    ).resolves.toEqual({
+      outcome: { outcome: 'selected', optionId: 'allow-once' }
+    })
+  } finally {
+    logging.mockRestore()
+    broker.cancelAllPending()
+  }
 })

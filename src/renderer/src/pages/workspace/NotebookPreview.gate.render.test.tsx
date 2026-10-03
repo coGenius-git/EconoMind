@@ -152,6 +152,47 @@ describe('EnvProvisionOverlay', () => {
     expect(retried).toBe(1)
   })
 
+  it('lets the user close a blocked environment gate when retry cannot help', () => {
+    act(() =>
+      root.render(
+        <EnvProvisionOverlay
+          ui={{ kind: 'error', message: 'KERNEL_STARTUP_FENCE: recovery is blocked' }}
+          onRetry={() => undefined}
+        />
+      )
+    )
+
+    const dismiss = container.querySelector(
+      '[data-testid="notebook-env-dismiss"]'
+    ) as HTMLButtonElement
+    expect(dismiss).not.toBeNull()
+
+    act(() => dismiss.click())
+
+    expect(container.querySelector('[data-testid="notebook-env-gate"]')).toBeNull()
+  })
+
+  it('shows the same failure again after a retry cycle leaves and re-enters the error state', () => {
+    const error = { kind: 'error', message: 'KERNEL_STARTUP_FENCE: recovery is blocked' } as const
+    act(() => root.render(<EnvProvisionOverlay key="error" ui={error} onRetry={() => undefined} />))
+    act(() =>
+      (container.querySelector('[data-testid="notebook-env-dismiss"]') as HTMLButtonElement).click()
+    )
+    expect(container.querySelector('[data-testid="notebook-env-gate"]')).toBeNull()
+
+    act(() =>
+      root.render(
+        <EnvProvisionOverlay
+          key="preparing"
+          ui={{ kind: 'preparing', scope: 'python', phase: '', progress: 0 }}
+        />
+      )
+    )
+    act(() => root.render(<EnvProvisionOverlay key="error" ui={error} onRetry={() => undefined} />))
+
+    expect(container.querySelector('[data-testid="notebook-env-gate"]')).not.toBeNull()
+  })
+
   it('announces setup failures assertively', () => {
     act(() => root.render(<EnvProvisionOverlay ui={{ kind: 'error', message: 'offline' }} />))
     const gate = container.querySelector('[data-testid="notebook-env-gate"]')
@@ -888,7 +929,7 @@ describe('NotebookPreview per-kernel tabs', () => {
     expect((await screen.findByRole('tooltip')).textContent).toBe(
       'Run [2] later changed x. This output is the snapshot recorded before that change; this run completed normally.'
     )
-    expect(container.textContent).not.toContain('run-3')
+    expect(screen.getByRole('tooltip').textContent).not.toContain('run-3')
     expect(container.textContent).not.toContain('out of date')
   })
 
@@ -938,6 +979,40 @@ describe('NotebookPreview per-kernel tabs', () => {
       'This run completed normally. Some variable relationships in this code could not be determined automatically, so later variable changes may not be linked back to this run.'
     )
     expect(container.textContent).not.toContain('result is current')
+  })
+
+  it('explains which package setup must be captured for replay', async () => {
+    await mountWithRuns(
+      [makeRun({ runId: 'run-2', cellId: 'make-result', script: 'read_excel("input.xlsx")' })],
+      [],
+      { 'run-2': { state: 'unknown', reasons: ['missing-package-load:readxl'] } }
+    )
+    expect(
+      container.querySelector('[data-testid="notebook-cell-dependency-unknown"]')?.textContent
+    ).toBe('Package setup is missing')
+    const badge = container.querySelector<HTMLButtonElement>(
+      '[data-testid="notebook-cell-dependency-unknown"]'
+    )!
+    fireEvent.focus(badge)
+    expect((await screen.findByRole('tooltip')).textContent).toBe(
+      'Package loading steps were not captured for readxl. Run the package setup cells again, then rerun this cell to capture its dependencies.'
+    )
+  })
+
+  it('explains missing plotting state instead of describing a variable parser failure', async () => {
+    await mountWithRuns(
+      [makeRun({ runId: 'run-2', cellId: 'plot', script: 'chordDiagram(mat)' })],
+      [],
+      { 'run-2': { state: 'unknown', reasons: ['graphics-state-unavailable'] } }
+    )
+    const badge = container.querySelector<HTMLButtonElement>(
+      '[data-testid="notebook-cell-dependency-unknown"]'
+    )!
+    expect(badge.textContent).toBe('Plot setup is incomplete')
+    fireEvent.focus(badge)
+    expect((await screen.findByRole('tooltip')).textContent).toBe(
+      'Earlier circlize plotting parameters were not captured. Call circlize::circos.clear() before configuring and drawing the plot, then rerun the cell.'
+    )
   })
 
   it('keeps incomplete-tracking metadata on every run when a cell is reused', async () => {

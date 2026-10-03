@@ -1,3 +1,4 @@
+import { StructuredOutputError } from '../delegation/structured-output'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -36,6 +37,43 @@ describe('authenticated delegatedWorkCall route', () => {
     rootFrameId: 'root-frame',
     agentFrameId: 'child-frame',
     ...overrides
+  })
+
+  it('pins the root execution from trusted control context instead of agent parameters', async () => {
+    const delegate = vi.fn<
+      (caller: unknown, request: unknown) => Promise<{ kind: 'receipts'; children: [] }>
+    >(async () => ({ kind: 'receipts', children: [] }))
+    server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
+      transport: 'tcp',
+      delegatedWorkService: { delegate }
+    })
+    const connection = await server.issueControlConnection('session-1', 'project-1', 'root-frame')
+    const end = connection.beginControlInvocation({
+      turnId: 'tool-turn',
+      controlInvocationGeneration: 1,
+      toolInvocationId: 'tool-1',
+      originatingUserMessageId: 'prompt-1',
+      rootExecutionId: 'trusted-execution'
+    })
+    const response = await fetch(connection.endpoint, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${connection.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        method: 'delegatedWorkCall',
+        params: {
+          root_execution_id: 'forged-execution',
+          request: { task: 'work', name: 'child' },
+          options: { wait: false }
+        }
+      })
+    })
+    expect(response.status).toBe(200)
+    expect(delegate.mock.calls[0]?.[0]).toMatchObject({
+      rootExecutionId: 'trusted-execution',
+      originMessageId: 'prompt-1'
+    })
+    end()
+    connection.release()
   })
 
   it('projects authoritative Session delegation policy without disabling existing-child operations', async () => {
@@ -160,6 +198,25 @@ describe('authenticated delegatedWorkCall route', () => {
     const accepted = await call(child.token)
     expect(accepted.status).toBe(200)
     await expect(accepted.json()).resolves.toEqual({ result: { accepted: true } })
+    submitOutput.mockRejectedValueOnce(
+      new StructuredOutputError(
+        'structured_output_validation_failed',
+        'Structured output does not match the admitted schema.',
+        'required',
+        '/summary',
+        'count'
+      )
+    )
+    const rejected = await call(child.token)
+    await expect(rejected.json()).resolves.toEqual({
+      error: {
+        code: 'structured_output_validation_failed',
+        message: 'Structured output does not match the admitted schema.',
+        keyword: 'required',
+        instance_path: '/summary',
+        property: 'count'
+      }
+    })
     expect(submitOutput).toHaveBeenCalledWith(
       expect.objectContaining({
         session: { projectId: 'project-1', sessionId: 'session-1' },

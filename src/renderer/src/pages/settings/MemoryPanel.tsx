@@ -1,6 +1,7 @@
-import { AlertDialog } from 'radix-ui'
+import { useRetainedDialogValue } from '@/components/ui/use-retained-dialog-value'
+import { ErrorNotice } from '@/components/error-notice'
+import * as AlertDialog from '@/components/ui/alert-dialog'
 import {
-  AlertTriangle,
   ArrowUpRight,
   Bell,
   Check,
@@ -103,13 +104,7 @@ const translateMemoryError = (t: Translate, error: unknown): string => {
 }
 
 const MemoryErrorBanner = ({ message }: { message: string }): React.JSX.Element => (
-  <div
-    role="alert"
-    className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
-  >
-    <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-    <p className="min-w-0 break-words leading-5">{message}</p>
-  </div>
+  <ErrorNotice inline role="alert" tone="amber" description={message} />
 )
 
 const confirmButtonClassName =
@@ -406,6 +401,11 @@ const EntryRow = ({
   const updateEntry = useMemoryStore((state) => state.updateEntry)
   const [editing, setEditing] = useState<MemoryEntryView>()
   const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const timeout = window.setTimeout(() => setCopied(false), 1_200)
+    return () => window.clearTimeout(timeout)
+  }, [copied])
   const entryCategoryName =
     entry.categoryId === ABOUT_YOU_MEMORY_CATEGORY_ID ? t('About you') : entry.categoryName
   const categoryLabel = viewKind === 'project' ? entryCategoryName : null
@@ -418,7 +418,6 @@ const EntryRow = ({
       if (!navigator.clipboard) return
       await navigator.clipboard.writeText(entry.content)
       setCopied(true)
-      window.setTimeout(() => setCopied(false), 1_200)
     } catch {
       setCopied(false)
     }
@@ -455,7 +454,9 @@ const EntryRow = ({
                 aria-label={t('Copy note')}
                 onClick={() => void copyNote()}
               >
-                {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+                <span key={String(copied)} className="button-feedback">
+                  {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+                </span>
               </Button>
             </TooltipTrigger>
             <TooltipContent>{copied ? t('Copied') : t('Copy note')}</TooltipContent>
@@ -545,6 +546,7 @@ const MemoryList = ({
   const [addingTarget, setAddingTarget] = useState<string>()
   const [confirmClear, setConfirmClear] = useState(false)
   const [pendingDeleteCategory, setPendingDeleteCategory] = useState<CustomMemoryCategoryView>()
+  const dialogDeleteCategory = useRetainedDialogValue(pendingDeleteCategory)
   const [pendingDeleteEntry, setPendingDeleteEntry] = useState<MemoryEntryView>()
   const hasEntries =
     categories.some((category) => category.entries.length > 0) ||
@@ -558,7 +560,7 @@ const MemoryList = ({
   const adding = selectedTarget === addingTarget
 
   return (
-    <TooltipProvider delayDuration={250}>
+    <TooltipProvider>
       <div data-slot="memory-panel" className="flex h-full min-h-0 flex-col px-3 py-3 md:px-4">
         <div className="mb-3 flex min-h-8 items-center justify-end gap-3">
           <label className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -634,6 +636,7 @@ const MemoryList = ({
               })}
               <button
                 type="button"
+                data-settings-anchor="memory.new-category"
                 disabled={customCount >= MEMORY_CUSTOM_CATEGORY_LIMIT}
                 className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
                 onClick={() => onNavigate({ kind: 'create' })}
@@ -851,7 +854,7 @@ const MemoryList = ({
           description={t(
             'This category and all {{count}} notes in it will be deleted from current app data. Restoring a database backup may restore older memory.',
             {
-              count: pendingDeleteCategory?.entries.length ?? 0
+              count: dialogDeleteCategory?.entries.length ?? 0
             }
           )}
           confirmLabel={t('Delete category')}

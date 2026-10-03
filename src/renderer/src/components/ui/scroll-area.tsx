@@ -16,17 +16,21 @@ function ScrollArea({
   return (
     <ScrollAreaPrimitive.Root
       data-slot="scroll-area"
-      className={cn('relative', className)}
+      className={cn('scrollbar-auto-hide relative', className)}
       {...props}
     >
       <ScrollAreaPrimitive.Viewport
         ref={viewportRef}
         data-slot="scroll-area-viewport"
-        className="size-full min-w-0 rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1"
+        // Keep absolutely positioned descendants (including sr-only inputs) inside this
+        // scroller, rather than expanding the Root or an enclosing dialog's scroll range.
+        className="relative size-full min-w-0 rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1"
       >
         {children}
       </ScrollAreaPrimitive.Viewport>
-      <ScrollBar />
+      {/* Keep Radix's outer hover Presence mounted for keyboard focus. Its nested Auto
+          scrollbar still checks overflow; the Thumb has a separate, unset forceMount prop. */}
+      <ScrollBar forceMount />
       <ScrollAreaPrimitive.Corner />
     </ScrollAreaPrimitive.Root>
   )

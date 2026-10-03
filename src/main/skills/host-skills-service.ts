@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { cp, lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve, sep } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 
 import type { TrustedCallingSession } from '../../shared/agents-contract'
-import { SKILL_IMPORT_LIMITS } from '../../shared/skill-import-limits'
+import { isSkillPackageIgnoredPath, SKILL_IMPORT_LIMITS } from '../../shared/skill-import-limits'
 import { parseSkillDocument } from './frontmatter'
 import type { BundledSkill } from './registry'
 import {
@@ -140,7 +140,8 @@ class HostSkillsCallError extends Error {
   constructor(operation: string, cause: unknown) {
     const message = cause instanceof Error ? cause.message : String(cause)
     super(
-      `host.skills.${operation}: ${message.replace(/(['"])(?:[A-Za-z]:\\|\/)[^'"]+\1/g, '<path>')}`
+      `host.skills.${operation}: ${message.replace(/(['"])(?:[A-Za-z]:\\|\/)[^'"]+\1/g, '<path>')}`,
+      { cause }
     )
     this.name = 'HostSkillsCallError'
   }
@@ -263,7 +264,9 @@ export class HostSkillsService {
   ): Promise<HostSkillReadResult> {
     const files =
       relativePath === 'SKILL.md'
-        ? (await inspectSkillPackage(root)).map(({ relativePath: path }) => path)
+        ? (await inspectSkillPackage(root, { storageRoot: this.options.storageRoot })).map(
+            ({ relativePath: path }) => path
+          )
         : undefined
     return {
       name,
@@ -286,7 +289,10 @@ export class HostSkillsService {
     }
 
     const skill = await this.resolvePublished(requestedName)
-    if (!skill) throw new Error(`Unknown Skill: ${requestedName}`)
+    if (!skill)
+      throw new Error(
+        `Unknown Skill: ${requestedName}. host.skills reads managed and draft Skills, not generated Connector Skill documents. Use an already loaded document or the current framework's advertised Skill loader. If unavailable, stop the dependent work; do not probe filesystem paths or guess Connector methods.`
+      )
     const result = await this.options.catalog.withSkillRead(skill.id, (lockedSkill) =>
       this.readFromPackage(
         lockedSkill.sourceDir,
@@ -305,7 +311,9 @@ export class HostSkillsService {
     origin: HostSkillOrigin,
     expectedName?: string
   ): Promise<HostSkillValidationResult> {
-    const report = await validateSkillPackage(sourceDir, name, expectedName)
+    const report = await validateSkillPackage(sourceDir, name, expectedName, {
+      storageRoot: this.options.storageRoot
+    })
     return {
       valid: report.errors.length === 0,
       name: report.name,
@@ -373,6 +381,13 @@ export class HostSkillsService {
           force: false,
           errorOnExist: true,
           filter: async (entry) => {
+            if (
+              isSkillPackageIgnoredPath(
+                relative(lockedSkill.sourceDir, entry).replaceAll('\\', '/')
+              )
+            ) {
+              return false
+            }
             if ((await lstat(entry)).isSymbolicLink()) {
               throw new Error('refusing to draft a Skill containing a symbolic link')
             }
@@ -395,7 +410,7 @@ export class HostSkillsService {
     target: string,
     nextBytes: number
   ): Promise<void> {
-    const inventory = await inspectSkillPackage(root)
+    const inventory = await inspectSkillPackage(root, { storageRoot: this.options.storageRoot })
     let count = inventory.length
     const total = inventory.reduce((sum, file) => sum + file.size, 0)
     const replacedBytes =
@@ -481,8 +496,26 @@ export class HostSkillsService {
     if (!validation.valid) throw new Error(validation.errors[0]?.message ?? 'Skill is invalid')
 
     const id = await this.options.catalog.publishPersonalDirectory(name, draft, overwrite)
-    await rm(draft, { recursive: true, force: true })
-    await this.options.onPublishedSkillsChanged?.()
+    try {
+      await rm(draft, { recursive: true, force: true })
+    } catch (error) {
+      throw new Error(
+        `Skill "${id}" was published, but draft cleanup failed and catalog refresh was not attempted. ` +
+          `The draft "draft-${name}" may remain. Use host.skills.read(${JSON.stringify(id)}) ` +
+          'to inspect the published Skill before any further mutation; do not republish to retry cleanup.',
+        { cause: error }
+      )
+    }
+    try {
+      await this.options.onPublishedSkillsChanged?.()
+    } catch (error) {
+      throw new Error(
+        `Skill "${id}" was published and its draft removed, but catalog refresh failed. ` +
+          `Use host.skills.read(${JSON.stringify(id)}) to inspect the published Skill; ` +
+          'do not republish to retry refresh. Availability in agent contexts has not been confirmed.',
+        { cause: error }
+      )
+    }
     return { status: 'published', id, name, origin: 'personal' }
   }
 
@@ -536,7 +569,16 @@ export class HostSkillsService {
     )
     if (!approved) return { status: 'declined', operation: 'delete' }
     await this.options.catalog.deletePublished(published.id)
-    await this.options.onPublishedSkillsChanged?.()
+    try {
+      await this.options.onPublishedSkillsChanged?.()
+    } catch (error) {
+      throw new Error(
+        `Skill "${published.id}" was deleted, but catalog refresh failed. ` +
+          'Use host.skills.list() to inspect the catalog; do not repeat deletion to retry refresh. ' +
+          'Removal from agent contexts has not been confirmed.',
+        { cause: error }
+      )
+    }
     return { status: 'deleted', operation: 'delete', name: publicName }
   }
 }

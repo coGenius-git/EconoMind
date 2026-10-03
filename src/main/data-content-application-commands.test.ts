@@ -5,6 +5,7 @@ import {
   type ApplicationCommandRouter,
   type ApplicationInvocation
 } from './application-command-router'
+import { ArtifactFinalizationExecutionError } from './artifacts/ipc'
 import {
   createCallerContext,
   createTaskCallerContext,
@@ -30,6 +31,7 @@ import {
   type SessionDeletionResult
 } from '../shared/session-persistence'
 import { ApplicationCommandError } from '../shared/application-command-contract'
+import * as Artifacts from '../shared/artifacts'
 import { MAIN_DELEGATION_POLICY_LIFECYCLE_CLIENT_ID } from '../shared/lifecycle-events'
 import { ApplicationEventHub } from './application-events'
 import {
@@ -164,6 +166,7 @@ const createDependencies = () => {
     messages: []
   }
   const sessions = {
+    searchMessages: vi.fn(),
     editDetails: vi.fn(async () => session),
     filterPdfContextCandidates: vi.fn(async () => ({
       sources: [],
@@ -176,6 +179,8 @@ const createDependencies = () => {
     loadOne: vi.fn(),
     loadUsage: vi.fn(),
     saveSession: vi.fn(async () => ({ created: true, session })),
+    bindTaskSession: vi.fn(async () => session),
+    admitTaskTurn: vi.fn(async () => session),
     stageTaskCompletion: vi.fn(async () => session),
     settleTaskCompletion: vi.fn(async () => session),
     failTaskRun: vi.fn(async () => session),
@@ -197,6 +202,7 @@ const createDependencies = () => {
     size: 10
   }
   const uploads = {
+    recoverDraft: vi.fn(async () => null),
     claimLocalFile: vi.fn(),
     stageLocalPath: vi.fn(async () => attachment),
     beginTransfer: vi.fn(),
@@ -209,6 +215,13 @@ const createDependencies = () => {
     readPreview: vi.fn()
   }
   const electron = {
+    forkSession: vi.fn(async () => null),
+    inspectSessionDiagnostics: vi.fn(async () => ({ items: [] })),
+    exportSessionDiagnostics: vi.fn(async () => ({ status: 'cancelled' as const })),
+    cancelSessionDiagnostics: vi.fn(async () => undefined),
+    exportSessionPackage: vi.fn(async () => ({ saved: false })),
+    sessionPackageOperation: vi.fn(async () => null),
+    importSessionPackage: vi.fn(async () => null),
     exportConversationFromInvokingWindow: vi.fn(async () => ({ saved: false as const })),
     stageLocalFileWithProgress: vi.fn(async () => attachment)
   }
@@ -248,6 +261,7 @@ const WRAPPED_COMMAND_KEYS = [
   'artifactFinalizeRun',
   'artifactOpenFile',
   'lifecycleClientId',
+  'runtimeWriterClaim',
   'projectCreate',
   'projectDelete',
   'projectUpdate',
@@ -255,14 +269,24 @@ const WRAPPED_COMMAND_KEYS = [
   'sessionDelete',
   'sessionEditDetails',
   'sessionExportConversation',
+  'sessionFork',
+  'sessionExportPackage',
+  'sessionImportPackage',
+  'sessionPackageOperation',
+  'sessionInspectDiagnostics',
+  'sessionExportDiagnostics',
+  'sessionCancelDiagnostics',
   'sessionFilterPdfContextCandidates',
   'sessionLinkPdfContext',
   'sessionList',
   'sessionLoadAll',
   'sessionLoadOne',
+  'sessionSearchMessages',
   'sessionLoadUsage',
   'sessionSaveManifest',
   'sessionSave',
+  'sessionBindTask',
+  'sessionAdmitTaskTurn',
   'sessionStageTaskCompletion',
   'sessionSettleTaskCompletion',
   'sessionFailTaskRun',
@@ -312,6 +336,7 @@ describe('Data and content application commands', () => {
         'artifacts:reconcile-pending',
         'artifacts:resolve-version-descriptors',
         'lifecycle:client-id',
+        'lifecycle:claim-runtime-writer',
         'preview:delete',
         'preview:load',
         'preview:save',
@@ -337,16 +362,26 @@ describe('Data and content application commands', () => {
         'sessions:delete-session',
         'sessions:edit-details',
         'sessions:export-conversation',
+        'sessions:inspect-diagnostics',
+        'sessions:export-diagnostics',
+        'sessions:cancel-diagnostics',
+        'sessions:fork',
+        'sessions:export-package',
+        'sessions:import-package',
+        'sessions:package-operation',
         'sessions:filter-pdf-context-candidates',
         'sessions:link-pdf-context',
         'sessions:list',
         'sessions:load-all',
         'sessions:load-one',
+        'sessions:search-messages',
         'sessions:load-usage',
         'sessions:save-manifest',
         'sessions:update-archive',
         'sessions:unlink-pdf-context',
         'sessions:save-session',
+        'sessions:bind-task-session',
+        'sessions:admit-task-turn',
         'sessions:stage-task-completion',
         'sessions:settle-task-completion',
         'sessions:fail-task-run',
@@ -360,6 +395,7 @@ describe('Data and content application commands', () => {
         'uploads:finalize-session',
         'uploads:finish-transfer',
         'uploads:read-preview',
+        'uploads:recover-draft',
         'uploads:stage-local-file',
         'uploads:stage-local-path',
         'uploads:transfer-status'
@@ -573,6 +609,12 @@ describe('Data and content application commands', () => {
         key: 'uploadFinishTransfer',
         args: [request('upload-finish')],
         owner: deps.uploads.finishTransfer,
+        passInvocation: true
+      },
+      {
+        key: 'uploadRecoverDraft',
+        args: [{ receipt: 'receipt' }],
+        owner: deps.uploads.recoverDraft,
         passInvocation: true
       },
       {
@@ -816,6 +858,85 @@ describe('Data and content application commands', () => {
     })
   })
 
+  it('fences runtime saves by caller while retaining explicit observer edits', async () => {
+    const router = createApplicationCommandRouter()
+    const deps = createDependencies()
+    registerDataContentApplicationCommands(router.registrar, deps.dependencies)
+    const lease = await router.dispatcher.invoke(
+      dataContentApplicationCommands.runtimeWriterClaim,
+      invocation([] as const, electronCaller)
+    )
+    expect(lease.token).toBeTruthy()
+    const observer = await router.dispatcher.invoke(
+      dataContentApplicationCommands.runtimeWriterClaim,
+      invocation([] as const, remoteCaller)
+    )
+    expect(observer.token).toBeUndefined()
+    await router.dispatcher.invoke(
+      dataContentApplicationCommands.sessionSave,
+      invocation([deps.session, { runtimeWriterToken: lease.token }] as const, electronCaller)
+    )
+    expect(deps.sessions.saveSession).toHaveBeenCalledTimes(1)
+    await expect(
+      router.dispatcher.invoke(
+        dataContentApplicationCommands.sessionSave,
+        invocation([deps.session, { runtimeWriterToken: lease.token }] as const, remoteCaller)
+      )
+    ).rejects.toMatchObject({ code: 'SESSION_RUNTIME_WRITER_LOST' })
+    expect(deps.sessions.saveSession).toHaveBeenCalledTimes(1)
+    await router.dispatcher.invoke(
+      dataContentApplicationCommands.sessionSave,
+      invocation([{ ...deps.session, title: 'Explicit mobile edit' }] as const, remoteCaller)
+    )
+    expect(deps.sessions.saveSession).toHaveBeenCalledTimes(2)
+  })
+
+  it('returns bounded committed execution facts without exposing an operational cause', async () => {
+    const router = createApplicationCommandRouter()
+    const deps = createDependencies()
+    registerDataContentApplicationCommands(router.registrar, deps.dependencies)
+    deps.artifacts.finalizeRunArtifacts.mockRejectedValueOnce(
+      new ArtifactFinalizationExecutionError(
+        {
+          stage: 'activation',
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          runId: 'run-1',
+          messageId: 'message-1',
+          artifactVersionIds: ['version-1'],
+          durableFinalizationCompleted: true,
+          compatibilityPublicationCompleted: true,
+          activationCompleted: false
+        },
+        Artifacts.ARTIFACT_FINALIZATION_OPERATIONAL_FAILURE,
+        new Error('SECRET_TOKEN=synthetic-secret /Users/private/artifact.txt')
+      )
+    )
+
+    const result = await router.dispatcher.invoke(
+      dataContentApplicationCommands.artifactFinalizeRun,
+      invocation([{ claimId: 'claim-1', messageId: 'message-1' }] as const)
+    )
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: Artifacts.ARTIFACT_FINALIZATION_OPERATIONAL_FAILURE,
+      execution: {
+        stage: 'activation',
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        runId: 'run-1',
+        messageId: 'message-1',
+        artifactVersionIds: ['version-1'],
+        durableFinalizationCompleted: true,
+        compatibilityPublicationCompleted: true,
+        activationCompleted: false
+      }
+    })
+    expect(JSON.stringify(result)).not.toContain('synthetic-secret')
+    expect(JSON.stringify(result)).not.toContain('/Users/private')
+  })
+
   it('publishes project and session mutations after durable owner completion without failing commits', async () => {
     const order: string[] = []
     const router = createApplicationCommandRouter()
@@ -977,6 +1098,8 @@ describe('Data and content application commands', () => {
       | 'unlinkPdfContext'
       | 'updateArchive'
       | 'saveSession'
+      | 'bindTaskSession'
+      | 'admitTaskTurn'
       | 'stageTaskCompletion'
       | 'settleTaskCompletion'
       | 'failTaskRun'
@@ -1086,6 +1209,20 @@ describe('Data and content application commands', () => {
             updatedAt: 2
           }
         ],
+        caller: taskCaller
+      },
+      {
+        label: 'task provider binding',
+        command: 'sessionBindTask',
+        owner: 'bindTaskSession',
+        args: (deps) => [{ session: deps.session, contextReset: false }],
+        caller: taskCaller
+      },
+      {
+        label: 'task turn admission',
+        command: 'sessionAdmitTaskTurn',
+        owner: 'admitTaskTurn',
+        args: (deps) => [{ session: deps.session, contextReset: false }],
         caller: taskCaller
       },
       {
@@ -1572,6 +1709,9 @@ describe('Data and content application commands', () => {
     deps.sessions.list.mockResolvedValueOnce(listResult)
     deps.sessions.loadAll.mockResolvedValueOnce(loadResult)
     deps.sessions.loadOne.mockResolvedValueOnce(loadedSession)
+    const searchRequest = { projectIds: ['project-1'], query: 'needle', limit: 10 }
+    const searchPage = { items: [], totalCount: 0, isComplete: true }
+    deps.sessions.searchMessages.mockResolvedValueOnce(searchPage)
     deps.sessions.loadUsage.mockResolvedValueOnce(usageResult)
     registerDataContentApplicationCommands(router.registrar, deps.dependencies)
     const updateRequest = { id: 'project-1', name: 'Updated project', expectedUpdatedAt: 1 }
@@ -1612,6 +1752,13 @@ describe('Data and content application commands', () => {
       )
     ).resolves.toBe(loadedSession)
     await expect(
+      router.dispatcher.invoke(
+        dataContentApplicationCommands.sessionSearchMessages,
+        invocation([searchRequest])
+      )
+    ).resolves.toBe(searchPage)
+    expect(deps.sessions.searchMessages).toHaveBeenCalledWith(searchRequest)
+    await expect(
       router.dispatcher.invoke(dataContentApplicationCommands.sessionLoadUsage, invocation([]))
     ).resolves.toBe(usageResult)
     await router.dispatcher.invoke(
@@ -1640,7 +1787,7 @@ describe('Data and content application commands', () => {
     expect(deps.sessions.saveManifest).toHaveBeenCalledWith(manifestRequest)
     expect(deps.sessions.deleteSession).toHaveBeenCalledWith(deleteSessionRequest)
     expect(deps.sessions.editDetails).toHaveBeenCalledWith(editDetailsRequest)
-    expect(deps.withDataRootWrite).toHaveBeenCalledTimes(7)
+    expect(deps.withDataRootWrite).toHaveBeenCalledTimes(8)
     expect(deps.events.publish).toHaveBeenCalledWith('project:updated', deps.project)
     expect(deps.events.publish).not.toHaveBeenCalledWith('project:deleted', expect.anything())
     expect(deps.events.publish).toHaveBeenCalledWith('session:deleted', deleteSessionRequest)
@@ -1839,6 +1986,45 @@ describe('Data and content application commands', () => {
     expect(deps.sessions.editDetails).toHaveBeenCalledWith(request)
   })
 
+  it('routes diagnostics without acquiring business write leases or loading sessions', async () => {
+    const router = createApplicationCommandRouter()
+    const deps = createDependencies()
+    registerDataContentApplicationCommands(router.registrar, deps.dependencies)
+    const request = { projectId: 'project-1', sessionId: 'session-1', operationId: 'diagnostic-1' }
+    deps.withDataRootWrite.mockRejectedValue(new Error('Business storage unavailable'))
+    await expect(
+      router.dispatcher.invoke(
+        dataContentApplicationCommands.sessionInspectDiagnostics,
+        invocation([request], electronCaller)
+      )
+    ).resolves.toEqual({ items: [] })
+    await expect(
+      router.dispatcher.invoke(
+        dataContentApplicationCommands.sessionExportDiagnostics,
+        invocation([{ ...request, selectedItems: [] }], electronCaller)
+      )
+    ).resolves.toEqual({ status: 'cancelled' })
+    await router.dispatcher.invoke(
+      dataContentApplicationCommands.sessionCancelDiagnostics,
+      invocation([{ operationId: request.operationId }], electronCaller)
+    )
+    expect(deps.withDataRootWrite).not.toHaveBeenCalled()
+    expect(deps.sessions.loadOne).not.toHaveBeenCalled()
+    expect(deps.sessions.saveSession).not.toHaveBeenCalled()
+    await expect(
+      router.dispatcher.invoke(
+        dataContentApplicationCommands.sessionInspectDiagnostics,
+        invocation([request])
+      )
+    ).rejects.toThrow('Channel only available from the Electron app')
+    await expect(
+      router.dispatcher.invoke(
+        dataContentApplicationCommands.sessionInspectDiagnostics,
+        invocation([{ ...request, sessionId: '../session' }], electronCaller)
+      )
+    ).rejects.toMatchObject({ code: 'invalid-command-arguments' })
+  })
+
   it('keeps native and local upload/export capability restrictions and standalone invalidation', async () => {
     const router = createApplicationCommandRouter()
     const deps = createDependencies()
@@ -1883,6 +2069,14 @@ describe('Data and content application commands', () => {
       format: 'markdown' as const,
       selectedPromptMessageIds: ['prompt-1']
     }
+    const forkInvocation = invocation(
+      [{ projectId: 'project-1', sessionId: 'session-1' }] as const,
+      electronCaller
+    )
+    await expect(
+      router.dispatcher.invoke(dataContentApplicationCommands.sessionFork, forkInvocation)
+    ).resolves.toBeNull()
+    expect(deps.electron.forkSession).toHaveBeenCalledWith(forkInvocation)
     const exportInvocation = invocation([exportRequest] as const, electronCaller)
     await expect(
       router.dispatcher.invoke(

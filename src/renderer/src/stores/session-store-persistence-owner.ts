@@ -8,6 +8,7 @@ import type { StoreApi } from 'zustand'
 
 import type { ElicitationProjection, ElicitationValue } from '../../../shared/acp'
 import type { ActivePlanProjection } from '../../../shared/session-plan/contract'
+import { applySessionConversationCommands } from '../../../shared/session-conversation-command'
 import { DEFAULT_PERMISSION_PROFILE } from '../../../shared/permission-profiles'
 import type { PermissionProfileId } from '../../../shared/permission-profiles'
 import {
@@ -44,6 +45,11 @@ import {
   retainRuntimePlanProjection
 } from './session-store-persistence-merge'
 import * as sessionDetails from './session-store-session-details'
+import {
+  acknowledgeSessionConversationCommands,
+  pendingSessionConversationCommands,
+  recordSessionConversationAuthority
+} from './session-conversation-intents'
 
 export type SessionStatus = PersistedSessionStatus
 export type ChatMessageRole = PersistedMessageRole
@@ -95,6 +101,10 @@ export type ChatSession = Omit<
   activePlanProjection?: ActivePlanProjection
   planHistoryProjections?: ActivePlanProjection[]
   isPending?: boolean
+  // Transient presentation hint returned from Main's durable WSL setup binding. It carries no
+  // authority and is refreshed from startup summaries and create/resume responses rather than
+  // persisted by renderer.
+  wslSetup?: true
   // Transient: the first send has captured Delegation, but Main has not acknowledged the new
   // Session policy yet. Binding an Agent Session does not make this policy authoritative.
   delegationPolicyAuthorityPending?: true
@@ -159,6 +169,7 @@ export type ApplyDurableSessionProjectionInput = {
     | 'compute-host-access-authority'
     | 'delegated-authority'
     | 'session-details-authority'
+    | 'runtime-transcript-authority'
     | 'archive-authority'
 }
 
@@ -186,6 +197,7 @@ const markExternallyHydratedSession = (
   authority: PersistedChatSession
 ): void => {
   externallyHydratedSessionAuthorities.set(session, structuredClone(authority))
+  recordSessionConversationAuthority(session, authority)
 }
 
 export const createInitialSessionState = (): SessionStoreData => ({
@@ -213,9 +225,24 @@ const projectSessionMetadataAuthority = (
   ) {
     return current
   }
-  if (current.archivedAt === incoming.archivedAt && currentRevision === incomingRevision)
+  if (
+    current.archivedAt === incoming.archivedAt &&
+    currentRevision === incomingRevision &&
+    current.enabledComputeHosts === incoming.enabledComputeHosts &&
+    current.selectedComputeHosts === incoming.selectedComputeHosts &&
+    current.computeConcurrencyLimit === incoming.computeConcurrencyLimit
+  )
     return current
-  const projected = { ...current, revision: incomingRevision }
+  // These fields are main-owned in every full durable snapshot, including receipts for other
+  // domains. Project them before advancing the shared revision so a later Host receipt can be
+  // rejected without losing a change already present in the newer snapshot.
+  const projected = {
+    ...current,
+    revision: incomingRevision,
+    enabledComputeHosts: incoming.enabledComputeHosts && [...incoming.enabledComputeHosts],
+    selectedComputeHosts: incoming.selectedComputeHosts && [...incoming.selectedComputeHosts],
+    computeConcurrencyLimit: incoming.computeConcurrencyLimit
+  }
   if (incoming.archivedAt === undefined) delete projected.archivedAt
   else projected.archivedAt = incoming.archivedAt
   return projected
@@ -302,6 +329,7 @@ export const toPersistedSession = (
     activities,
     activityGroups,
     isPending,
+    wslSetup,
     delegationPolicyAuthorityPending,
     unsavedTitle,
     interrupted,
@@ -331,6 +359,7 @@ export const toPersistedSession = (
   } = session
 
   void isPending
+  void wslSetup
   void delegationPolicyAuthorityPending
   void unsavedTitle
   void interrupted
@@ -438,6 +467,7 @@ const hydrateSessionSummary = (summary: SessionSummary): ChatSession => ({
   contentLoaded: false,
   activeMessageCount: summary.activeMessageCount,
   artifactCount: summary.artifactCount,
+  ...(summary.wslSetup ? { wslSetup: true as const } : {}),
   ...(summary.presentedActivityAt !== undefined
     ? { presentedActivityAt: summary.presentedActivityAt }
     : {}),
@@ -509,6 +539,9 @@ const withTransientSessionState = (
   const hydrated = hydrateSession(session)
   return {
     ...hydrated,
+    // Save receipts can rebuild the Session to attach durable upload identities. Preserve
+    // the same Plan until its full activity projection arrives, just as runtime echoes do.
+    activePlanProjection: retainRuntimePlanProjection(source, session),
     ...(hydrated.artifacts
       ? { artifacts: retainArtifactPublication(hydrated.artifacts, source) }
       : {}),
@@ -517,6 +550,7 @@ const withTransientSessionState = (
       sortIndex: sourceMessages.get(message.id)?.sortIndex
     })),
     isPending: source.isPending,
+    wslSetup: source.wslSetup,
     interrupted: source.interrupted ?? hydrated.interrupted,
     fixLoopActive: source.fixLoopActive,
     compacting: source.compacting,
@@ -580,7 +614,7 @@ const projectDurablePlanAuthority = (
     runtimeContext: durable.runtimeContext,
     activePlanProjection: matchesPersistedPlanProjection(current.activePlanProjection, durable)
       ? current.activePlanProjection
-      : undefined,
+      : retainRuntimePlanProjection(current, durable),
     updatedAt: Math.max(current.updatedAt, durable.updatedAt)
   }
 }
@@ -658,6 +692,7 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
         const authority = selectedById.get(summary.id)
         if (!authority) return hydrateSessionSummary(summary)
         const hydrated = hydrateSession(authority)
+        if (summary.wslSetup) hydrated.wslSetup = true
         markExternallyHydratedSession(hydrated, authority)
         return hydrated
       })
@@ -672,10 +707,11 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
   },
 
   upsertPersistedSession: (session) => {
+    acknowledgeSessionConversationCommands(session)
     set((state) => {
       const existing = state.sessions.find((candidate) => candidate.id === session.id)
       if (existing?.contentLoaded === false) {
-        const loaded = hydrateSession(session)
+        const loaded = withTransientSessionState(session, existing)
         const archive = projectSessionMetadataAuthority(existing, session)
         const incomingIsNewer = sessionRevision(session) > sessionRevision(existing)
         const hydrated: ChatSession = {
@@ -687,6 +723,7 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
           revision: Math.max(existing.revision ?? 0, loaded.revision ?? 0),
           filesRevision: Math.max(existing.filesRevision ?? 0, loaded.filesRevision ?? 0),
           updatedAt: Math.max(existing.updatedAt, loaded.updatedAt),
+          ...(existing.wslSetup ? { wslSetup: true } : {}),
           ...(existing.unsavedTitle ? { unsavedTitle: true } : {})
         }
         markExternallyHydratedSession(hydrated, session)
@@ -795,6 +832,19 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
         existing?.unsavedTitle === true && existing.title !== session.title
           ? { title: existing.title, unsavedTitle: true as const }
           : {}
+      // A newer idle snapshot may have been captured before this client's prompt was appended.
+      // Its missing prompt cannot acknowledge or cancel that local run. Check the complete graph,
+      // since a terminal snapshot can acknowledge the prompt while displaying a different Branch.
+      const unacknowledgedRun =
+        existing?.status === 'running' &&
+        existing.activeRun &&
+        session.status === 'idle' &&
+        !session.archivedAt &&
+        !(session.conversationGraph?.messages ?? session.messages).some(
+          (message) => message.id === existing.activeRun?.promptMessageId
+        )
+          ? { activeRun: existing.activeRun, status: existing.status }
+          : {}
       const hydratedWithTransientState = {
         ...hydratedSession,
         archivedAt: existing
@@ -802,7 +852,8 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
           : session.archivedAt,
         ...retainedPlanHistory,
         ...currentPlanProjection,
-        ...unsavedLocalTitle
+        ...unsavedLocalTitle,
+        ...unacknowledgedRun
       }
       markExternallyHydratedSession(hydratedWithTransientState, session)
       const nextSessions = [
@@ -825,6 +876,44 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
     set((state) => {
       const current = state.sessions.find((candidate) => candidate.id === session.id)
       if (!current) return state
+      if (mode === 'runtime-transcript-authority') {
+        // Main lifecycle delivery can trail a direct command/save receipt. Once the live store has
+        // observed a newer durable revision, an older transcript projection cannot replace it.
+        if (sessionRevision(session) < sessionRevision(current)) return state
+        acknowledgeSessionConversationCommands(session)
+        const pending = pendingSessionConversationCommands(session.id)
+        let authority = session
+        if (pending.length > 0) {
+          try {
+            authority = applySessionConversationCommands(session, pending)
+          } catch {
+            // An out-of-order lifecycle receipt can predate a command already acknowledged by a
+            // newer response. Keep the live projection until a receipt containing its prerequisite
+            // graph arrives; replaying a snapshot merge would discard the pending user intent.
+            return state
+          }
+        }
+        // Main owns the transcript contents, while Branch selection remains window-local until
+        // this client explicitly navigates. Merge every durable identity without replacing the
+        // root Branch currently holding an editor or composer draft.
+        const projected = withTransientSessionState(
+          mergeNewerPersistedSessionByIdentity(current, authority),
+          current
+        )
+        markExternallyHydratedSession(projected, session)
+        return {
+          sessions: state.sessions.map((candidate) =>
+            candidate.id === session.id ? projected : candidate
+          ),
+          streamingMessages: pruneStreamingMessageContent(
+            state.streamingMessages,
+            session.id,
+            new Set(projected.messages.map(({ id }) => id))
+          )
+        } as Partial<State>
+      }
+
+      acknowledgeSessionConversationCommands(session)
       let archive = projectSessionMetadataAuthority(current, session)
       if (
         (mode === 'merge-upload-identities' || mode === 'replace-persisted-if-current') &&
@@ -873,12 +962,17 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
       }
 
       if (mode === 'compute-host-access-authority') {
+        if (sessionRevision(session) < sessionRevision(current)) {
+          if (archive === current) return state
+          return {
+            sessions: state.sessions.map((candidate) =>
+              candidate === current ? archive : candidate
+            )
+          } as Partial<State>
+        }
         const projected: ChatSession = {
           ...archive,
           revision: Math.max(sessionRevision(current), sessionRevision(session)),
-          enabledComputeHosts: session.enabledComputeHosts && [...session.enabledComputeHosts],
-          selectedComputeHosts: session.selectedComputeHosts && [...session.selectedComputeHosts],
-          computeConcurrencyLimit: session.computeConcurrencyLimit,
           updatedAt: Math.max(current.updatedAt, session.updatedAt)
         }
         markExternallyHydratedSession(projected, session)
@@ -915,7 +1009,10 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
           status,
           interactionState,
           runtimeContext: session.runtimeContext,
-          activePlanProjection: retainRuntimePlanProjection(current, session),
+          // Permission snapshots do not own the Session Plan. They commonly arrive while
+          // step progress is being written and omit runtimeContext.plan; deriving the Plan
+          // from that partial snapshot would briefly clear the Composer progress chip.
+          activePlanProjection: current.activePlanProjection,
           updatedAt: Math.max(current.updatedAt, session.updatedAt)
         }
         markExternallyHydratedSession(projected, session)
@@ -986,10 +1083,41 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
         } as Partial<State>
       }
 
+      const preserveLocalBranch =
+        mode === 'merge-upload-identities' &&
+        current.conversationGraph &&
+        session.conversationGraph &&
+        current.conversationGraph.frames.find(
+          (frame) => frame.id === current.conversationGraph?.rootFrameId
+        )?.activeBranchId !==
+          session.conversationGraph.frames.find(
+            (frame) => frame.id === session.conversationGraph?.rootFrameId
+          )?.activeBranchId
       let projected: ChatSession
       if (current === source && mode === 'replace-persisted-if-current') {
         projected = withTransientSessionState(session, current)
-      } else if (current === source) {
+      } else if (
+        current !== source &&
+        externallyHydratedSessionAuthorities.has(current) &&
+        sessionRevision(session) >= sessionRevision(current)
+      ) {
+        // A Task snapshot can arrive while a renderer save is queued. Its newer
+        // receipt must reconcile the conversation too, not just its revision.
+        const merged = withTransientSessionState(
+          mergeNewerPersistedSessionByIdentity(current, session),
+          current
+        )
+        projected = projectDurablePlanAuthority(
+          {
+            ...current,
+            messages: merged.messages,
+            activities: merged.activities,
+            activityGroups: merged.activityGroups,
+            conversationGraph: merged.conversationGraph
+          },
+          session
+        )
+      } else if (current === source && !preserveLocalBranch) {
         const flat = mergeDurableUploadProjection(
           source.messages,
           source.messages,
@@ -1074,6 +1202,9 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
         {
           ...projected,
           archivedAt: archive.archivedAt,
+          enabledComputeHosts: archive.enabledComputeHosts,
+          selectedComputeHosts: archive.selectedComputeHosts,
+          computeConcurrencyLimit: archive.computeConcurrencyLimit,
           branchContextResetRequired: archive.branchContextResetRequired,
           // Whole-Session saves and continuation acknowledgements do not own Delegation policy.
           // Keep the last dedicated mutation result even when a later ordinary projection carries

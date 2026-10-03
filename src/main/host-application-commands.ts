@@ -1,4 +1,14 @@
+import { pdfStructureCommandContracts } from '../shared/pdf-structure'
+import type {
+  ParsePdfStructureRequest,
+  ReadCachedPdfStructureRequest,
+  ReadPdfStructureThumbnailRequest,
+  PdfStructureResult
+} from '../shared/pdf-structure'
+import type { PdfStructureReader } from './literature/pdf-structure/reader'
 import type { ArtifactPreviewResult, ReadArtifactPreviewRequest } from '../shared/artifacts'
+import type { LocalModelSnapshot } from '../shared/local-models'
+import type { LocalModelOwner } from './local-models/owner'
 import type { CliLauncherStatus } from '../shared/cli'
 import type {
   GrantLocalRootRequest,
@@ -17,14 +27,7 @@ import type {
   NotificationMarkSessionCompletionsReadRequest,
   OpenSessionFromNotificationRequest
 } from '../shared/notifications'
-import type {
-  ApproveRemotePairingRequest,
-  RemoteAccessSnapshot,
-  RemotePairingRequestId,
-  RevokeRemoteBrowserRequest,
-  SetRemoteAccessModeRequest
-} from '../shared/remote-access'
-import { remoteAccessApplicationCommandContracts } from '../shared/remote-access'
+
 import type {
   ReviewRunRequest,
   ReviewRunResult,
@@ -57,6 +60,7 @@ import {
 } from './application-command-router'
 import type { CallerContext } from './caller-context'
 import type { CliCommandOwner } from './cli-install/ipc'
+import type { GithubCommandOwner } from './github-ipc'
 import type { LocalFsService } from './local-fs/service'
 import type { LogsCommandOwner } from './logs-ipc'
 import {
@@ -64,13 +68,7 @@ import {
   requireNotificationMarkReadRequest,
   requireNotificationMarkSessionCompletionsReadRequest
 } from './notifications/notification-inbox-requests'
-import {
-  canManagePairing,
-  isDesktopCaller,
-  requireDesktopCaller,
-  requirePairingManager
-} from './remote-access/ipc'
-import type { RemoteAccessService } from './remote-access/service'
+
 import type { ReviewerCommandOwner } from './reviewer/ipc'
 import type { UpdateCommandOwner } from './update/ipc'
 
@@ -84,6 +82,12 @@ const cliCommands = Object.freeze({
   install: defineApplicationCommand<'cli:install', readonly [], CliLauncherStatus>('cli:install'),
   uninstall: defineApplicationCommand<'cli:uninstall', readonly [], CliLauncherStatus>(
     'cli:uninstall'
+  )
+})
+
+const githubCommands = Object.freeze({
+  getStars: defineApplicationCommand<'github:get-stars', readonly [], number | null>(
+    'github:get-stars'
   )
 })
 
@@ -175,46 +179,6 @@ const notificationCommands = Object.freeze({
     readonly [expectedToken: unknown],
     OpenSessionFromNotificationRequest | null
   >('notifications:take-pending-open-session')
-})
-
-const remoteAccessCommands = Object.freeze({
-  approve: defineApplicationCommand<
-    'remote-access:approve',
-    readonly [request: ApproveRemotePairingRequest],
-    RemoteAccessSnapshot
-  >('remote-access:approve', remoteAccessApplicationCommandContracts.approve),
-  detect: defineApplicationCommand<'remote-access:detect', readonly [], RemoteAccessSnapshot>(
-    'remote-access:detect',
-    remoteAccessApplicationCommandContracts.detect
-  ),
-  probe: defineApplicationCommand<'remote-access:probe', readonly [], RemoteAccessSnapshot>(
-    'remote-access:probe',
-    remoteAccessApplicationCommandContracts.probe
-  ),
-  disable: defineApplicationCommand<'remote-access:disable', readonly [], RemoteAccessSnapshot>(
-    'remote-access:disable',
-    remoteAccessApplicationCommandContracts.disable
-  ),
-  getSnapshot: defineApplicationCommand<
-    'remote-access:get-snapshot',
-    readonly [],
-    RemoteAccessSnapshot
-  >('remote-access:get-snapshot', remoteAccessApplicationCommandContracts.getSnapshot),
-  reject: defineApplicationCommand<
-    'remote-access:reject',
-    readonly [request: RemotePairingRequestId],
-    RemoteAccessSnapshot
-  >('remote-access:reject', remoteAccessApplicationCommandContracts.reject),
-  revokeBrowser: defineApplicationCommand<
-    'remote-access:revoke-browser',
-    readonly [request: RevokeRemoteBrowserRequest],
-    RemoteAccessSnapshot
-  >('remote-access:revoke-browser', remoteAccessApplicationCommandContracts.revokeBrowser),
-  setMode: defineApplicationCommand<
-    'remote-access:set-mode',
-    readonly [request: SetRemoteAccessModeRequest],
-    RemoteAccessSnapshot
-  >('remote-access:set-mode', remoteAccessApplicationCommandContracts.setMode)
 })
 
 const reviewerCommands = Object.freeze({
@@ -327,12 +291,59 @@ const updateCommands = Object.freeze({
   )
 })
 
+const pdfStructureCommands = {
+  readCached: defineApplicationCommand<
+    'pdf-structure:read-cached',
+    readonly [ReadCachedPdfStructureRequest],
+    PdfStructureResult | undefined
+  >('pdf-structure:read-cached', pdfStructureCommandContracts.readCached),
+  parse: defineApplicationCommand<
+    'pdf-structure:parse',
+    readonly [ParsePdfStructureRequest],
+    PdfStructureResult
+  >('pdf-structure:parse', pdfStructureCommandContracts.parse),
+  cancel: defineApplicationCommand<'pdf-structure:cancel', readonly [string], void>(
+    'pdf-structure:cancel',
+    pdfStructureCommandContracts.cancel
+  ),
+  readThumbnail: defineApplicationCommand<
+    'pdf-structure:read-thumbnail',
+    readonly [ReadPdfStructureThumbnailRequest],
+    string | undefined
+  >('pdf-structure:read-thumbnail', pdfStructureCommandContracts.readThumbnail),
+  clearCache: defineApplicationCommand<
+    'pdf-structure:clear-cache',
+    readonly [],
+    { removedBytes: number; retainedEntries: number }
+  >('pdf-structure:clear-cache', pdfStructureCommandContracts.clearCache)
+}
+
+const localModelCommands = Object.freeze({
+  getSnapshot: defineApplicationCommand<
+    'local-models:get-snapshot',
+    readonly [],
+    LocalModelSnapshot
+  >('local-models:get-snapshot'),
+  install: defineApplicationCommand<'local-models:install', readonly [], LocalModelSnapshot>(
+    'local-models:install'
+  ),
+  cancel: defineApplicationCommand<'local-models:cancel', readonly [], LocalModelSnapshot>(
+    'local-models:cancel'
+  ),
+  remove: defineApplicationCommand<'local-models:remove', readonly [], LocalModelSnapshot>(
+    'local-models:remove'
+  )
+})
+
 const hostApplicationCommands = Object.freeze({
+  localModels: localModelCommands,
+  pdfStructure: pdfStructureCommands,
   cli: cliCommands,
+  github: githubCommands,
   localFs: localFsCommands,
   logs: logsCommands,
   notifications: notificationCommands,
-  remoteAccess: remoteAccessCommands,
+
   reviewer: reviewerCommands,
   storage: storageCommands,
   update: updateCommands
@@ -340,17 +351,26 @@ const hostApplicationCommands = Object.freeze({
 
 const hostApplicationCommandGroups = Object.freeze([
   defineApplicationCommandGroup('cli', Object.values(cliCommands)),
+  defineApplicationCommandGroup('github', Object.values(githubCommands)),
   defineApplicationCommandGroup('local-fs', Object.values(localFsCommands)),
   defineApplicationCommandGroup('logs', Object.values(logsCommands)),
   defineApplicationCommandGroup('notifications', Object.values(notificationCommands)),
-  defineApplicationCommandGroup('remote-access', Object.values(remoteAccessCommands)),
+
   defineApplicationCommandGroup('reviewer', Object.values(reviewerCommands)),
   defineApplicationCommandGroup('storage', Object.values(storageCommands)),
-  defineApplicationCommandGroup('update', Object.values(updateCommands))
+  defineApplicationCommandGroup('update', Object.values(updateCommands)),
+  defineApplicationCommandGroup('local-models', Object.values(localModelCommands)),
+  defineApplicationCommandGroup('pdf-structure', Object.values(pdfStructureCommands))
 ] as const)
 
 type HostApplicationCommandDependencies = Readonly<{
+  pdfStructure: Pick<
+    PdfStructureReader,
+    'parse' | 'cancel' | 'readThumbnail' | 'clearCache' | 'readCached'
+  >
+  localModels: Pick<LocalModelOwner, 'getSnapshot' | 'install' | 'cancel' | 'remove'>
   cli: CliCommandOwner
+  github: GithubCommandOwner
   localFs: Pick<
     LocalFsService,
     | 'getRoots'
@@ -375,10 +395,7 @@ type HostApplicationCommandDependencies = Readonly<{
     peekPendingOpenSession: () => OpenSessionFromNotificationRequest | null
     takePendingOpenSession: (expectedToken: number) => OpenSessionFromNotificationRequest | null
   }>
-  remoteAccess: Pick<
-    RemoteAccessService,
-    'snapshot' | 'probe' | 'detect' | 'setMode' | 'disable' | 'approve' | 'reject' | 'revoke'
-  >
+
   reviewer: Pick<ReviewerCommandOwner, 'run' | 'getForSession' | 'abort' | 'abortFixLoop'>
   storage: Readonly<{
     acceptMissingDataRoot: () => Promise<void>
@@ -444,6 +461,9 @@ const registerHostApplicationCommands = (
         localCommand(callerContext, 'cli:uninstall', () => dependencies.cli.uninstall())
     })
     scope.registerGroup(hostApplicationCommandGroups[1], {
+      'github:get-stars': () => dependencies.github.getStars()
+    })
+    scope.registerGroup(hostApplicationCommandGroups[2], {
       'local-fs:get-roots': ({ callerContext }) =>
         localCommand(callerContext, 'local-fs:get-roots', () => dependencies.localFs.getRoots()),
       'local-fs:grant-root': ({ args, callerContext }) =>
@@ -483,7 +503,7 @@ const registerHostApplicationCommands = (
           dependencies.localFs.setGrantedRootAccess(args[0])
         )
     })
-    scope.registerGroup(hostApplicationCommandGroups[2], {
+    scope.registerGroup(hostApplicationCommandGroups[3], {
       'logs:get-status': ({ callerContext }) =>
         localCommand(callerContext, 'logs:get-status', () => dependencies.logs.getStatus()),
       'logs:open-file': ({ callerContext }) =>
@@ -493,7 +513,7 @@ const registerHostApplicationCommands = (
           dependencies.logs.revealInFolder()
         )
     })
-    scope.registerGroup(hostApplicationCommandGroups[3], {
+    scope.registerGroup(hostApplicationCommandGroups[4], {
       'notifications:get-snapshot': () => dependencies.notifications.getSnapshot(),
       'notifications:mark-all-read': ({ args }) =>
         dependencies.notifications.markAllRead(requireNotificationMarkAllReadRequest(args[0])),
@@ -510,49 +530,7 @@ const registerHostApplicationCommands = (
           ? dependencies.notifications.takePendingOpenSession(args[0])
           : null
     })
-    scope.registerGroup(hostApplicationCommandGroups[4], {
-      'remote-access:approve': ({ args, callerContext }) => {
-        requirePairingManager(callerContext)
-        const desktop = isDesktopCaller(callerContext)
-        return dependencies.remoteAccess.approve(args[0], desktop, canManagePairing(callerContext))
-      },
-      'remote-access:detect': ({ callerContext }) => {
-        requireDesktopCaller(callerContext)
-        return dependencies.remoteAccess.detect()
-      },
-      'remote-access:probe': ({ callerContext }) =>
-        localCommand(callerContext, 'remote-access:probe', () => dependencies.remoteAccess.probe()),
-      'remote-access:disable': ({ callerContext }) => {
-        requireDesktopCaller(callerContext)
-        return dependencies.remoteAccess.disable()
-      },
-      'remote-access:get-snapshot': ({ callerContext }) => {
-        const desktop = isDesktopCaller(callerContext)
-        return dependencies.remoteAccess.snapshot(desktop, canManagePairing(callerContext))
-      },
-      'remote-access:reject': ({ args, callerContext }) => {
-        requirePairingManager(callerContext)
-        const desktop = isDesktopCaller(callerContext)
-        return dependencies.remoteAccess.reject(
-          args[0].requestId,
-          desktop,
-          canManagePairing(callerContext)
-        )
-      },
-      'remote-access:revoke-browser': ({ args, callerContext }) => {
-        requirePairingManager(callerContext)
-        const desktop = isDesktopCaller(callerContext)
-        return dependencies.remoteAccess.revoke(
-          args[0].browserId,
-          desktop,
-          canManagePairing(callerContext)
-        )
-      },
-      'remote-access:set-mode': ({ args, callerContext }) => {
-        requireDesktopCaller(callerContext)
-        return dependencies.remoteAccess.setMode(args[0].mode)
-      }
-    })
+
     scope.registerGroup(hostApplicationCommandGroups[5], {
       'reviewer:abort': ({ args }) => dependencies.reviewer.abort(args[0]),
       'reviewer:abort-fix-loop': ({ args }) => dependencies.reviewer.abortFixLoop(args[0]),
@@ -629,6 +607,42 @@ const registerHostApplicationCommands = (
         localCommand(callerContext, 'update:download', () => dependencies.update.download(args[0])),
       'update:get-app-info': () => dependencies.update.getAppInfo(),
       'update:get-status': () => dependencies.update.getStatus()
+    })
+    scope.registerGroup(hostApplicationCommandGroups[8], {
+      'local-models:get-snapshot': ({ callerContext }) =>
+        localCommand(callerContext, 'local-models:get-snapshot', () =>
+          dependencies.localModels.getSnapshot()
+        ),
+      'local-models:install': ({ callerContext }) =>
+        localCommand(callerContext, 'local-models:install', () =>
+          dependencies.localModels.install()
+        ),
+      'local-models:cancel': ({ callerContext }) =>
+        localCommand(callerContext, 'local-models:cancel', () => dependencies.localModels.cancel()),
+      'local-models:remove': ({ callerContext }) =>
+        localCommand(callerContext, 'local-models:remove', () => dependencies.localModels.remove())
+    })
+    scope.registerGroup(hostApplicationCommandGroups[9], {
+      'pdf-structure:read-cached': ({ callerContext, callerLease, args: [request] }) =>
+        localCommand(callerContext, 'pdf-structure:read-cached', () =>
+          dependencies.pdfStructure.readCached(request, callerContext, callerLease)
+        ),
+      'pdf-structure:parse': ({ callerContext, callerLease, args: [request] }) =>
+        localCommand(callerContext, 'pdf-structure:parse', () =>
+          dependencies.pdfStructure.parse(request, callerContext, callerLease)
+        ),
+      'pdf-structure:cancel': ({ callerContext, callerLease, args: [requestId] }) =>
+        localCommand(callerContext, 'pdf-structure:cancel', () =>
+          dependencies.pdfStructure.cancel(requestId, callerContext, callerLease)
+        ),
+      'pdf-structure:read-thumbnail': ({ callerContext, callerLease, args: [request] }) =>
+        localCommand(callerContext, 'pdf-structure:read-thumbnail', () =>
+          dependencies.pdfStructure.readThumbnail(request, callerContext, callerLease)
+        ),
+      'pdf-structure:clear-cache': ({ callerContext, callerLease }) =>
+        localCommand(callerContext, 'pdf-structure:clear-cache', () =>
+          dependencies.pdfStructure.clearCache(callerContext, callerLease)
+        )
     })
     return scope.complete()
   } catch (error) {

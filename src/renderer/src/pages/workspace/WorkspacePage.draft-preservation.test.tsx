@@ -1,5 +1,10 @@
 // @vitest-environment jsdom
-import { act } from 'react'
+import { act, useContext, useState } from 'react'
+import { literatureItemInputSchema } from '../../../../shared/literature'
+import {
+  LibraryPreviewNavigationContext,
+  useLibraryReferenceActions
+} from './previews/library-reference-actions'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as React from 'react'
@@ -9,10 +14,12 @@ import {
   createInitialPreviewWorkbenchState,
   usePreviewWorkbenchStore
 } from '@/stores/preview-workbench-store'
+import { previewLeaveGuards, workbenchPreviewGuardScope } from '@/stores/preview-leave-guard'
 import { useProjectStore } from '@/stores/project-store'
 import { useSettingsStore } from '@/stores/settings-store'
 import {
   createInitialSessionState,
+  toPersistedSession,
   useSessionStore,
   type ChatMessage,
   type ChatSession
@@ -20,6 +27,10 @@ import {
 import { useSpecialistStore } from '@/stores/specialist-store'
 import type { TextAnnotation } from '../../../../shared/annotations'
 import type { UploadedAttachment } from '../../../../shared/uploads'
+import type {
+  LiteratureReference,
+  PersistedChatSession
+} from '../../../../shared/session-persistence'
 import { emptyDoc, type ComposerDoc } from './composer/composer-doc'
 import {
   markWorkspaceReviewHistoryLoaded,
@@ -27,11 +38,14 @@ import {
 } from './workspace-page-test-fixtures'
 
 // Capture the props passed to the heavy child components so the test can drive selection and drafts.
+let openLibraryPreview: React.ContextType<typeof LibraryPreviewNavigationContext>
+let libraryActions: ReturnType<typeof useLibraryReferenceActions>
 let conversationProps: Parameters<(typeof import('./ConversationPanel'))['ConversationPanel']>[0]
 let sidebarProps: {
   canDeleteConversations: boolean
   onOpenSession: (id: string) => void
   onNewConversation: () => void
+  onOpenLiterature?: () => boolean
   onDownloadArtifacts: (session: ChatSession) => void
   onDeleteSession: (session: ChatSession) => void
 }
@@ -76,19 +90,40 @@ vi.mock('@/lib/acp/useWorkspaceAgentRuntime', () => ({
 vi.mock('./WorkspaceSidebar', () => ({
   WorkspaceSidebar: (props: typeof sidebarProps): React.JSX.Element => {
     sidebarProps = props
-    return <aside />
+    const [localCount, setLocalCount] = useState(0)
+    return (
+      <aside>
+        <button data-testid="sidebar-local-state" onClick={() => setLocalCount(localCount + 1)}>
+          {localCount}
+        </button>
+      </aside>
+    )
   }
 }))
 
 vi.mock('./ConversationPanel', () => ({
   ConversationPanel: (props: typeof conversationProps): React.JSX.Element => {
     conversationProps = props
-    return <section data-testid="conversation" />
+    openLibraryPreview = useContext(LibraryPreviewNavigationContext)
+    const [localDetailOpen, setLocalDetailOpen] = useState(false)
+    return (
+      <section data-testid="conversation">
+        <button data-testid="open-local-detail" onClick={() => setLocalDetailOpen(true)}>
+          Open detail
+        </button>
+        {localDetailOpen ? (
+          <div data-testid="local-detail-session">{props.view.activeSession?.id}</div>
+        ) : null}
+      </section>
+    )
   }
 }))
 
 vi.mock('./PreviewPanel', () => ({
-  PreviewPanel: (): React.JSX.Element => <div data-testid="preview-panel" />
+  PreviewPanel: (): React.JSX.Element => {
+    libraryActions = useLibraryReferenceActions()
+    return <div data-testid="preview-panel" />
+  }
 }))
 
 vi.mock('./EditSessionDialog', () => ({
@@ -350,6 +385,209 @@ describe('WorkspacePage draft preservation', () => {
     expect(downloadArtifactsDialogProps.session).toBeUndefined()
   })
 
+  it('routes Library batches into the chosen draft without sending or overwriting other drafts', async () => {
+    await renderPage()
+    await act(async () => sidebarProps.onOpenLiterature!())
+    const reference = {
+      type: 'literature' as const,
+      itemId: 'paper',
+      metadataRevision: 1,
+      item: literatureItemInputSchema.parse({ itemType: 'journalArticle', title: 'Paper' })
+    }
+    await act(async () => conversationProps.composer.actions.changeDoc(textDoc('Draft A')))
+    await openSession('sess-b')
+    await act(async () => conversationProps.composer.actions.changeDoc(textDoc('Draft B')))
+    await openSession('sess-a')
+    await act(async () => libraryActions!.add([reference, reference], 'sess-b'))
+    expect(conversationProps.view.composerFocusKey).toBe('sess-b')
+    expect(conversationProps.composer.view.doc.nodes).toEqual([
+      { type: 'text', text: 'Draft B' },
+      { type: 'text', text: ' ' },
+      reference
+    ])
+    await openSession('sess-a')
+    expect(conversationProps.composer.view.doc).toEqual(textDoc('Draft A'))
+    await act(async () => libraryActions!.add([reference], null))
+    expect(conversationProps.view.composerFocusKey).toBe('new:proj-1')
+    expect(conversationProps.composer.view.doc.nodes).toEqual([reference])
+    expect(useSessionStore.getState().sessions).toHaveLength(2)
+    expect(runtime.sendMessage).not.toHaveBeenCalled()
+  })
+
+  const libraryReference = (itemId = 'paper'): LiteratureReference => ({
+    type: 'literature' as const,
+    itemId,
+    metadataRevision: 1,
+    item: literatureItemInputSchema.parse({ itemType: 'journalArticle', title: itemId })
+  })
+  const prepareSummaryLoad = (
+    sessionId = 'sess-b'
+  ): {
+    loaded: ReturnType<typeof createDeferred<PersistedChatSession | undefined>>
+    persisted: PersistedChatSession
+  } => {
+    const loaded = createDeferred<ReturnType<typeof toPersistedSession> | undefined>()
+    const persisted = toPersistedSession(createSession(sessionId, 'proj-1'))
+    window.api.sessions.loadOne = vi.fn(() => loaded.promise)
+    useSessionStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === sessionId ? { ...session, contentLoaded: false } : session
+      )
+    }))
+    return { loaded, persisted }
+  }
+
+  it.each([
+    ['sess-a', false],
+    ['sess-b', false],
+    ['sess-a', true],
+    ['sess-b', true]
+  ] as const)(
+    'validates a summary destination before inserting references (%s, imported: %s)',
+    async (sessionId, imported) => {
+      const { loaded, persisted } = prepareSummaryLoad(sessionId)
+      await renderPage()
+      await act(async () => conversationProps.composer.actions.changeDoc(textDoc('Draft A')))
+      if (sessionId === 'sess-a') expect(libraryActions!.canAddToCurrent).toBe(false)
+      const reference = libraryReference()
+      await act(async () => libraryActions!.add([reference], sessionId))
+      expect(useSessionStore.getState().selectedSessionId).toBe('sess-a')
+      expect(conversationProps.composer.view.doc).toEqual(textDoc('Draft A'))
+      await act(async () =>
+        loaded.resolve({
+          ...persisted,
+          ...(imported
+            ? {
+                packageOrigin: {
+                  importId: 'import-1',
+                  sourceProjectId: 'source-project',
+                  sourceSessionId: 'source-session',
+                  importedAt: 1,
+                  manifestChecksum: 'a'.repeat(64)
+                }
+              }
+            : {})
+        })
+      )
+      if (imported) {
+        expect(useSessionStore.getState().selectedSessionId).toBe('sess-a')
+        expect(conversationProps.composer.view.doc).toEqual(textDoc('Draft A'))
+        expect(conversationProps.composer.view.error).toBe(
+          'This conversation cannot accept references right now.'
+        )
+      } else {
+        expect(useSessionStore.getState().selectedSessionId).toBe(sessionId)
+        expect(conversationProps.composer.view.doc.nodes).toContainEqual(reference)
+      }
+      expect(runtime.sendMessage).not.toHaveBeenCalled()
+    }
+  )
+
+  it('keeps the current draft when loading a Library destination fails', async () => {
+    prepareSummaryLoad()
+    window.api.sessions.loadOne = vi.fn().mockRejectedValue(new Error('Unavailable'))
+    await renderPage()
+    await act(async () => libraryActions!.add([libraryReference()], 'sess-b'))
+    expect(useSessionStore.getState().selectedSessionId).toBe('sess-a')
+    expect(conversationProps.composer.view.doc).toEqual(emptyDoc)
+    expect(conversationProps.composer.view.error).toBe(
+      'This conversation cannot accept references right now.'
+    )
+  })
+
+  it('accumulates references for the same destination while its summary is loading', async () => {
+    const { loaded, persisted } = prepareSummaryLoad()
+    await renderPage()
+    const references = [libraryReference('one'), libraryReference('two')]
+    await act(async () => {
+      libraryActions!.add([references[0]], 'sess-b')
+      libraryActions!.add([references[1]], 'sess-b')
+    })
+    await act(async () => loaded.resolve(persisted))
+    expect(useSessionStore.getState().selectedSessionId).toBe('sess-b')
+    expect(
+      conversationProps.composer.view.doc.nodes.filter((node) => node.type === 'literature')
+    ).toEqual(references)
+  })
+
+  it('does not let a late Library destination load override a newer insertion', async () => {
+    const { loaded, persisted } = prepareSummaryLoad()
+    await renderPage()
+    await act(async () => libraryActions!.add([libraryReference('old')], 'sess-b'))
+    const newer = libraryReference('new')
+    await act(async () => libraryActions!.add([newer], null))
+    await act(async () => loaded.resolve(persisted))
+    expect(conversationProps.view.composerFocusKey).toBe('new:proj-1')
+    expect(conversationProps.composer.view.doc.nodes).toEqual([newer])
+  })
+
+  it('cancels a Library destination load when the user navigates away and back', async () => {
+    const { loaded, persisted } = prepareSummaryLoad()
+    await renderPage()
+    await act(async () => libraryActions!.add([libraryReference()], 'sess-b'))
+    await act(async () => useNavigationStore.getState().openLibrary('user'))
+    await act(async () => useNavigationStore.getState().openSession('proj-1', 'sess-a', 'user'))
+    await act(async () => loaded.resolve(persisted))
+    expect(useSessionStore.getState().selectedSessionId).toBe('sess-a')
+    expect(conversationProps.composer.view.doc).toEqual(emptyDoc)
+  })
+
+  it.each([null, 'sess-b'])(
+    'sends Library references without enabling Reading (destination: %s)',
+    async (destination) => {
+      await renderPage()
+      await act(async () => sidebarProps.onOpenLiterature!())
+      const references = [
+        {
+          type: 'literature' as const,
+          itemId: 'paper-with-pdf',
+          metadataRevision: 1,
+          item: literatureItemInputSchema.parse({
+            itemType: 'journalArticle',
+            title: 'Paper with PDF'
+          }),
+          attachmentVersionId: 'pdf-version-1'
+        },
+        {
+          type: 'literature' as const,
+          itemId: 'paper-without-pdf',
+          metadataRevision: 2,
+          item: literatureItemInputSchema.parse({
+            itemType: 'journalArticle',
+            title: 'Metadata paper'
+          })
+        }
+      ]
+      await act(async () => libraryActions!.add(references, destination))
+      expect(conversationProps.composer.view.readingContext.bindings).toEqual([])
+      const preview = container.querySelector('[data-testid="preview-panel"]')
+      runtime.sendMessage.mockImplementationOnce(async () => {
+        const sessionId = destination ?? 'created-session'
+        if (!destination) {
+          useSessionStore.setState((state) => ({
+            sessions: [...state.sessions, createSession(sessionId, 'proj-1')],
+            selectedSessionId: sessionId
+          }))
+        }
+        return { sessionId, messageId: 'm1' }
+      })
+      await act(async () =>
+        conversationProps.conversation.actions.submit.draft({ forcedSkillIds: [] })
+      )
+      expect(container.querySelector('[data-testid="preview-panel"]')).toBe(preview)
+      expect(runtime.sendMessage).toHaveBeenCalledOnce()
+      expect(runtime.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: destination ?? undefined,
+          parts: expect.arrayContaining(references),
+          pdfContext: undefined,
+          pendingPdfContextVersions: undefined,
+          pendingPdfContextAttachmentIds: undefined
+        })
+      )
+    }
+  )
+
   it('preserves each session doc independently when switching away and back', async () => {
     await renderPage()
     expect(conversationProps.view.composerFocusKey).toBe('sess-a')
@@ -375,6 +613,100 @@ describe('WorkspacePage draft preservation', () => {
 
     await openSession('sess-b')
     expect(conversationProps.composer.view.doc).toEqual(textDoc('draft for B'))
+  })
+
+  it('resets main-panel local detail state without remounting the sidebar or losing drafts', async () => {
+    await renderPage()
+    const sidebarButton = container.querySelector<HTMLButtonElement>(
+      '[data-testid="sidebar-local-state"]'
+    )!
+    const mainPanel = container.querySelector<HTMLElement>('[data-testid="conversation"]')!
+    await act(async () => {
+      sidebarButton.click()
+      container.querySelector<HTMLButtonElement>('[data-testid="open-local-detail"]')!.click()
+      conversationProps.composer.actions.changeDoc(textDoc('draft for A'))
+    })
+    expect(sidebarButton.textContent).toBe('1')
+    expect(container.querySelector('[data-testid="local-detail-session"]')?.textContent).toBe(
+      'sess-a'
+    )
+
+    await openSession('sess-b')
+    expect(container.querySelector('[data-testid="sidebar-local-state"]')).toBe(sidebarButton)
+    expect(sidebarButton.textContent).toBe('1')
+    expect(container.querySelector('[data-testid="conversation"]')).not.toBe(mainPanel)
+    expect(container.querySelector('[data-testid="local-detail-session"]')).toBeNull()
+    expect(conversationProps.view.activeSession?.id).toBe('sess-b')
+    expect(conversationProps.composer.view.doc).toEqual(emptyDoc)
+
+    await openSession('sess-a')
+    expect(container.querySelector('[data-testid="sidebar-local-state"]')).toBe(sidebarButton)
+    expect(container.querySelector('[data-testid="local-detail-session"]')).toBeNull()
+    expect(conversationProps.composer.view.doc).toEqual(textDoc('draft for A'))
+  })
+
+  it('keeps pending Stop and Resume guards across a Session round trip', async () => {
+    await renderPage()
+    let finishStop: (() => void) | undefined
+    let finishResume: (() => void) | undefined
+    const stop = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishStop = resolve
+        })
+    )
+    const resume = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishResume = resolve
+        })
+    )
+
+    await act(async () => {
+      conversationProps.submissions.submitStop('sess-a', stop)
+      void conversationProps.submissions.submitResume('sess-a', resume)
+    })
+    await openSession('sess-b')
+    await openSession('sess-a')
+    expect(conversationProps.submissions.stopBySessionId.get('sess-a')?.pending).toBe(true)
+    expect(conversationProps.submissions.resumePendingSessionIds.has('sess-a')).toBe(true)
+
+    await act(async () => {
+      conversationProps.submissions.submitStop('sess-a', stop)
+      void conversationProps.submissions.submitResume('sess-a', resume)
+    })
+    expect(stop).toHaveBeenCalledTimes(1)
+    expect(resume).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      finishStop!()
+      finishResume!()
+    })
+    expect(conversationProps.submissions.stopBySessionId.has('sess-a')).toBe(false)
+    expect(conversationProps.submissions.resumePendingSessionIds.has('sess-a')).toBe(false)
+  })
+
+  it('keeps a late Stop error visible after returning to its Session', async () => {
+    await renderPage()
+    let failStop: ((error: Error) => void) | undefined
+    await act(async () => {
+      conversationProps.submissions.submitStop(
+        'sess-a',
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            failStop = reject
+          })
+      )
+    })
+    await openSession('sess-b')
+    await act(async () => {
+      failStop!(new Error('Stop request failed'))
+    })
+    await openSession('sess-a')
+    expect(conversationProps.submissions.stopBySessionId.get('sess-a')).toEqual({
+      pending: false,
+      error: 'Stop request failed'
+    })
   })
 
   it('uses the configured profile only for new conversations', async () => {
@@ -1025,6 +1357,101 @@ describe('WorkspacePage draft preservation', () => {
     expect(deleteUpload).toHaveBeenCalledWith({ path: attachmentB.path })
     expect(deleteSession).toHaveBeenCalledWith({ projectId: 'proj-1', sessionId: 'sess-b' })
     expect(conversationProps.composer.view.doc).toEqual(emptyDoc)
+  })
+
+  it('keeps project Literature accessible while session persistence is recovering', async () => {
+    await renderPage(false)
+    const navigate = vi.spyOn(useNavigationStore.getState(), 'openProjectLiterature')
+
+    expect(sidebarProps.onOpenLiterature).toBeTypeOf('function')
+    await act(async () => sidebarProps.onOpenLiterature!())
+
+    expect(navigate).toHaveBeenCalledWith('proj-1', 'user')
+    expect(useNavigationStore.getState().view).toBe('library')
+    expect(useNavigationStore.getState().pendingLiteratureProjectId).toBe('proj-1')
+    expect(usePreviewWorkbenchStore.getState().items).toEqual([])
+  })
+
+  it('opens the full Library and retains the current conversation when persistence is ready', async () => {
+    await renderPage()
+    await act(async () => sidebarProps.onOpenLiterature!())
+
+    expect(useNavigationStore.getState().view).toBe('library')
+    expect(useNavigationStore.getState().pendingLiteratureProjectId).toBe('proj-1')
+    expect(usePreviewWorkbenchStore.getState().items).toEqual([])
+    expect(useSessionStore.getState().selectedSessionId).toBe('sess-a')
+  })
+
+  it.each([
+    { collectionId: 'collection-1', collectionName: 'TP53 evidence' },
+    { section: 'inbox' as const }
+  ])('opens the latest Library scope after restoration: %j', async (scope) => {
+    const pendingLoad = createDeferred<undefined>()
+    const load = vi.fn(() => pendingLoad.promise)
+    window.api.preview.load = load as never
+    await renderPage(false)
+
+    act(() => {
+      conversationProps.layout.onOpenLibraryMention!({})
+      openLibraryPreview!(scope)
+    })
+    expect(usePreviewWorkbenchStore.getState().items).toEqual([])
+
+    await act(async () => {
+      root.render(
+        <WorkspacePage
+          isSessionPersistenceHydrated
+          isSessionPersistenceReady
+          canDeleteConversations
+        />
+      )
+    })
+    expect(load).toHaveBeenCalled()
+    expect(usePreviewWorkbenchStore.getState().items).toEqual([])
+
+    await act(async () => pendingLoad.resolve(undefined))
+    const preview = usePreviewWorkbenchStore.getState()
+    expect(preview.activeProjectId).toBe('proj-1')
+    expect(preview.items).toEqual([])
+    expect(useNavigationStore.getState().view).toBe('library')
+    expect(useNavigationStore.getState().pendingLiteratureCollectionId).toBe(
+      'collectionId' in scope ? scope.collectionId : undefined
+    )
+    expect(useNavigationStore.getState().pendingLiteratureProjectId).toBeUndefined()
+  })
+
+  it('reports blocked Library activation so the mobile sidebar stays open', async () => {
+    await renderPage()
+    await act(async () => {
+      usePreviewWorkbenchStore.getState().upsertAndActivateItem({
+        id: 'edited-file',
+        type: 'file',
+        sessionId: 'sess-a',
+        title: 'notes.txt',
+        source: 'artifact',
+        format: 'text',
+        name: 'notes.txt',
+        path: '/notes.txt'
+      })
+    })
+    const state = usePreviewWorkbenchStore.getState()
+    const unregister = previewLeaveGuards.register(
+      workbenchPreviewGuardScope(state.activeProjectId, state.activeItemId)!,
+      () => false
+    )
+    try {
+      await act(async () => {
+        expect(sidebarProps.onOpenLiterature!()).toBe(false)
+      })
+      expect(usePreviewWorkbenchStore.getState().activeItemId).toBe('edited-file')
+    } finally {
+      unregister()
+    }
+    await act(async () => {
+      expect(sidebarProps.onOpenLiterature!()).toBe(true)
+    })
+    expect(useNavigationStore.getState().view).toBe('library')
+    expect(usePreviewWorkbenchStore.getState().activeItemId).toBe('edited-file')
   })
 
   it('allows target-validated session deletion while other persistence is recovering', async () => {

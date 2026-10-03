@@ -8,7 +8,7 @@ license: Apache-2.0
 
 Prepare one reproducible environment definition and instructions for one small user-managed host
 activation file. EconoMind resolves `submitJob(..., { environment: '<name>' })` by sourcing
-`~/.openscience/environments/<name>.sh` before the workload. The file contains activation only; it
+`~/.open-science/environments/<name>.sh` before the workload. Existing `~/.openscience/environments/<name>.sh` definitions remain readable in place. Before creating an activation, check both names: update the existing definition at its exact location; if both exist, ask the user which to retain. Never create a second activation just to rename the brand. The file contains activation only; it
 does not install packages when a job starts.
 
 The environment, package caches, images, and activation file are user-managed durable resources,
@@ -51,7 +51,7 @@ Use a logical name containing 1–64 letters, numbers, periods, underscores, or 
 a letter or number. Its host activation file is:
 
 ```text
-~/.openscience/environments/<name>.sh
+~/.open-science/environments/<name>.sh
 ```
 
 The activation file itself and every path it references must be visible at the same path on the
@@ -130,7 +130,7 @@ For direct SSH, run the witness with `callCommand`:
 
 ```javascript
 const witness = await compute.callCommand(
-  '. "$HOME/.openscience/environments/protein-gpu.sh" && python -c "import sys; print(sys.executable)"',
+  '. "$HOME/.open-science/environments/protein-gpu.sh" && python -c "import sys; print(sys.executable)"',
   'Validate protein-gpu environment',
   { loginShell: true, timeoutSeconds: 120 }
 )
@@ -179,7 +179,7 @@ assumptions that still need confirmation in both the project reproduction notes 
 ```javascript
 await host.compute.details(providerId, {
   mode: 'append',
-  text: '\n### Environment: protein-gpu\nActivation: ~/.openscience/environments/protein-gpu.sh\nDefinition: environment.yml in the project\nValidated: <date>, direct or Slurm witness succeeded\n'
+  text: '\n### Environment: protein-gpu\nActivation: ~/.open-science/environments/protein-gpu.sh\nDefinition: environment.yml in the project\nValidated: <date>, direct or Slurm witness succeeded\n'
 })
 ```
 

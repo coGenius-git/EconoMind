@@ -1,6 +1,6 @@
 import { lstat, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { ALL_CONNECTOR_IDS } from './registry'
+import { ALL_CONNECTOR_IDS, RETIRED_BUILTIN_CONNECTOR_IDS } from './registry'
 import { renderSkillDoc, renderCustomSkillDoc } from './skill-doc'
 import type { CustomSkillDocTool } from './skill-doc'
 import type { StoredCustomMcpServer } from '../settings/types'
@@ -20,7 +20,8 @@ const connectorSkillSourceDir = (storageRoot: string): string =>
 // A case-sensitive check would treat `mcp-Chemistry` as a stray custom dir and delete the built-in
 // doc with it, so ownership must fold case.
 const namesBundledConnector = (dirId: string): boolean =>
-  ALL_CONNECTOR_IDS.includes(dirId.toLowerCase())
+  ALL_CONNECTOR_IDS.includes(dirId.toLowerCase()) ||
+  RETIRED_BUILTIN_CONNECTOR_IDS.includes(dirId.toLowerCase())
 
 // Skill identities are lowercase ASCII, but APFS and NTFS commonly resolve paths without regard
 // to case. If an externally-owned case variant already exists, writing the canonical name would

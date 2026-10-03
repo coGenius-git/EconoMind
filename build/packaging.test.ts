@@ -1,15 +1,293 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { finished } from 'node:stream/promises'
 
 import { describe, expect, it } from 'vitest'
 
 const repoRoot = join(__dirname, '..')
-const appBuilderLibRoot = dirname(
-  createRequire(import.meta.url).resolve('app-builder-lib/package.json')
+// Exercise the same packaging dependencies as the installed electron-builder.
+const require = createRequire(import.meta.url)
+const builderRequire = createRequire(require.resolve('electron-builder/package.json'))
+const appBuilderLibPath = builderRequire.resolve('app-builder-lib/package.json')
+const appBuilderLibRoot = dirname(appBuilderLibPath)
+const appBuilderRequire = createRequire(appBuilderLibPath)
+const { createPackageWithOptions, listPackage } = appBuilderRequire('@electron/asar')
+
+// Use an existing electron-builder NSIS cache; tests must not download a compiler.
+function findNsisCompiler(): string | undefined {
+  if (process.platform !== 'win32') return undefined
+  if (process.env.NSIS_TEST_COMPILER) return process.env.NSIS_TEST_COMPILER
+  const cache =
+    process.env.ELECTRON_BUILDER_CACHE ??
+    join(process.env.LOCALAPPDATA ?? '', 'electron-builder', 'Cache')
+  if (!existsSync(cache)) return undefined
+  for (const entry of readdirSync(cache, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith('nsis')) continue
+    const directory = join(cache, entry.name)
+    const direct = join(directory, 'makensis.exe')
+    if (existsSync(direct)) return direct
+    for (const child of readdirSync(directory, { withFileTypes: true })) {
+      const compiler = join(directory, child.name, 'makensis.exe')
+      if (child.isDirectory() && existsSync(compiler)) return compiler
+    }
+  }
+  return undefined
+}
+
+const nsisCompiler = findNsisCompiler()
+
+describe.skipIf(!nsisCompiler).each(['OpenScience', 'EconoMind'])(
+  'NSIS data preservation native behavior (%s)',
+  (folder) => {
+    it.each([
+      'missing-parent',
+      'missing-install',
+      'existing-data',
+      'interrupted-backup',
+      'backup-conflict',
+      'backup-file',
+      'invalid-parent'
+    ])('protects data during reinstall with %s', (scenario) => {
+      const root = mkdtempSync(join(tmpdir(), 'nsis-preservation-'))
+      const parent = join(
+        root,
+        scenario === 'invalid-parent' ? 'invalid?parent' : 'EconoMind 科学'
+      )
+      try {
+        const install = join(parent, 'open-science')
+        const data = join(install, folder)
+        const slot = folder === 'OpenScience' ? 'per-user' : 'per-user-branded'
+        const backup = join(parent, `.open-science-update-data-${slot}`)
+        const conflict = scenario === 'backup-conflict' || scenario === 'backup-file'
+        if (scenario !== 'missing-parent' && scenario !== 'invalid-parent') mkdirSync(parent)
+        if (scenario === 'existing-data' || conflict) {
+          mkdirSync(data, { recursive: true })
+          writeFileSync(join(data, 'sentinel.txt'), 'existing user data')
+        }
+        if (scenario === 'interrupted-backup' || scenario === 'backup-conflict') {
+          mkdirSync(backup)
+          writeFileSync(join(backup, 'sentinel.txt'), 'preserved user data')
+        }
+        if (scenario === 'backup-file') writeFileSync(backup, 'unrelated file')
+        const include = readFileSync(join(repoRoot, 'build/installer.nsh'), 'utf8')
+        const macro = include.match(
+          /!macro preserveNamedDataRoot DIR BACKUP SLOT FOLDER[\s\S]*?!macroend/
+        )?.[0]
+        expect(macro).toBeDefined()
+        const restore = include.match(
+          /!macro restoreNamedDataRoot DIR BACKUP FOLDER[\s\S]*?!macroend/
+        )?.[0]
+        expect(restore).toBeDefined()
+        // Execute the production macro with real NSIS filesystem operations. Redirect only
+        // UI output to a file so an error dialog cannot block unattended regression runs.
+        const observed = `${macro}\n${restore}`
+          .replace(/^\s*DetailPrint (.+)$/gm, 'FileWriteUTF16LE $9 $1')
+          .replace(/^\s*MessageBox MB_OK\|MB_ICONSTOP (.+)$/gm, 'FileWriteUTF16LE $9 $1')
+        const output = join(root, 'result.txt')
+        const executable = join(root, 'probe.exe')
+        const source = join(root, 'probe.nsi')
+        writeFileSync(
+          source,
+          `\uFEFFUnicode true
+!include "LogicLib.nsh"
+Name "Isolated data preservation regression"
+OutFile "${executable}"
+RequestExecutionLevel user
+SilentInstall silent
+Var backup
+Var dataProtectionFailed
+Var dataRestoreFailed
+${observed}
+Section
+FileOpen $9 "${output}" w
+StrCpy $dataProtectionFailed "0"
+StrCpy $dataRestoreFailed "0"
+!insertmacro preserveNamedDataRoot "${install}" $backup ${slot} ${folder}
+FileWriteUTF16LE $9 "|failed=$dataProtectionFailed|backup=$backup"
+!insertmacro restoreNamedDataRoot "${install}" $backup ${folder}
+FileWriteUTF16LE $9 "|restoreFailed=$dataRestoreFailed"
+FileClose $9
+SetErrorLevel 0
+SectionEnd
+`
+        )
+        const compile = spawnSync(nsisCompiler!, ['/V2', source], {
+          encoding: 'utf8',
+          timeout: 15_000
+        })
+        expect(compile.error).toBeUndefined()
+        expect(compile.status, compile.stderr || compile.stdout).toBe(0)
+        const run = spawnSync(executable, [], { encoding: 'utf8', timeout: 15_000 })
+        expect(run.error).toBeUndefined()
+        expect(run.status, run.stderr).toBe(0)
+        const result = readFileSync(output, 'utf16le')
+        expect(result, result).toContain(
+          `|failed=${conflict || scenario === 'invalid-parent' ? '1' : '0'}`
+        )
+        expect(result, result).toContain('|restoreFailed=0')
+        if (scenario === 'existing-data' || scenario === 'interrupted-backup') {
+          expect(result).toContain(`|backup=${backup}`)
+          expect(readFileSync(join(data, 'sentinel.txt'), 'utf8')).toBe(
+            scenario === 'existing-data' ? 'existing user data' : 'preserved user data'
+          )
+          expect(existsSync(backup)).toBe(false)
+        } else if (scenario === 'invalid-parent') {
+          expect(result).toContain('code=parent-path-unresolved')
+        } else if (conflict) {
+          expect(readFileSync(join(data, 'sentinel.txt'), 'utf8')).toBe('existing user data')
+          expect(
+            readFileSync(scenario === 'backup-file' ? backup : join(backup, 'sentinel.txt'), 'utf8')
+          ).toBe(scenario === 'backup-file' ? 'unrelated file' : 'preserved user data')
+        } else {
+          expect(existsSync(parent)).toBe(scenario !== 'missing-parent')
+          expect(existsSync(data)).toBe(false)
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+  }
 )
 
 describe('packaging config', () => {
+  it('loads both tiktoken WASM encodings from a packed ASAR in Electron', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'tiktoken-asar-')))
+    try {
+      const source = join(root, 'source')
+      const archive = join(root, 'app.asar')
+      mkdirSync(source)
+      cpSync(dirname(require.resolve('tiktoken')), join(source, 'node_modules', 'tiktoken'), {
+        recursive: true
+      })
+      writeFileSync(
+        join(source, 'probe.cjs'),
+        `const { get_encoding } = require('tiktoken')
+const counts = {}
+for (const profile of ['cl100k_base', 'o200k_base']) {
+  const encoding = get_encoding(profile)
+  try {
+    counts[profile] = encoding.encode('x'.repeat(1024)).length
+  } finally {
+    encoding.free()
+  }
+}
+process.stdout.write(JSON.stringify({ counts, modulePath: require.resolve('tiktoken') }))
+`
+      )
+      // ASAR resolves with a writable stream before its queued writes finish.
+      const archiveStream = await createPackageWithOptions(source, archive, {})
+      await finished(archiveStream)
+      expect(listPackage(archive).map((entry: string) => entry.replaceAll('\\', '/'))).toContain(
+        '/node_modules/tiktoken/tiktoken_bg.wasm'
+      )
+      // Remove the source tree so the child can only load the archived JavaScript and WASM.
+      rmSync(source, { recursive: true, force: true })
+      const result = spawnSync(require('electron') as string, [join(archive, 'probe.cjs')], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 10_000,
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', NODE_PATH: '' }
+      })
+      expect(result.error).toBeUndefined()
+      expect(result.status, result.stderr).toBe(0)
+      expect(JSON.parse(result.stdout)).toEqual({
+        // A byte-length fallback would return 256; both real encodings return 128.
+        counts: { cl100k_base: 128, o200k_base: 128 },
+        modulePath: join(archive, 'node_modules', 'tiktoken', 'tiktoken.cjs')
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each(['module', 'commonjs', undefined])(
+    'runs unpacked notebook scripts beneath an ancestor package with type %s',
+    async (type) => {
+      const root = mkdtempSync(join(tmpdir(), 'notebook-package-scope-'))
+      try {
+        writeFileSync(join(root, 'package.json'), JSON.stringify({ type }))
+        const source = join(root, 'source')
+        const resources = join(root, 'installed', 'resources')
+        mkdirSync(source)
+        mkdirSync(resources, { recursive: true })
+        // The app manifest stays inside app.asar, outside the unpacked scripts' ancestor chain.
+        writeFileSync(join(source, 'package.json'), '{"type":"commonjs"}')
+        cpSync(join(repoRoot, 'resources/notebook'), join(source, 'resources/notebook'), {
+          recursive: true
+        })
+        await createPackageWithOptions(source, join(resources, 'app.asar'), {
+          unpackDir: 'resources'
+        })
+        const notebook = join(resources, 'app.asar.unpacked', 'resources', 'notebook')
+        const run = (script: string, args: string[] = [], input = ''): SpawnSyncReturns<string> =>
+          spawnSync(process.execPath, [join(notebook, script), ...args], {
+            cwd: root,
+            input,
+            encoding: 'utf8',
+            timeout: 10_000,
+            env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
+          })
+
+        const repl = run('repl_loop.js', [], '{"req_id":"scope","code":"return 6 * 7"}\n')
+        expect(repl.stderr).toBe('')
+        expect(repl.status).toBe(0)
+        expect(JSON.parse(repl.stdout)).toMatchObject({
+          req_id: 'scope',
+          error: null,
+          result: '42'
+        })
+
+        const receiptId = 'scope-test'
+        const pending = join(root, `kernel.pending.${receiptId}.json`)
+        writeFileSync(pending, JSON.stringify({ receiptId }))
+        const host = run('kernel_process_host.js', [
+          pending,
+          receiptId,
+          process.execPath,
+          '-e',
+          'process.stdout.write("started")'
+        ])
+        expect(host.stderr).toBe('')
+        expect(host.status).toBe(0)
+        expect(host.stdout).toBe('started')
+
+        // Reach the real worker's protocol validation without creating evidence or requiring Git.
+        const worker = run('file_evidence_worker.js', [], '{"operation":"invalid"}')
+        expect(worker.stderr).toBe('')
+        expect(worker.status).toBe(1)
+        expect(JSON.parse(worker.stdout)).toEqual({
+          ok: false,
+          error: 'Unsupported file-evidence worker operation.'
+        })
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it('keeps the macOS internal bundle name aligned with generated Helper names', () => {
+    const yml = readFileSync(join(repoRoot, 'electron-builder.yml'), 'utf8')
+    const productName = yml.match(/^productName: (.+)$/m)?.[1]
+    const bundleName = yml.match(/^ {4}CFBundleName: (.+)$/m)?.[1]
+    // Electron resolves its Helper using CFBundleName; electron-builder names it from productName.
+    // Finder branding belongs in CFBundleDisplayName and dmg.contents.name instead.
+    expect(productName).toBeTruthy()
+    expect(bundleName).toBe(productName)
+  })
+
   it('ships the exec-loop scripts unpacked from the asar', () => {
     // The notebook driver resolves <process.resourcesPath>/notebook/python_loop.py and
     // .../r_loop.R in the packaged app, so both must exist in the repo AND asarUnpack must cover
@@ -167,8 +445,23 @@ describe('NSIS installer include (build/installer.nsh)', () => {
     // uninstaller moves every child of the install directory into its disposable $PLUGINSDIR, so
     // a successful retry must first move that data root to a separate sibling and restore it
     // before the new installer continues.
-    const recovery =
+    const preserve =
+      include.match(/!macro preserveRetryDataRoot DIR BACKUP FOLDER([\s\S]*?)!macroend/)?.[1] ?? ''
+    const restore =
+      include.match(
+        /!macro restoreRetryDataRoot DIR BACKUP REGISTERED_BACKUP FOLDER([\s\S]*?)!macroend/
+      )?.[1] ?? ''
+    const recovery = (
       include.match(/!macro uninstallFailureRecoveryAt DIR([\s\S]*?)!macroend/)?.[1] ?? ''
+    )
+      .replace(
+        '!insertmacro preserveRetryDataRoot ${DIR} $retryLegacyDataBackup OpenScience',
+        preserve.replaceAll('${BACKUP}', '$R7').replaceAll('${FOLDER}', 'OpenScience')
+      )
+      .replace(
+        '!insertmacro restoreRetryDataRoot ${DIR} $retryLegacyDataBackup ${REGISTERED_BACKUP} OpenScience',
+        restore.replaceAll('${BACKUP}', '$R7').replaceAll('${FOLDER}', 'OpenScience')
+      )
     const preserveAt = recovery.indexOf('Rename "${DIR}\\OpenScience" "$R7"')
     const retryAt = recovery.indexOf('ExecWait')
     const restoreAt = recovery.indexOf('Rename "$R7" "${DIR}\\OpenScience"')
@@ -197,13 +490,15 @@ describe('NSIS installer include (build/installer.nsh)', () => {
     // its unique sibling path instead of overwriting either copy or feeding it to the uninstaller.
     const recovery =
       include.match(
-        /!macro uninstallFailureRecoveryAt DIR REGISTERED_BACKUP([\s\S]*?)!macroend/
+        /!macro restoreRetryDataRoot DIR BACKUP REGISTERED_BACKUP FOLDER([\s\S]*?)!macroend/
       )?.[1] ?? ''
     const shellCheck = include.match(/!macro customUnInstallCheck([\s\S]*?)!macroend/)?.[1] ?? ''
     const userCheck =
       include.match(/!macro customUnInstallCheckCurrentUser([\s\S]*?)!macroend/)?.[1] ?? ''
     const conflictBranch =
-      recovery.match(/\$\{if\} "\$\{REGISTERED_BACKUP\}" != ""([\s\S]*?)\$\{else\}/)?.[1] ?? ''
+      recovery
+        .replaceAll('${BACKUP}', '$R7')
+        .match(/\$\{if\} "\$\{REGISTERED_BACKUP\}" != ""([\s\S]*?)\$\{else\}/)?.[1] ?? ''
     const shellRecoveryAt = shellCheck.indexOf('!insertmacro uninstallFailureRecoveryAt')
     const shellRestoreAt = shellCheck.indexOf('!insertmacro restoreNestedDataRoot')
     const userRecoveryAt = userCheck.indexOf('!insertmacro uninstallFailureRecoveryAt')
@@ -442,4 +737,37 @@ describe('NSIS installer include (build/installer.nsh)', () => {
       installerNsi.indexOf('Section "install"')
     )
   })
+
+  it('records actionable cleanup failure reasons in the NSIS detail log', () => {
+    expect(include).toContain('EconoMind Notebook cleanup failure code=$0')
+    for (const code of [
+      'parent-path-unresolved',
+      'backup-already-exists',
+      'preserve-rename-failed',
+      'restore-destination-exists',
+      'restore-rename-failed'
+    ]) {
+      expect(include).toContain(`EconoMind data protection failure code=${code}`)
+    }
+  })
+})
+
+it('protects both re-created branded data folders before retrying the old uninstaller', () => {
+  const include = readFileSync(join(process.cwd(), 'build/installer.nsh'), 'utf8')
+  const recovery =
+    include.match(/!macro uninstallFailureRecoveryAt DIR[\s\S]*?!macroend/)?.[0] ?? ''
+  for (const name of ['OpenScience', 'EconoMind']) {
+    expect(recovery).toMatch(
+      new RegExp('!insertmacro preserveRetryDataRoot[^\\n]+ ' + name + '(?:\\n|$)')
+    )
+    expect(recovery).toMatch(
+      new RegExp('!insertmacro restoreRetryDataRoot[^\\n]+ ' + name + '(?:\\n|$)')
+    )
+  }
+  expect(recovery.indexOf('!insertmacro preserveRetryDataRoot')).toBeLessThan(
+    recovery.indexOf('ExecWait')
+  )
+  expect(recovery.indexOf('!insertmacro restoreRetryDataRoot')).toBeGreaterThan(
+    recovery.indexOf('ExecWait')
+  )
 })

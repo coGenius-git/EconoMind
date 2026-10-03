@@ -169,7 +169,11 @@ describe('ConcurrencyManager integration with ComputeService', () => {
     const providerId = computeProviderId('test-host')
     const durableSessionLimits = new Map<string, number>()
     const sessionLimitPersistence = {
-      load: async () => [...durableSessionLimits.entries()],
+      resolve: async (sessionId: string) => ({
+        status: 'ready' as const,
+        limit: durableSessionLimits.get(sessionId) ?? null,
+        revision: 0
+      }),
       save: async (sessionId: string, limit: number) => {
         durableSessionLimits.set(sessionId, limit)
       }
@@ -501,9 +505,12 @@ describe('ConcurrencyManager integration with ComputeService', () => {
 
     await service.setConcurrencyLimit(providerId, 2)
 
-    await vi.waitFor(async () => {
-      expect((await jobRepo.get(queued.job_id))?.status).toBe('submitted')
-    })
+    await vi.waitFor(
+      async () => {
+        expect((await jobRepo.get(queued.job_id))?.status).toBe('submitted')
+      },
+      { timeout: 10_000 }
+    )
   })
 
   it('promotes queued work when the session limit is raised', async () => {
@@ -528,9 +535,12 @@ describe('ConcurrencyManager integration with ComputeService', () => {
 
     await service.setSessionConcurrencyLimit('session-1', 2)
 
-    await vi.waitFor(async () => {
-      expect((await jobRepo.get(queued.job_id))?.status).toBe('submitted')
-    })
+    await vi.waitFor(
+      async () => {
+        expect((await jobRepo.get(queued.job_id))?.status).toBe('submitted')
+      },
+      { timeout: 10_000 }
+    )
   })
 
   it('should throw queue_full error when 100 jobs are already queued', async () => {

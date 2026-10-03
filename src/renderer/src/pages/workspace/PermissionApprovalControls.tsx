@@ -1,7 +1,8 @@
+import { ScopeDropdown, type PermissionScope } from './PermissionScopeButton'
 /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 */
 
 import type { TFunction } from 'i18next'
-import { Check, ChevronDown, ChevronRight, Info } from 'lucide-react'
+import { ChevronDown, ChevronRight, Info } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -18,7 +19,7 @@ import {
 import { WorkspaceToolSummaryCard } from './WorkspaceToolSummaryCard'
 import { Button } from '@/components/ui/button'
 import { dialogTitleClassName } from '@/components/ui/dialog-chrome'
-import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
+import { Popover, PopoverAnchor } from '@/components/ui/popover'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { resolveNotebookLanguage, resolveNotebookRunToolName } from './notebook-tool-names'
@@ -68,23 +69,12 @@ type PermissionApprovalCardProps = Omit<PermissionApprovalControlsProps, 'reques
 }
 
 type PermissionOption = AcpPermissionRequest['options'][number]
-type PermissionScope = 'once' | 'session' | 'project' | 'global'
 type PendingScopeConfirmation = PermissionScopeConfirmation & {
   requestId: string
   optionId: string
 }
 
-type ScopeOption = { scope: PermissionScope; label: string; subtitle: string }
-
-// English source text for the scope menu. It stays here as literals so it reads in the diff, but it
-// travels to the menu as *data* rather than as JSX, so the read sites below call t() on it.
-const SCOPE_OPTIONS: ScopeOption[] = [
-  { scope: 'once', label: 'Once', subtitle: 'This call only' },
-  { scope: 'session', label: 'This conversation', subtitle: 'Remembered for this conversation' },
-  { scope: 'project', label: 'This project', subtitle: 'Remembered for this project' },
-  { scope: 'global', label: 'Global', subtitle: 'Remembered across all projects' }
-]
-const PERMISSION_SCOPES = SCOPE_OPTIONS.map(({ scope }) => scope)
+const PERMISSION_SCOPES: PermissionScope[] = ['once', 'session', 'project', 'global']
 
 // The ACP option kind that backs each scope. A scope is only offered when the request
 // actually carries that exact kind — we never substitute one for the other, since that
@@ -422,10 +412,12 @@ const NotebookNetworkApprovalDetail = ({
     <div className="space-y-2 text-xs leading-5 text-muted-foreground">
       <p>{t('Notebook code requested access to {{destination}}.', { destination })}</p>
       {approval.reason ? <p>{t('Reason: {{reason}}', { reason: approval.reason })}</p> : null}
-      {approval.runtime && approval.runtime !== 'bash' ? (
+      {approval.runtime &&
+      approval.runtime !== 'bash' &&
+      request.options.some((option) => option.kind === 'allow_once') ? (
         <p>
           {t(
-            'Allow once applies to the next execution in this runtime, even if the code changes. It allows multiple connections to this domain during that execution.'
+            'Allow once applies to the next execution of the same command in this session and runtime. It allows multiple connections to this domain during that execution.'
           )}
         </p>
       ) : null}
@@ -598,138 +590,6 @@ const PermissionHeaderBadges = ({
         </Tooltip>
       </TooltipProvider>
     </span>
-  )
-}
-
-// Popover listing the two available scope choices.
-const ScopeDropdown = ({
-  selected,
-  available,
-  onSelect,
-  onClose,
-  portaled,
-  onceDescription
-}: {
-  selected: PermissionScope
-  available: Set<PermissionScope>
-  onSelect: (scope: PermissionScope) => void
-  onClose: (restoreTriggerFocus?: boolean) => void
-  portaled: boolean
-  onceDescription?: string
-}): React.JSX.Element => {
-  const { t } = useTranslation()
-  const ref = useRef<HTMLDivElement>(null)
-  const itemRefs = useRef<Array<HTMLButtonElement | null>>([])
-  const options = SCOPE_OPTIONS.filter(({ scope }) => available.has(scope))
-  const selectedIndex = options.findIndex(({ scope }) => scope === selected)
-
-  useEffect(() => {
-    itemRefs.current[selectedIndex]?.focus()
-  }, [selectedIndex])
-
-  useEffect(() => {
-    if (portaled) return
-
-    // Listen on `click` (not `mousedown`) so it pairs with the chevron's onClick toggle: the
-    // chevron stops propagation, so its own click never reaches here and re-opens the menu.
-    const onDocClick = (e: MouseEvent): void => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
-    }
-    // Escape dismisses the menu, matching the keyboard affordance implied by aria-haspopup.
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        onClose(true)
-      }
-    }
-    document.addEventListener('click', onDocClick)
-    document.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.removeEventListener('click', onDocClick)
-      document.removeEventListener('keydown', onKeyDown)
-    }
-  }, [onClose, portaled])
-
-  const items = (
-    <>
-      {options.map(({ scope, label, subtitle }, index) => (
-        <button
-          key={scope}
-          ref={(item) => {
-            itemRefs.current[index] = item
-          }}
-          type="button"
-          role="menuitemradio"
-          aria-checked={selected === scope}
-          className={cn(
-            'flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-muted',
-            selected === scope && 'bg-muted'
-          )}
-          onClick={() => {
-            onSelect(scope)
-            onClose(true)
-          }}
-          onKeyDown={(event) => {
-            const lastIndex = options.length - 1
-            let nextIndex: number | undefined
-
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault()
-              onSelect(scope)
-              onClose(true)
-              return
-            }
-            if (event.key === 'ArrowDown') nextIndex = index === lastIndex ? 0 : index + 1
-            if (event.key === 'ArrowUp') nextIndex = index === 0 ? lastIndex : index - 1
-            if (event.key === 'Home') nextIndex = 0
-            if (event.key === 'End') nextIndex = lastIndex
-
-            if (nextIndex !== undefined) {
-              event.preventDefault()
-              itemRefs.current[nextIndex]?.focus()
-            }
-          }}
-        >
-          {/* Label column: left-aligned flush to padding so both rows line up */}
-          <div className="flex min-w-0 flex-1 flex-col">
-            <span className="text-xs font-medium text-foreground">{t(label)}</span>
-            <span className="text-[11px] leading-tight text-muted-foreground">
-              {scope === 'once' && onceDescription ? onceDescription : t(subtitle)}
-            </span>
-          </div>
-          {/* Check column: right side, fixed slot so selection never shifts the label */}
-          <span className="flex w-3.5 shrink-0 justify-center text-primary">
-            {selected === scope ? <Check className="size-3.5" strokeWidth={2.5} /> : null}
-          </span>
-        </button>
-      ))}
-    </>
-  )
-
-  return portaled ? (
-    <PopoverContent
-      ref={ref}
-      role="menu"
-      aria-label={t('Authorization scope')}
-      side="top"
-      align="end"
-      sideOffset={6}
-      onOpenAutoFocus={(event) => event.preventDefault()}
-      onCloseAutoFocus={(event) => event.preventDefault()}
-      onEscapeKeyDown={() => onClose(true)}
-      className="min-w-44 rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-menu"
-    >
-      {items}
-    </PopoverContent>
-  ) : (
-    <div
-      ref={ref}
-      role="menu"
-      aria-label={t('Authorization scope')}
-      className="absolute bottom-full right-0 z-10 mb-1.5 min-w-44 rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-menu outline-none"
-    >
-      {items}
-    </div>
   )
 }
 
@@ -974,7 +834,11 @@ const PermissionApprovalCard = ({
         <div className="flex flex-col gap-1 text-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="font-semibold text-foreground">{request.delegated.childTitle}</span>
-            <span className="text-muted-foreground">{request.delegated.riskScope}</span>
+            <span className="text-muted-foreground">
+              {['Read web pages', 'Search the web'].includes(sourcePresentation.categoryLabel)
+                ? t('This conversation or this call')
+                : request.delegated.riskScope}
+            </span>
           </div>
           <span className="break-words text-muted-foreground">
             {literatureSummary ? presentation.description : request.title}
@@ -1003,6 +867,10 @@ const PermissionApprovalCard = ({
           scopeDescription={scopeDescription}
         />
       </div>
+
+      {['Read web pages', 'Search the web'].includes(sourcePresentation.categoryLabel) ? (
+        <p className="text-muted-foreground">{presentation.description}</p>
+      ) : null}
 
       {/* Affected file targets — the canonical location field, shown so read/edit/delete
           prompts always reveal the path being authorized. Wraps to keep full values readable. */}
@@ -1099,7 +967,7 @@ const PermissionApprovalCard = ({
                 portaled={embedded}
                 onceDescription={
                   networkRuntime && networkRuntime !== 'bash'
-                    ? t('Next execution in this runtime')
+                    ? t('Next matching execution')
                     : undefined
                 }
               />

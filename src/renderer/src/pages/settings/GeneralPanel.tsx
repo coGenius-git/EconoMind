@@ -1,15 +1,34 @@
-import { ExternalLink, FolderOpen, Terminal } from 'lucide-react'
+// Modified by EconoMind contributors: settings branding and compatible CLI explanation.
+// Based on AIPOCH Open Science; see LICENSE and NOTICE.
+import { Notice } from '@/components/notice'
+import { InlineNotice } from '@/components/ui/inline-notice'
+import { Check, CircleAlert, ExternalLink, FolderOpen, Terminal, TriangleAlert } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 
+import { ExternalTextLink } from '@/components/ExternalTextLink'
 import { DiagnosticDetails } from '@/components/diagnostic-details'
 import { LanguageSelect } from '@/components/LanguageControls'
 import { ThemeSegmentedControl } from '@/components/ThemeControls'
+import { GitHubStarBadge } from '@/components/GitHubStarBadge'
 import { Button } from '@/components/ui/button'
-import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
 import { errorDetail } from '@/lib/error-detail'
+import {
+  INTERFACE_SCALE_OPTIONS,
+  isDesktopRenderer,
+  type InterfaceScale
+} from '@/lib/interface-scale'
+import { cn } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings-store'
+import { useInterfaceScaleStore } from '@/stores/interface-scale-store'
 import type { CloseActionPreference } from '../../../../shared/window-controls'
 import type { CliLauncherStatus } from '../../../../shared/cli'
 import type { LogFileStatus, LogWriteFailureCategory } from '../../../../shared/logs'
@@ -18,6 +37,7 @@ import type {
   NotificationDesktopAvailability,
   NotificationTestResult
 } from '../../../../shared/notifications'
+
 import { AppVersionSection } from './AppVersionSection'
 import { SettingsRow, SettingsSection, SettingsToggle } from './SettingsLayout'
 
@@ -54,6 +74,8 @@ const logFailureCopy = (category: LogWriteFailureCategory | null, t: TFunction):
   }
 }
 
+// General app settings. Hosts the Diagnostics (log file) tools and the community/connect links. The log
+// file stays on this device and is never transmitted by the app.
 const GeneralPanel = (): React.JSX.Element => {
   const { t } = useTranslation()
   const isMac = window.api.platform === 'darwin'
@@ -110,6 +132,9 @@ const GeneralPanel = (): React.JSX.Element => {
   const setShowNotificationContent = useSettingsStore((state) => state.setShowNotificationContent)
   const closePreference = useSettingsStore((state) => state.closePreference)
   const setClosePreference = useSettingsStore((state) => state.setClosePreference)
+  const interfaceScale = useInterfaceScaleStore((state) => state.scale)
+  const setInterfaceScale = useInterfaceScaleStore((state) => state.setScale)
+  const showInterfaceScale = isDesktopRenderer()
 
   const checkCliStatus = async (): Promise<void> => {
     setIsUpdatingCli(true)
@@ -207,9 +232,12 @@ const GeneralPanel = (): React.JSX.Element => {
 
   return (
     <div className="space-y-5 p-5">
-      <AppVersionSection />
+      <div data-settings-anchor="general.about">
+        <AppVersionSection />
+      </div>
 
       <SettingsSection
+        data-settings-anchor="general.appearance"
         title={t('Appearance')}
         description={t(
           'Choose how the app looks and reads. System follows your device; the other choices stay fixed. Your selection is remembered on this device.'
@@ -227,12 +255,42 @@ const GeneralPanel = (): React.JSX.Element => {
           }
 
           className="pt-0"
-          controlClassName="flex justify-end"
         >
           <ThemeSegmentedControl />
         </SettingsRow>
 
+        {showInterfaceScale ? (
+          <SettingsRow
+            label={t('Interface scale')}
+            description={t(
+              'Adjust the size of text and controls across the app. Changes apply immediately.'
+            )}
+          >
+            <Select
+              value={String(interfaceScale)}
+              onValueChange={(value) => {
+                const nextScale = Number(value)
+                if (INTERFACE_SCALE_OPTIONS.includes(nextScale as InterfaceScale)) {
+                  setInterfaceScale(nextScale as InterfaceScale)
+                }
+              }}
+            >
+              <SelectTrigger className="w-28" aria-label={t('Interface scale')}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {INTERFACE_SCALE_OPTIONS.map((scale) => (
+                  <SelectItem key={scale} value={String(scale)}>
+                    {Math.round(scale * 100)}%
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </SettingsRow>
+        ) : null}
+
         <SettingsRow
+          data-settings-anchor="general.language"
           label={t('Language')}
           description={t(
             'Follow the system setting, or pick a language. System is detected once at startup, so a change to your device language takes effect the next time the app opens.'
@@ -286,6 +344,7 @@ const GeneralPanel = (): React.JSX.Element => {
       ) : null}
 
       <SettingsSection
+        data-settings-anchor="general.notifications"
         title={t('Notifications')}
         description={t(
           "Get a desktop notification when a task finishes, fails, or waits for your approval while you're away from the app."
@@ -302,13 +361,11 @@ const GeneralPanel = (): React.JSX.Element => {
           )}
           className="pt-0"
         >
-          <div className="flex justify-end">
-            <SettingsToggle
-              enabled={notificationsEnabled}
-              aria-label={t('Toggle task notifications')}
-              onToggle={() => void setNotificationsEnabled(!notificationsEnabled)}
-            />
-          </div>
+          <SettingsToggle
+            enabled={notificationsEnabled}
+            aria-label={t('Toggle task notifications')}
+            onToggle={() => void setNotificationsEnabled(!notificationsEnabled)}
+          />
         </SettingsRow>
 
         <SettingsRow
@@ -317,14 +374,12 @@ const GeneralPanel = (): React.JSX.Element => {
             'Include task names and request details. Provider errors are always hidden.'
           )}
         >
-          <div className="flex justify-end">
-            <SettingsToggle
-              enabled={showNotificationContent}
-              disabled={!notificationsEnabled}
-              aria-label={t('Toggle task content in system notifications')}
-              onToggle={() => void setShowNotificationContent(!showNotificationContent)}
-            />
-          </div>
+          <SettingsToggle
+            enabled={showNotificationContent}
+            disabled={!notificationsEnabled}
+            aria-label={t('Toggle task content in system notifications')}
+            onToggle={() => void setShowNotificationContent(!showNotificationContent)}
+          />
         </SettingsRow>
 
         <SettingsRow
@@ -335,7 +390,7 @@ const GeneralPanel = (): React.JSX.Element => {
               : t('System notifications are unavailable on this device.')
           }
         >
-          <div className="flex flex-col items-end gap-1.5">
+          <div className="flex w-full flex-col items-end">
             <Button
               type="button"
               variant="outline"
@@ -345,17 +400,38 @@ const GeneralPanel = (): React.JSX.Element => {
             >
               {isTestingNotification ? t('Sending test…') : t('Send test notification')}
             </Button>
-            {notificationTestResult ? (
-              <p className="text-right text-xs text-muted-foreground" role="status">
-                {notificationTestResult === 'shown'
-                  ? t('Test notification shown.')
-                  : notificationTestResult === 'failed'
-                    ? t('Test notification failed.')
-                    : notificationTestResult === 'unconfirmed'
-                      ? t('Test notification sent, but display could not be confirmed.')
-                      : t('System notifications are unavailable on this device.')}
-              </p>
-            ) : null}
+            {/* Reserved feedback slot: constant height, idle state only hidden, so a result
+                appearing or toggling tone never shifts the button or the row. */}
+            <div className="flex min-h-[30px] w-full items-start justify-end pt-1.5">
+              <span
+                role="status"
+                className={cn(
+                  'inline-flex items-center gap-[5px] rounded-lg border px-2 py-[3px] text-xs leading-[18px] font-medium whitespace-nowrap',
+                  notificationTestResult === undefined
+                    ? 'invisible'
+                    : notificationTestResult === 'shown'
+                      ? 'border-status-success-accent/30 bg-status-success-surface text-status-success-foreground dark:bg-status-success-dark-surface dark:text-status-success-dark-foreground'
+                      : notificationTestResult === 'unconfirmed'
+                        ? 'border-status-warning-foreground/30 bg-status-warning-surface text-status-warning-foreground dark:border-status-warning-dark-foreground/30 dark:bg-status-warning-dark-surface dark:text-status-warning-dark-foreground'
+                        : 'border-status-failure-border bg-status-failure-surface text-status-failure-foreground dark:border-status-failure-dark-border dark:bg-status-failure-dark-surface dark:text-status-failure-dark-foreground'
+                )}
+              >
+                {notificationTestResult === 'shown' || notificationTestResult === undefined ? (
+                  <Check className="size-3.5" aria-hidden="true" />
+                ) : notificationTestResult === 'unconfirmed' ? (
+                  <TriangleAlert className="size-3.5" aria-hidden="true" />
+                ) : (
+                  <CircleAlert className="size-3.5" aria-hidden="true" />
+                )}
+                {notificationTestResult === 'failed'
+                  ? t('Test notification failed.')
+                  : notificationTestResult === 'unconfirmed'
+                    ? t('Test notification sent, but display could not be confirmed.')
+                    : notificationTestResult === 'unavailable'
+                      ? t('System notifications are unavailable on this device.')
+                      : t('Test notification shown.')}
+              </span>
+            </div>
           </div>
         </SettingsRow>
 
@@ -366,18 +442,18 @@ const GeneralPanel = (): React.JSX.Element => {
         </p>
       </SettingsSection>
 
+      {/* macOS uses the adaptive build/icon.icon for the installed app and binds its live Dock icon
+          to Theme. Hiding the independent picker prevents two controls from racing each other. */}
+
       <SettingsSection
+        data-settings-anchor="general.diagnostics"
         title={t('Diagnostics')}
         description={t(
           "View this device's runtime log — it records what the app is doing so problems can be diagnosed."
         )}
         aria-label={t('Diagnostics')}
       >
-        <SettingsRow
-          label={t('Log file')}
-          controlClassName="w-auto justify-self-end"
-          className="pt-0"
-        >
+        <SettingsRow label={t('Log file')} className="pt-0">
           <div className="flex items-center gap-2">
             <Button
               type="button"
@@ -403,6 +479,7 @@ const GeneralPanel = (): React.JSX.Element => {
         <pre
           className="overflow-x-auto rounded-lg border border-border bg-muted/60 px-3 py-2.5 font-mono text-xs text-foreground"
           aria-label={t('Log file path')}
+          tabIndex={0}
         >
           {logPath ??
             (isCheckingLog
@@ -424,56 +501,69 @@ const GeneralPanel = (): React.JSX.Element => {
         ) : null}
 
         {logStatusError !== undefined ? (
-          <div className="mt-2 space-y-2">
-            <p className="text-xs text-destructive" role="alert">
-              {t('Could not check the log file.')}
-            </p>
+          <Notice
+            inline
+            level="error"
+            role="alert"
+            className="mt-2"
+            description={t('Could not check the log file.')}
+            primaryButton={{
+              label: isCheckingLog ? t('Loading…') : t('Check again'),
+              disabled: isCheckingLog,
+              onClick: () => void refreshLogStatus()
+            }}
+          >
             <DiagnosticDetails detail={logStatusError} />
-            <Button
-              type="button"
-              variant="outline"
-              disabled={isCheckingLog}
-              onClick={() => void refreshLogStatus()}
-            >
-              {isCheckingLog ? t('Loading…') : t('Check again')}
-            </Button>
-          </div>
+          </Notice>
         ) : null}
 
         {logStatus && (logStatus.lastWriteSucceeded === false || logStatus.lastFailureCategory) ? (
-          <p className="mt-2 text-xs text-destructive" role="status">
+          <InlineNotice level="error" className="mt-2" role="status">
             {logStatus.lastWriteSucceeded === false
               ? t('The app could not write to the log file during its most recent attempt.')
               : null}{' '}
             {logFailureCopy(logStatus.lastFailureCategory, t)}
-          </p>
+          </InlineNotice>
         ) : null}
 
         {message ? (
-          <div className="mt-2">
-            <p className="text-xs text-destructive" role="alert">
-              {generalActionErrorCopy(message, t)}
-            </p>
+          <Notice
+            inline
+            level="error"
+            role="alert"
+            className="mt-2"
+            description={generalActionErrorCopy(message, t)}
+          >
             <DiagnosticDetails detail={message.detail} />
-          </div>
+          </Notice>
         ) : null}
+
+        <p className="mt-3 text-xs text-muted-foreground">
+          {/* Trans clones each component and injects the translated text as its children, so the
+              empty string here is only satisfying the required prop — it never renders. */}
+          <Trans
+            i18nKey="Something not working? <docsLink>Open an issue on GitHub</docsLink> and attach the log above. It stays on this device and is never sent automatically; it may contain local file paths, so review it before sharing."
+            components={{
+              // Named docsLink, not link: <link> is a void HTML element, so the parser Trans uses
+              // self-closes it and the label would render as a sibling of an empty anchor.
+              docsLink: <ExternalTextLink href={APP.links.githubIssues}>{''}</ExternalTextLink>
+            }}
+          />
+        </p>
       </SettingsSection>
 
       <SettingsSection
+        data-settings-anchor="general.cli"
         title={t('Command line tool')}
         description={
           <Trans
-            i18nKey="Install the <code>open-science</code> command so you can start, stop, and check the backend from a terminal, then use it entirely from your browser."
+            i18nKey="Install the compatible <code>open-science</code> command to control the EconoMind backend from a terminal. The original command name is retained for existing scripts."
             components={{ code: <code className="font-mono" /> }}
           />
         }
         aria-label={t('Command line tool')}
       >
-        <SettingsRow
-          label={t('open-science')}
-          controlClassName="w-auto justify-self-end"
-          className="pt-0"
-        >
+        <SettingsRow label={t('open-science')} className="pt-0">
           <Button
             type="button"
             variant="outline"
@@ -503,24 +593,24 @@ const GeneralPanel = (): React.JSX.Element => {
         ) : null}
 
         {cliError ? (
-          <div className="mt-2">
-            <p className="text-xs text-destructive" role="alert">
-              {generalActionErrorCopy(cliError, t)}
-            </p>
+          <Notice
+            inline
+            level="error"
+            role="alert"
+            className="mt-2"
+            description={generalActionErrorCopy(cliError, t)}
+            primaryButton={
+              cliError.action === 'cli-status'
+                ? {
+                    label: isUpdatingCli ? t('Checking…') : t('Check again'),
+                    disabled: isUpdatingCli,
+                    onClick: () => void checkCliStatus()
+                  }
+                : undefined
+            }
+          >
             <DiagnosticDetails detail={cliError.detail} />
-            {cliError.action === 'cli-status' ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="mt-2"
-                disabled={isUpdatingCli}
-                onClick={() => void checkCliStatus()}
-              >
-                {isUpdatingCli ? t('Checking…') : t('Check again')}
-              </Button>
-            ) : null}
-          </div>
+          </Notice>
         ) : null}
 
         <p className="mt-3 text-xs text-muted-foreground">
@@ -529,6 +619,16 @@ const GeneralPanel = (): React.JSX.Element => {
             components={{ code: <code className="font-mono" /> }}
           />
         </p>
+      </SettingsSection>
+
+      <SettingsSection
+        title={t('Enjoying {{appName}}?', { appName: APP.name })}
+
+        aria-label={t('Community')}
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <GitHubStarBadge className="border border-border" />
+        </div>
       </SettingsSection>
     </div>
   )

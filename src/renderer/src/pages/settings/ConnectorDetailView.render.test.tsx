@@ -1,9 +1,11 @@
+import { openResourceMainSwitch } from './test-utils'
 // @vitest-environment jsdom
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ConnectorDetailView as ConnectorDetail } from '../../../../shared/settings'
+import { i18next } from '@/i18n'
 import { ConnectorDetailView } from './ConnectorDetailView'
 import { createInitialSettingsState, useSettingsStore } from '@/stores/settings-store'
 import { usePermissionGrantsStore } from '@/stores/permission-grants-store'
@@ -122,6 +124,92 @@ const blockSegment = (method: string): HTMLButtonElement | null => {
 }
 
 describe('ConnectorDetailView', () => {
+  it('shows localized InterProScan descriptions while preserving public tool identities', async () => {
+    const interproscan: ConnectorDetail = {
+      ...detail,
+      id: 'interproscan',
+      displayName: 'InterProScan',
+      description: 'API contract',
+      tools: ['status', 'results'].map((method) => ({
+        id: `interproscan/${method}`,
+        method,
+        description: 'API contract',
+        permission: 'allow'
+      }))
+    }
+    vi.mocked(window.api.settings.getConnectorDetail).mockResolvedValue(interproscan)
+    await act(async () => {
+      await i18next.changeLanguage('zh-Hans')
+      root.render(<ConnectorDetailView id="interproscan" />)
+    })
+    try {
+      expect(container.textContent).toContain('查询 InterProScan 作业状态并获取 TSV 结果')
+      for (const method of ['status', 'results']) {
+        const button = Array.from(container.querySelectorAll('button')).find((item) =>
+          item.textContent?.includes(method)
+        )!
+        await act(async () => button.click())
+        expect(container.textContent).toContain(method)
+      }
+      expect(container.textContent).toContain('至少等待 10 秒')
+      expect(container.textContent).toContain('完整 TSV 报告')
+      expect(container.textContent).not.toContain('API contract')
+      expect(container.querySelectorAll('[role="radiogroup"]')).toHaveLength(2)
+    } finally {
+      await act(async () => {
+        await i18next.changeLanguage('en')
+      })
+    }
+  })
+  it('labels the linked users as Connector availability', async () => {
+    await act(async () => {
+      root.render(<ConnectorDetailView id="ensembl" onOpenSpecialist={vi.fn()} />)
+    })
+    const trigger = container.querySelector('[data-slot="skill-usage-agents-trigger"]')
+    expect(trigger?.getAttribute('aria-label')).toContain('Connector')
+    expect(trigger?.getAttribute('data-resource-kind')).toBe('connector')
+  })
+
+  it('shows translated descriptions for the new DOI tools while retaining exact permission identities', async () => {
+    const method = 'crossref_get_updates'
+    const literature: ConnectorDetail = {
+      ...detail,
+      id: 'literature',
+      displayName: 'Literature Graph',
+      tools: [
+        { id: `literature/${method}`, method, description: 'API contract', permission: 'allow' }
+      ]
+    }
+    vi.mocked(window.api.settings.getConnectorDetail).mockResolvedValue(literature)
+    const setToolPermission = vi.fn().mockResolvedValue({
+      ...literature,
+      tools: [{ ...literature.tools[0], permission: 'block' }]
+    })
+    useSettingsStore.setState({ setToolPermission })
+    await act(async () => {
+      await i18next.changeLanguage('zh-Hans')
+      root.render(<ConnectorDetailView id="literature" />)
+    })
+    try {
+      const tool = Array.from(container.querySelectorAll('button')).find((button) =>
+        button.textContent?.includes(method)
+      )!
+      await act(async () => tool.click())
+      expect(container.textContent).toContain('查询已登记的更正和撤稿信息')
+      expect(container.textContent).toContain('Crossref 和 DataCite')
+      expect(container.textContent).toContain(method)
+      expect(container.querySelectorAll('[role="radiogroup"]')).toHaveLength(1)
+      const block = container.querySelector<HTMLButtonElement>('[role="radio"][aria-label="阻止"]')!
+      await act(async () => block.click())
+      expect(setToolPermission).toHaveBeenCalledWith(`literature/${method}`, 'block')
+      expect(block.getAttribute('aria-checked')).toBe('true')
+    } finally {
+      await act(async () => {
+        await i18next.changeLanguage('en')
+      })
+    }
+  })
+
   it('C05 keeps both permission changes when the user edits two tools in succession', async () => {
     const initial = {
       ...detail,
@@ -217,7 +305,10 @@ describe('ConnectorDetailView', () => {
 
     expect(document.body.textContent).toContain('Ensembl')
     expect(document.body.textContent).toContain('Availability')
-    expect(document.body.textContent).toContain('Shared with Main')
+    expect(document.body.textContent).toContain(
+      'Control access separately for Main Agent and each Specialist.'
+    )
+    expect(openResourceMainSwitch('Ensembl')).not.toBeNull()
     expect(document.body.textContent).toContain('Genomics Reviewer')
     expect(document.body.textContent).toContain('lookup_gene')
     expect(document.body.textContent).toContain('list_species')
@@ -260,12 +351,11 @@ describe('ConnectorDetailView', () => {
   it('toggles the connector from the header switch and skip-approvals row', async () => {
     await render()
 
-    const switches = document.body.querySelectorAll<HTMLButtonElement>('[role="switch"]')
-    // First switch is the header enable toggle; second is the skip-approvals toggle.
-    act(() => switches[0]?.click())
+    const skipApprovals = document.body.querySelector<HTMLButtonElement>('[role="switch"]')
+    const main = openResourceMainSwitch('Ensembl')
+    act(() => main?.click())
     expect(useSettingsStore.getState().setConnectorEnabled).toHaveBeenCalledWith('ensembl', false)
-
-    act(() => switches[1]?.click())
+    act(() => skipApprovals?.click())
     expect(useSettingsStore.getState().setConnectorAutoAllow).toHaveBeenCalledWith('ensembl', true)
   })
 
@@ -315,12 +405,12 @@ describe('ConnectorDetailView', () => {
     await render()
 
     await act(async () => {
-      document.body.querySelector<HTMLButtonElement>('[role="switch"]')?.click()
+      openResourceMainSwitch('Ensembl')?.click()
       await Promise.resolve()
     })
 
     expect(document.body.querySelector('[role="alert"]')?.textContent).toContain(
-      'Could not save this setting. The previous value was restored.'
+      'Could not update resource access. Refresh and try again.'
     )
   })
 
@@ -344,11 +434,10 @@ describe('ConnectorDetailView', () => {
     })
     await render()
 
-    const header = (): HTMLButtonElement =>
-      document.body.querySelectorAll<HTMLButtonElement>('[role="switch"]')[0]
+    const header = (): HTMLButtonElement => openResourceMainSwitch('Ensembl')!
 
     expect(header().getAttribute('aria-checked')).toBe('true')
-    act(() => header().click())
+    await act(async () => header().click())
     expect(useSettingsStore.getState().setConnectorEnabled).toHaveBeenLastCalledWith(
       'ensembl',
       false
@@ -364,7 +453,7 @@ describe('ConnectorDetailView', () => {
     // The header now reflects OFF, and clicking re-enables (would still send `false` if it read the
     // stale detail).
     expect(header().getAttribute('aria-checked')).toBe('false')
-    act(() => header().click())
+    await act(async () => header().click())
     expect(useSettingsStore.getState().setConnectorEnabled).toHaveBeenLastCalledWith(
       'ensembl',
       true

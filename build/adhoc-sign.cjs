@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 
-// electron-builder afterPack hook: apply a valid deep ad-hoc signature on macOS.
+// electron-builder afterPack hook: sign loose resources before the outer application.
 //
 // Without an Apple "Developer ID Application" certificate, electron-builder skips code
 // signing entirely. That leaves the bundle with only Electron's linker-level ad-hoc
@@ -55,6 +55,27 @@ exports.default = async function adhocSign(context) {
       { stdio: 'inherit' }
     )
     console.log('[adhoc-sign] signed bundled micromamba')
+  }
+
+  // Loose executables in Resources are not covered by --deep's nested-code discovery.
+  const credentialHelperDirectory = path.join(
+    appPath,
+    'Contents',
+    'Resources',
+    'app.asar.unpacked',
+    'node_modules',
+    '@aipoch',
+    'credential-identity-probe-native',
+    'build',
+    'Release'
+  )
+  for (const name of ['credential_identity_probe', 'credential_key_validator']) {
+    const executable = path.join(credentialHelperDirectory, name)
+    if (fs.existsSync(executable)) {
+      execFileSync('codesign', ['--force', '--options', 'runtime', '--sign', '-', executable], {
+        stdio: 'inherit'
+      })
+    }
   }
 
   // --deep signs nested frameworks, helpers and the bundled native `claude` binary.

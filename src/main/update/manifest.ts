@@ -7,7 +7,9 @@ const DOWNLOAD_KEYS = new Set([
   'mac-x64',
   'win-x64',
   'linux-x64-appimage',
-  'linux-x64-deb'
+  'linux-x64-deb',
+  'linux-arm64-appimage',
+  'linux-arm64-deb'
 ])
 const MANIFEST_TIMEOUT_MS = 15_000
 const MAX_MANIFEST_BYTES = 256 * 1024
@@ -70,7 +72,9 @@ export const parseManifest = (data: unknown): UpdateManifest => {
 
   const downloads: Record<string, PlatformDownload> = {}
   for (const [key, value] of Object.entries(data.downloads)) {
-    if (!DOWNLOAD_KEYS.has(key) || !isDownload(value)) {
+    // Future clients may add platforms with a different entry format.
+    if (!DOWNLOAD_KEYS.has(key)) continue
+    if (!isDownload(value)) {
       throw new Error(`Invalid download entry: ${key}`)
     }
     downloads[key] = { ...value, sha256: value.sha256.toLowerCase() }

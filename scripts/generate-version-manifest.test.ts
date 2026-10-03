@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -22,7 +23,9 @@ const INSTALLERS = {
   'mac-x64': `aipoch-open-science-${VERSION}-mac-x64.dmg`,
   'win-x64': `aipoch-open-science-${VERSION}-win-x64-setup.exe`,
   'linux-x64-appimage': `aipoch-open-science-${VERSION}-linux-x64.AppImage`,
-  'linux-x64-deb': `aipoch-open-science_${VERSION}_amd64.deb`
+  'linux-x64-deb': `aipoch-open-science_${VERSION}_amd64.deb`,
+  'linux-arm64-appimage': `aipoch-open-science-${VERSION}-linux-arm64.AppImage`,
+  'linux-arm64-deb': `aipoch-open-science_${VERSION}_arm64.deb`
 }
 
 // One line of SHA256SUMS.txt worth of file: content is hashed by `sha` (or omitted when sha is null).
@@ -44,7 +47,8 @@ function makeReleaseDir(files: FileSpec[]): string {
 // A canonical entry: 64-hex sha keyed off the platform so each file gets a distinct, checkable hash.
 const HEX = (n: string): string => n.repeat(64)
 function entry(key: keyof typeof INSTALLERS, extra = 0): FileSpec {
-  return { name: INSTALLERS[key], content: 'x'.repeat(10 + extra), sha: HEX(String(extra % 10)) }
+  const content = 'x'.repeat(10 + extra)
+  return { name: INSTALLERS[key], content, sha: createHash('sha256').update(content).digest('hex') }
 }
 
 describe('parseSha256Sums', () => {
@@ -65,7 +69,7 @@ describe('parseSha256Sums', () => {
 
 describe('extractHighlights', () => {
   const body = [
-    '# Open Science v0.2.0',
+    '# EconoMind v0.2.0',
     '',
     '> one-line tagline',
     '',
@@ -172,6 +176,46 @@ describe('buildManifest', () => {
   let dir: string | undefined
   afterEach(() => dir && rmSync(dir, { recursive: true, force: true }))
 
+  it.each(['x64', 'arm64'] as const)(
+    'validates %s feed bytes and rejects a swapped architecture',
+    (arch) => {
+      const files = [entry(`linux-${arch}-appimage`), entry(`linux-${arch}-deb`)]
+      dir = makeReleaseDir(files)
+      const feed = JSON.stringify({
+        version: VERSION,
+        files: files.map((file) => ({
+          url: file.name,
+          size: file.content.length,
+          sha512: createHash('sha512').update(file.content).digest('base64')
+        }))
+      })
+      const options = { dir, version: VERSION, cdnBase: CDN, prefix: PREFIX }
+      const name = arch === 'arm64' ? 'latest-linux-arm64.yml' : 'latest-linux.yml'
+      writeFileSync(join(dir, name), feed)
+      expect(Object.keys(buildManifest(options).downloads)).toHaveLength(2)
+      writeFileSync(
+        join(dir, arch === 'arm64' ? 'latest-linux.yml' : 'latest-linux-arm64.yml'),
+        feed
+      )
+      expect(() => buildManifest(options)).toThrow(/Wrong architecture/)
+    }
+  )
+
+  it('keeps historical backfill partial while requiring ARM64 for a new promotion', () => {
+    dir = makeReleaseDir(
+      Object.keys(INSTALLERS)
+        .filter((key) => !key.includes('linux-arm64'))
+        .map((key) => entry(key))
+    )
+    const options = { dir, version: VERSION, cdnBase: CDN, prefix: PREFIX }
+    expect(
+      Object.keys(buildManifest({ ...options, allowLegacyNames: true }).downloads)
+    ).toHaveLength(5)
+    expect(() => buildManifest({ ...options, requireComplete: true })).toThrow(
+      /Missing stable release installer: linux-arm64/
+    )
+  })
+
   it('maps every installer to its key with url, size and sha256', () => {
     const files = Object.keys(INSTALLERS).map((key, i) => entry(key, i + 1))
     dir = makeReleaseDir(files)
@@ -192,7 +236,7 @@ describe('buildManifest', () => {
     expect(manifest.localizedNotes).toEqual({ 'zh-Hans': '版本说明' })
     expect(manifest.releaseDate).toBe('2026-07-12T00:00:00Z')
 
-    // All five platform keys present.
+    // All platform keys present.
     expect(Object.keys(manifest.downloads).sort()).toEqual(Object.keys(INSTALLERS).sort())
 
     // url construction: <cdn>/<prefix>/releases/<version>/<filename>.
@@ -227,30 +271,22 @@ describe('buildManifest', () => {
     expect(manifest.downloads['linux-x64-deb']).toBeUndefined()
   })
 
-  it('warns and skips an installer missing from SHA256SUMS', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  it('rejects an installer missing from SHA256SUMS', () => {
     dir = makeReleaseDir([entry('mac-arm64', 1), { ...entry('mac-x64', 2), sha: null }])
-
-    const manifest = buildManifest({
-      dir,
-      version: VERSION,
-      notes: '',
-      releaseDate: '',
-      cdnBase: CDN,
-      prefix: PREFIX
-    })
-
-    expect(manifest.downloads['mac-arm64']).toBeDefined()
-    expect(manifest.downloads['mac-x64']).toBeUndefined()
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no sha256'))
-    warn.mockRestore()
+    expect(() => buildManifest({ dir, version: VERSION, cdnBase: CDN, prefix: PREFIX })).toThrow(
+      /no sha256/
+    )
   })
 
   it('warns on an unrecognized file but stays silent for zips and checksums', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     dir = makeReleaseDir([
       entry('mac-arm64', 1),
-      { name: 'aipoch-open-science-0.1.2-mac-arm64.zip', content: 'zip', sha: HEX('9') },
+      {
+        name: 'aipoch-open-science-0.1.2-mac-arm64.zip',
+        content: 'zip',
+        sha: createHash('sha256').update('zip').digest('hex')
+      },
       { name: 'mystery-artifact.bin', content: 'bin', sha: HEX('8') }
     ])
 

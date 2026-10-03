@@ -46,7 +46,8 @@ vi.mock('./DeleteProjectDialog', () => ({
     </>
   )
 }))
-vi.mock('radix-ui', () => ({
+vi.mock('radix-ui', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('radix-ui')>()),
   Tooltip: {
     Provider: ({ children }: { children: ReactNode }) => <>{children}</>,
     Root: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -219,6 +220,51 @@ describe('HomePage persistence recovery', () => {
     expect(archive?.disabled).toBe(true)
     expect(archive?.title).toBe('')
     expect(container.textContent).toContain('Update EconoMind before archiving this project.')
+  })
+
+  it('keeps an unrelated project archivable when damaged authority names another project', async () => {
+    const unaffectedProject: Project = {
+      ...project,
+      id: 'project-2',
+      name: 'Unaffected project'
+    }
+    const updateProjectArchive = vi.fn().mockResolvedValue({
+      ...unaffectedProject,
+      archivedAt: 2
+    })
+    useProjectStore.setState({
+      projects: [project, unaffectedProject],
+      updateProjectArchive
+    } as never)
+
+    await act(async () =>
+      root.render(
+        <HomePage
+          canDeleteProjects
+          hasCompleteSessionCatalog={false}
+          catalogRecovery={{
+            kind: 'damaged-authority',
+            affectedFiles: [{ projectId: project.id, fileName: 'broken.json' }]
+          }}
+          onOpenGlobalSearch={vi.fn()}
+        />
+      )
+    )
+
+    const archives = [...container.querySelectorAll<HTMLButtonElement>('button')].filter(
+      (button) => button.textContent?.trim() === 'Archive'
+    )
+    expect(archives).toHaveLength(2)
+    expect(archives[0]?.disabled).toBe(true)
+    expect(archives[1]?.disabled).toBe(false)
+
+    await act(async () => archives[1]?.click())
+
+    expect(updateProjectArchive).toHaveBeenCalledWith({
+      id: unaffectedProject.id,
+      archived: true,
+      expectedArchiveRevision: 0
+    })
   })
 
   it('maps a raced incomplete-catalog archive rejection to index repair guidance', async () => {

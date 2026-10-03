@@ -323,9 +323,7 @@ describe('application surface shutdown', () => {
           order.push('web-controller')
         },
         disposeApplicationRuntime: () => runtime.dispose(),
-        shutdownRemoteAccess: () => {
-          order.push('remote-access')
-        },
+
         disposeIpcHandlers: () => {
           order.push('ipc-handlers')
         }
@@ -340,39 +338,9 @@ describe('application surface shutdown', () => {
         'web-controller',
         'application-runtime:start',
         'application-runtime:end',
-        'remote-access',
+
         'ipc-handlers'
       ])
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('reserves completion time for IPC when Remote Access exhausts its final-surface share', async () => {
-    vi.useFakeTimers()
-    const order: string[] = []
-    let outcome: Awaited<ReturnType<typeof shutdownApplicationSurfaces>> | undefined
-
-    try {
-      void shutdownApplicationSurfaces({
-        disposeWebController: vi.fn(),
-        disposeApplicationRuntime: vi.fn(),
-        shutdownRemoteAccess: () => new Promise<void>(() => undefined),
-        disposeIpcHandlers: async () => {
-          order.push('ipc-handlers:start')
-          await new Promise<void>((resolve) => setTimeout(resolve, 1))
-          order.push('ipc-handlers:end')
-        }
-      }).then((result) => {
-        outcome = result
-      })
-
-      await vi.advanceTimersByTimeAsync(APPLICATION_MODULE_DISPOSAL_BUDGET_MS / 2)
-      expect(order).toEqual(['ipc-handlers:start'])
-
-      await vi.advanceTimersByTimeAsync(1)
-      expect(order).toEqual(['ipc-handlers:start', 'ipc-handlers:end'])
-      expect(outcome).toBe('timeout')
     } finally {
       vi.useRealTimers()
     }
@@ -385,9 +353,7 @@ describe('application surface shutdown', () => {
     const disposeApplicationRuntime = vi.fn(() => {
       order.push('application-runtime')
     })
-    const shutdownRemoteAccess = vi.fn(() => {
-      order.push('remote-access')
-    })
+
     const disposeIpcHandlers = vi.fn(() => {
       order.push('ipc-handlers')
     })
@@ -395,7 +361,7 @@ describe('application surface shutdown', () => {
     try {
       void shutdownApplicationSurfaces({
         disposeApplicationRuntime,
-        shutdownRemoteAccess,
+
         disposeWebController: () => {
           order.push('web-controller')
           return new Promise<void>(() => undefined)
@@ -409,14 +375,9 @@ describe('application surface shutdown', () => {
 
       expect(outcome).toBe('timeout')
       expect(disposeApplicationRuntime).toHaveBeenCalledOnce()
-      expect(shutdownRemoteAccess).toHaveBeenCalledOnce()
+
       expect(disposeIpcHandlers).toHaveBeenCalledOnce()
-      expect(order).toEqual([
-        'web-controller',
-        'application-runtime',
-        'remote-access',
-        'ipc-handlers'
-      ])
+      expect(order).toEqual(['web-controller', 'application-runtime', 'ipc-handlers'])
     } finally {
       vi.useRealTimers()
     }
@@ -431,11 +392,7 @@ describe('application surface shutdown', () => {
         disposeApplicationRuntime: () => {
           order.push('application-runtime')
         },
-        remoteAccess: {
-          shutdown: () => {
-            order.push('remote-access')
-          }
-        },
+
         webController: {
           dispose: () => {
             order.push('web-controller')
@@ -449,24 +406,19 @@ describe('application surface shutdown', () => {
     await expect(lifecycle.shutdownBackends()).resolves.toBe('completed')
 
     expect(lifecycle.marker).toBe('electron-lifecycle')
-    expect(order).toEqual([
-      'web-controller',
-      'application-runtime',
-      'remote-access',
-      'ipc-handlers'
-    ])
+    expect(order).toEqual(['web-controller', 'application-runtime', 'ipc-handlers'])
   })
 
   it('shares one application surface shutdown across concurrent lifecycle requests', async () => {
     const disposeApplicationRuntime = vi.fn()
-    const shutdownRemoteAccess = vi.fn()
+
     const disposeWebController = vi.fn()
     const disposeIpcHandlers = vi.fn()
     const lifecycle = withApplicationRuntimeShutdown(
       {},
       {
         disposeApplicationRuntime,
-        remoteAccess: { shutdown: shutdownRemoteAccess },
+
         webController: { dispose: disposeWebController },
         disposeIpcHandlers
       }
@@ -475,14 +427,14 @@ describe('application surface shutdown', () => {
     await Promise.all([lifecycle.shutdownBackends(), lifecycle.shutdownBackends()])
 
     expect(disposeApplicationRuntime).toHaveBeenCalledOnce()
-    expect(shutdownRemoteAccess).toHaveBeenCalledOnce()
+
     expect(disposeWebController).toHaveBeenCalledOnce()
     expect(disposeIpcHandlers).toHaveBeenCalledOnce()
   })
 
   it('diagnoses runtime failure and continues closing surfaces without rejecting lifecycle', async () => {
     const failure = new Error('backend shutdown failed')
-    const shutdownRemoteAccess = vi.fn()
+
     const disposeWebController = vi.fn()
     const disposeIpcHandlers = vi.fn()
     const log = { error: vi.fn() }
@@ -490,7 +442,7 @@ describe('application surface shutdown', () => {
     await expect(
       shutdownApplicationSurfaces({
         disposeApplicationRuntime: () => Promise.reject(failure),
-        shutdownRemoteAccess,
+
         disposeWebController,
         disposeIpcHandlers,
         log
@@ -503,20 +455,19 @@ describe('application surface shutdown', () => {
       errorCategory: 'error'
     })
     expect(JSON.stringify(log.error.mock.calls)).not.toContain('backend shutdown failed')
-    expect(shutdownRemoteAccess).toHaveBeenCalledOnce()
+
     expect(disposeWebController).toHaveBeenCalledOnce()
     expect(disposeIpcHandlers).toHaveBeenCalledOnce()
   })
 
   it('continues closing surfaces when the shutdown diagnostic sink throws', async () => {
-    const shutdownRemoteAccess = vi.fn()
     const disposeWebController = vi.fn()
     const disposeIpcHandlers = vi.fn()
 
     await expect(
       shutdownApplicationSurfaces({
         disposeApplicationRuntime: () => Promise.reject(new Error('runtime failure')),
-        shutdownRemoteAccess,
+
         disposeWebController,
         disposeIpcHandlers,
         log: {
@@ -527,7 +478,6 @@ describe('application surface shutdown', () => {
       })
     ).resolves.toBe('failed')
 
-    expect(shutdownRemoteAccess).toHaveBeenCalledOnce()
     expect(disposeWebController).toHaveBeenCalledOnce()
     expect(disposeIpcHandlers).toHaveBeenCalledOnce()
   })
@@ -544,7 +494,7 @@ describe('application surface shutdown', () => {
         shutdownApplicationSurfaces({
           disposeApplicationRuntime: () =>
             Promise.reject(new BackendShutdownOutcomeError(expected)),
-          shutdownRemoteAccess: vi.fn(),
+
           disposeWebController: vi.fn(),
           disposeIpcHandlers: vi.fn(),
           log

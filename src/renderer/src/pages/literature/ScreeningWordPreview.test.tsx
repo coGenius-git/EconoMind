@@ -44,7 +44,9 @@ describe('screening Word page preview', () => {
     await waitFor(() => expect(frame.style.visibility).toBe('visible'))
     expect(frame.getAttribute('sandbox')).toBe('allow-same-origin')
     expect(mocks.validate).toHaveBeenCalledWith(bytes, 'docx', expect.any(AbortSignal))
-    expect(mocks.render).toHaveBeenCalledWith(expect.objectContaining({ bytes, fitToWidth: false }))
+    expect(mocks.render).toHaveBeenCalledWith(
+      expect.objectContaining({ bytes, reviewControls: false })
+    )
     const before = Number(screen.getByRole('status').textContent?.replace('%', ''))
     fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }))
     expect(Number(screen.getByRole('status').textContent?.replace('%', ''))).toBe(before + 10)

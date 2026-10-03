@@ -709,15 +709,6 @@ describe('createWebServiceController', () => {
     expect(unsubscribe).toHaveBeenCalledOnce()
   })
 
-  it('forwards remote socket closure to the running server', async () => {
-    const h = makeController()
-    await h.controller.ensureStarted(44100, { attached: true })
-
-    h.controller.closeExternalConnections('trusted-browser')
-
-    expect(h.serverCloseExternalConnections).toHaveBeenCalledWith('trusted-browser')
-  })
-
   it('an attached shutdown request tears down only the web service, never quitting the app', async () => {
     const h = makeController()
     await h.controller.ensureStarted(44100, { attached: true })

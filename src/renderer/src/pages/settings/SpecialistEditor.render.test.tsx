@@ -563,7 +563,7 @@ describe('SpecialistEditor', () => {
     )
   })
 
-  it('focuses the open capability search with Cmd/Ctrl+K', async () => {
+  it('focuses the open capability search with Cmd/Ctrl+Alt+K', async () => {
     useSettingsStore.setState({
       skills: [
         {
@@ -583,6 +583,8 @@ describe('SpecialistEditor', () => {
     })
     await act(async () => {
       fireEvent.click(document.body.querySelector<HTMLElement>('[aria-label="Full access"]')!)
+    })
+    await act(async () => {
       fireEvent.click(
         Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
           (button) => button.textContent === '＋ Add a skill'
@@ -598,13 +600,14 @@ describe('SpecialistEditor', () => {
     const shortcutEvent = new KeyboardEvent('keydown', {
       key: 'k',
       ctrlKey: true,
+      altKey: true,
       cancelable: true
     })
     await act(async () => window.dispatchEvent(shortcutEvent))
 
     expect(shortcutEvent.defaultPrevented).toBe(true)
     expect(document.activeElement).toBe(search)
-    expect(search?.getAttribute('aria-keyshortcuts')).toBe('Control+K')
+    expect(search?.getAttribute('aria-keyshortcuts')).toBe('Control+Alt+K')
   })
 
   it('shows a field-level error instead of submitting a duplicate name', async () => {
@@ -709,7 +712,7 @@ describe('SpecialistEditor', () => {
     expect(document.body.textContent).toContain('saved but disabled')
     await act(async () => {
       Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-        .find((button) => button.textContent === 'Cancel')
+        .find((button) => button.textContent === 'Configure later')
         ?.click()
     })
     expect(onCancel).toHaveBeenCalledOnce()
@@ -1479,7 +1482,7 @@ describe('SpecialistEditor', () => {
     )
   })
 
-  it('ignores a stale draft when the specialist revision advanced meanwhile', async () => {
+  it('restores a stale draft and blocks save when the specialist revision advanced meanwhile', async () => {
     const profile: SpecialistView = {
       id: 'stale-bot',
       name: 'Stale Bot',
@@ -1526,8 +1529,13 @@ describe('SpecialistEditor', () => {
       )
     })
     expect(document.body.querySelector<HTMLInputElement>('#sp-description')?.value).toBe(
-      'Newer saved description'
+      'Edit on revision 1'
     )
+    expect(document.body.querySelector('[aria-label="Revision conflict"]')).not.toBeNull()
+    const save = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.trim() === 'Save changes'
+    )
+    expect(save?.disabled).toBe(true)
   })
 
   it('restores a create-form draft across mounts', async () => {

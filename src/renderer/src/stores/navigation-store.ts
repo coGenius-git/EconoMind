@@ -1,7 +1,9 @@
+import type { PdfAnnotation } from '../../../shared/pdf-annotations'
 import { create } from 'zustand'
 
 import { recordLastOpenedProject } from '@/lib/last-opened-project'
 import type { CustomizeGoal } from '@/lib/customize-chat'
+import type { ComposerDoc } from '@/pages/workspace/composer/composer-doc'
 
 import { useProjectStore } from './project-store'
 import {
@@ -53,6 +55,13 @@ export type PdfReadingDocument = Readonly<{
   source: SessionPdfContextSource
 }>
 
+export type WslSupportPrefillIntent = {
+  projectId: string
+  doc: ComposerDoc
+  setupSessionToken: string
+  requestId: number
+}
+
 type NavigationStore = {
   view: NavigationView
   activeProjectId: string | undefined
@@ -68,14 +77,20 @@ type NavigationStore = {
   // A Library entry can open a normal New Conversation with its visible retrieval scope already
   // staged. Workspace consumes this once; the user can still edit or discard the draft.
   pendingLiteratureReviewPrefill: LiteratureReviewPrefillIntent | undefined
+  pendingWslSupportPrefill: WslSupportPrefillIntent | undefined
   // Home consumes this one-shot intent to open its existing New Project dialog.
   pendingProjectCreation: boolean
+  pendingWslSetupAfterProjectCreation: boolean
   // A same-Project Artifact selected from global search. WorkspacePage consumes it once and appends
   // its immutable Version reference to the currently active composer draft.
   pendingArtifactMention: ProjectFileItem | undefined
   // One user-level Literature Item selected outside Workspace Preview. Library consumes this once
   // and opens its detail without encoding transient UI selection into a route or persisted state.
   pendingLiteratureItemId: string | undefined
+  pendingLiteratureAnnotation: PdfAnnotation | undefined
+  // One explicit user-level Literature section selected outside the Library. Library consumes this
+  // once after routing so a user-level open can land on All references instead of the Inbox.
+  pendingLiteratureLibrarySection: 'library' | undefined
   // One explicit Project scope selected outside the Library. Library consumes this once instead of
   // inferring scope from the retained activeProjectId, which also survives user-level Library opens.
   pendingLiteratureProjectId: string | undefined
@@ -86,8 +101,14 @@ type NavigationStore = {
   artifactMentionAvailability: ArtifactMentionAvailability | undefined
   recordUserNavigation: () => void
   goHome: (origin: NavigationOrigin) => void
-  openLibrary: (origin: NavigationOrigin) => void
-  openLiteratureItem: (itemId: string, origin: NavigationOrigin) => void
+  returnFromLibrary: (origin: NavigationOrigin) => void
+  openLibrary: (origin: NavigationOrigin, options?: { section?: 'library' }) => void
+  openLiteratureItem: (
+    itemId: string,
+    origin: NavigationOrigin,
+    annotation?: PdfAnnotation,
+    afterNavigate?: () => void
+  ) => void
   openProjectLiterature: (projectId: string, origin: NavigationOrigin) => boolean
   openCollectionLiterature: (collectionId: string, origin: NavigationOrigin) => boolean
   openProject: (projectId: string, origin: NavigationOrigin, afterNavigate?: () => void) => boolean
@@ -129,11 +150,20 @@ type NavigationStore = {
   ) => boolean
   consumeCustomizePrefill: () => void
   consumeLiteratureReviewPrefill: () => void
+  startWslSupportConversation: (
+    projectId: string,
+    doc: ComposerDoc,
+    setupSessionToken: string
+  ) => boolean
+  consumeWslSupportPrefill: () => void
   requestProjectCreation: () => void
+  requestWslSetupProjectCreation: () => void
   consumeProjectCreation: () => void
+  consumeWslSetupProjectCreation: () => void
   requestArtifactMention: (file: ProjectFileItem) => void
   consumeArtifactMention: () => ProjectFileItem | undefined
   consumeLiteratureItem: (expectedItemId?: string) => string | undefined
+  consumeLiteratureLibrarySection: () => 'library' | undefined
   consumeLiteratureProject: (expectedProjectId?: string) => string | undefined
   consumeLiteratureCollection: (expectedCollectionId?: string) => string | undefined
   setArtifactMentionAvailability: (availability: ArtifactMentionAvailability | undefined) => void
@@ -210,9 +240,13 @@ export const useNavigationStore = create<NavigationStore>((set, get) => ({
   explicitNavigationRevision: 0,
   pendingCustomizePrefill: undefined,
   pendingLiteratureReviewPrefill: undefined,
+  pendingWslSupportPrefill: undefined,
   pendingProjectCreation: false,
+  pendingWslSetupAfterProjectCreation: false,
   pendingArtifactMention: undefined,
   pendingLiteratureItemId: undefined,
+  pendingLiteratureAnnotation: undefined,
+  pendingLiteratureLibrarySection: undefined,
   pendingLiteratureProjectId: undefined,
   pendingLiteratureCollectionId: undefined,
   artifactMentionAvailability: undefined,
@@ -232,24 +266,44 @@ export const useNavigationStore = create<NavigationStore>((set, get) => ({
     )
   },
 
-  openLibrary: (origin) =>
+  // Library retains the Workspace selection, including an unsent New Conversation. Opening the
+  // Project again would instead select its latest Session and replace that context.
+  returnFromLibrary: (origin) => {
+    const { view, activeProjectId } = get()
+    if (view !== 'library') return
+    if (!activeProjectId || !isActiveProject(activeProjectId)) {
+      get().goHome(origin)
+      return
+    }
+
+    const { selectedSessionId, clearSelection } = useSessionStore.getState()
+    if (selectedSessionId && !isActiveSession(activeProjectId, selectedSessionId)) clearSelection()
+    set((state) => navigationState(state, origin, { view: 'workspace', activeProjectId }))
+    usePreviewWorkbenchStore.getState().activateProject(activeProjectId, undefined, true)
+  },
+
+  openLibrary: (origin, options) =>
     requestPreviewLeaveForNavigation({ view: 'library' }, () =>
       set((state) => ({
         ...navigationState(state, origin, { view: 'library' }),
+        pendingLiteratureLibrarySection: options?.section === 'library' ? 'library' : undefined,
         pendingLiteratureProjectId: undefined,
         pendingLiteratureCollectionId: undefined
       }))
     ),
 
-  openLiteratureItem: (itemId, origin) =>
-    requestPreviewLeaveForNavigation({ view: 'library' }, () =>
+  openLiteratureItem: (itemId, origin, annotation, afterNavigate) =>
+    requestPreviewLeaveForNavigation({ view: 'library' }, () => {
       set((state) => ({
         ...navigationState(state, origin, { view: 'library' }),
         pendingLiteratureItemId: itemId,
+        pendingLiteratureAnnotation: annotation,
+        pendingLiteratureLibrarySection: undefined,
         pendingLiteratureProjectId: undefined,
         pendingLiteratureCollectionId: undefined
       }))
-    ),
+      afterNavigate?.()
+    }),
 
   openProjectLiterature: (projectId, origin) => {
     if (!isActiveProject(projectId)) return false
@@ -259,6 +313,7 @@ export const useNavigationStore = create<NavigationStore>((set, get) => ({
           view: 'library',
           activeProjectId: projectId
         }),
+        pendingLiteratureLibrarySection: undefined,
         pendingLiteratureProjectId: projectId,
         pendingLiteratureCollectionId: undefined
       }))
@@ -269,6 +324,7 @@ export const useNavigationStore = create<NavigationStore>((set, get) => ({
     requestPreviewLeaveForNavigation({ view: 'library' }, () =>
       set((state) => ({
         ...navigationState(state, origin, { view: 'library' }),
+        pendingLiteratureLibrarySection: undefined,
         pendingLiteratureProjectId: undefined,
         pendingLiteratureCollectionId: collectionId
       }))
@@ -355,6 +411,7 @@ export const useNavigationStore = create<NavigationStore>((set, get) => ({
         })
         return {
           ...navigation,
+          pendingWslSupportPrefill: undefined,
           pendingCustomizePrefill: {
             projectId,
             goal,
@@ -439,6 +496,34 @@ export const useNavigationStore = create<NavigationStore>((set, get) => ({
 
   consumeLiteratureReviewPrefill: () => set({ pendingLiteratureReviewPrefill: undefined }),
 
+  startWslSupportConversation: (projectId, doc, setupSessionToken) => {
+    if (!isActiveProject(projectId)) return false
+    return requestPreviewLeaveForNavigation({ view: 'workspace', projectId }, () => {
+      useSessionStore.getState().clearSelection()
+      recordLastOpenedProject(projectId)
+
+      set((state) => {
+        const navigation = navigationState(state, 'user', {
+          view: 'workspace',
+          activeProjectId: projectId
+        })
+        return {
+          ...navigation,
+          pendingCustomizePrefill: undefined,
+          pendingWslSupportPrefill: {
+            projectId,
+            doc,
+            setupSessionToken,
+            requestId: navigation.explicitNavigationRevision
+          }
+        }
+      })
+      usePreviewWorkbenchStore.getState().activateProject(projectId, undefined, true)
+    })
+  },
+
+  consumeWslSupportPrefill: () => set({ pendingWslSupportPrefill: undefined }),
+
   requestProjectCreation: () => {
     requestPreviewLeaveForNavigation({ view: 'home' }, () =>
       set((state) => ({
@@ -448,7 +533,16 @@ export const useNavigationStore = create<NavigationStore>((set, get) => ({
     )
   },
 
+  requestWslSetupProjectCreation: () => {
+    set((state) => ({
+      ...navigationState(state, 'user', { view: 'home' }),
+      pendingProjectCreation: true,
+      pendingWslSetupAfterProjectCreation: true
+    }))
+  },
+
   consumeProjectCreation: () => set({ pendingProjectCreation: false }),
+  consumeWslSetupProjectCreation: () => set({ pendingWslSetupAfterProjectCreation: false }),
 
   // Mentions never route between Projects. Keeping this guard at the Navigation boundary prevents a
   // dialog caller from leaking an Artifact locator into whichever composer happens to mount next.
@@ -468,8 +562,14 @@ export const useNavigationStore = create<NavigationStore>((set, get) => ({
   consumeLiteratureItem: (expectedItemId) => {
     const itemId = get().pendingLiteratureItemId
     if (expectedItemId !== undefined && itemId !== expectedItemId) return undefined
-    set({ pendingLiteratureItemId: undefined })
+    set({ pendingLiteratureItemId: undefined, pendingLiteratureAnnotation: undefined })
     return itemId
+  },
+
+  consumeLiteratureLibrarySection: () => {
+    const section = get().pendingLiteratureLibrarySection
+    set({ pendingLiteratureLibrarySection: undefined })
+    return section
   },
 
   consumeLiteratureProject: (expectedProjectId) => {

@@ -111,40 +111,49 @@ describe('RegisteredSkillHelperCatalog', () => {
     )
   })
 
-  it('executes an immutable generation through the real Python loop after source loss', async () => {
-    const entry = await packageFixture('personal', 'plot', 'def plotted_value():\n    return 42\n')
-    entry.helpers[0] = { ...entry.helpers[0]!, exports: ['plotted_value'] }
-    const catalog = await createCatalog(async () => [entry])
-    const host = new NotebookHelperModuleHost(catalog)
-    const request = await host.preflight('python', ['plot-helper'])
-    const injections = (
-      await host.plan({ id: 'plot-epoch', processKey: 'python:default-python' }, request)
-    ).injections
-    await writeFile(join(entry.packageRoot, 'kernel.py'), 'raise RuntimeError("source reread")\n')
+  it(
+    'executes an immutable generation through the real Python loop after source loss',
+    async () => {
+      const entry = await packageFixture(
+        'personal',
+        'plot',
+        'def plotted_value():\n    return 42\n'
+      )
+      entry.helpers[0] = { ...entry.helpers[0]!, exports: ['plotted_value'] }
+      const catalog = await createCatalog(async () => [entry])
+      const host = new NotebookHelperModuleHost(catalog)
+      const request = await host.preflight('python', ['plot-helper'])
+      const injections = (
+        await host.plan({ id: 'plot-epoch', processKey: 'python:default-python' }, request)
+      ).injections
+      await writeFile(join(entry.packageRoot, 'kernel.py'), 'raise RuntimeError("source reread")\n')
 
-    const root = await mkdtemp(join(tmpdir(), 'registered-real-loop-'))
-    roots.push(root)
-    await mkdir(join(root, 'nb', 'data'), { recursive: true })
-    const python = await resolvePythonCommand()
-    const executor = new NotebookKernelExecutor({
-      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py')
-    })
-    try {
-      const result = await executor.execute({
-        cwd: root,
-        notebookSessionRoot: join(root, 'nb'),
-        dataRoot: join(root, 'nb', 'data'),
-        runtimeRoot: join(root, 'runtime'),
-        language: 'python',
-        resolvedInterpreter: python,
-        helperModules: injections,
-        code: 'print(plotted_value())'
+      const root = await mkdtemp(join(tmpdir(), 'registered-real-loop-'))
+      roots.push(root)
+      await mkdir(join(root, 'nb', 'data'), { recursive: true })
+      const python = await resolvePythonCommand()
+      const executor = new NotebookKernelExecutor({
+        pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py')
       })
-      expect(result).toMatchObject({ status: 'completed', stdout: '42\n' })
-    } finally {
-      await executor.shutdown()
-    }
-  })
+      try {
+        const result = await executor.execute({
+          cwd: root,
+          notebookSessionRoot: join(root, 'nb'),
+          dataRoot: join(root, 'nb', 'data'),
+          runtimeRoot: join(root, 'runtime'),
+          language: 'python',
+          resolvedInterpreter: python,
+          helperModules: injections,
+          code: 'print(plotted_value())'
+        })
+        expect(result).toMatchObject({ status: 'completed', stdout: '42\n' })
+      } finally {
+        await executor.shutdown()
+      }
+      // This exercises a real process tree, including its Windows shutdown grace period.
+    },
+    process.platform === 'win32' ? 60_000 : 15_000
+  )
 
   it('assigns every helper in one package the same immutable package generation', async () => {
     const entry = await packageFixture('builtin', 'multi')

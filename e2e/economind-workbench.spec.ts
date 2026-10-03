@@ -22,15 +22,7 @@ test('uses economics resources and application branding without remote access', 
     .click()
   const navigation = page.getByRole('navigation', { name: 'Settings' })
   await expect(navigation.getByRole('button', { name: 'Remote', exact: true })).toHaveCount(0)
-  const remoteResult = await page.evaluate(async () => {
-    try {
-      await window.api.remoteAccess.setMode({ mode: 'remoteit' })
-      return 'unexpectedly enabled'
-    } catch (error) {
-      return String(error)
-    }
-  })
-  expect(remoteResult).toMatch(/No handler registered|not bound|unavailable/i)
+  expect(await page.evaluate(() => 'remoteAccess' in window.api)).toBe(false)
 
   await navigation.getByRole('button', { name: 'General', exact: true }).click()
   await expect(page.getByRole('radiogroup', { name: 'Theme', exact: true })).toBeVisible()

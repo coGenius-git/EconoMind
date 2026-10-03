@@ -821,6 +821,7 @@ describe('ProjectFilesView', () => {
       '[aria-label="Preview generated file result.txt"]'
     )
     const metadata = previewButton?.querySelector('[data-testid="project-file-list-meta"]')
+    expect(previewButton?.querySelector('.lucide-file-text')).not.toBeNull()
     const downloadWrapper = container
       .querySelector<HTMLButtonElement>('[aria-label="Download result.txt"]')
       ?.closest('[data-testid="download-tooltip-trigger"]')
@@ -855,7 +856,7 @@ describe('ProjectFilesView', () => {
     expect(clearButton?.className).toContain('text-text-100')
     expect(clearButton?.className).toContain('hover:bg-bg-200')
     expect(clearButton?.className).not.toContain('hover:text-text-000')
-    expect(clearButton?.className).toContain('focus-visible:ring-3')
+    expect(clearButton?.className).toContain('focus-visible:keyboard-focus')
     expect(clearButton?.className).not.toContain('focus-visible:ring-2')
 
     await act(async () => clearButton?.focus())
@@ -1023,12 +1024,14 @@ describe('ProjectFilesView', () => {
     })
 
     const alert = container.querySelector<HTMLElement>('[role="alert"]')
-    const errorText = alert?.querySelector('span')
+    const errorText = alert?.querySelector('p')
     expect(alert?.getAttribute('aria-atomic')).toBe('true')
     expect(errorText?.className).toContain('whitespace-pre-wrap')
-    expect(errorText?.className).toContain('break-words')
+    expect(errorText?.className).toContain('[overflow-wrap:anywhere]')
     expect(errorText?.className).not.toContain('truncate')
-    expect(alert?.querySelector<HTMLButtonElement>('button')?.textContent).toBe('Retry')
+    expect(alert?.closest('section')?.querySelector<HTMLButtonElement>('button')?.textContent).toBe(
+      'Retry'
+    )
   })
 
   it('renders uploaded files under Your uploads without a session group', async () => {

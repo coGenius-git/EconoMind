@@ -4,7 +4,20 @@
 const fs = require('node:fs')
 const { spawn } = require('node:child_process')
 
-const [, , pendingPath, receiptId, executable, ...args] = process.argv
+const [, , pendingPath, receiptId, ...launchArgs] = process.argv
+const childEnv = { ...process.env }
+if (launchArgs[0] === '--restore-electron-run-as-node') {
+  launchArgs.shift()
+  try {
+    const original = JSON.parse(launchArgs.shift())
+    if (original === null) delete childEnv.ELECTRON_RUN_AS_NODE
+    else if (typeof original === 'string') childEnv.ELECTRON_RUN_AS_NODE = original
+    else process.exit(125)
+  } catch {
+    process.exit(125)
+  }
+}
+const [executable, ...args] = launchArgs
 if (!pendingPath || !receiptId || !executable) process.exit(125)
 
 const pendingSuffix = `.pending.${receiptId}.json`
@@ -43,7 +56,9 @@ for (let index = 0; index < inheritedDescriptors; index += 1) stdio.push('inheri
 
 const child = spawn(executable, args, {
   cwd: process.cwd(),
-  env: process.env,
+  // Shell callers need Node mode for this Electron host only, not for the user's command.
+  // Existing kernel callers keep their original environment unless they request restoration.
+  env: childEnv,
   stdio,
   windowsHide: true
 })
@@ -58,8 +73,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   })
 }
 
-child.once('error', () => process.exit(126))
-child.once('exit', (code, signal) => {
+const finish = (code, signal) => {
   if (signal) {
     try {
       process.kill(process.pid, signal)
@@ -69,4 +83,13 @@ child.once('exit', (code, signal) => {
     return
   }
   process.exit(code ?? 1)
-})
+}
+
+// Only the parent can create this IPC channel. It is not inherited by the workload, and stdout is
+// never used as containment evidence. A wrapper killed before native-host exit sends no receipt.
+const reportExit = (code, signal) => {
+  if (process.send) process.send('kernel-child-exited', () => finish(code, signal))
+  else finish(code, signal)
+}
+child.once('error', () => reportExit(126))
+child.once('exit', reportExit)

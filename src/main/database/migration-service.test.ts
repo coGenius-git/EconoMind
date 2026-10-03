@@ -3,7 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { PrismaClient } from '@prisma/client'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { setTimeout as delay } from 'node:timers/promises'
+import { migrationSqlExecutor } from './migration-sql-executor'
+import { grantedLocalRootsMigration } from './migrations/0003-granted-local-roots'
 
 import { literatureCandidateInputSchema } from '../../shared/literature'
 import { LiteratureCatalog } from '../literature/catalog'
@@ -227,7 +230,6 @@ const removeLiteratureFoundationSchema = async (client: PrismaClient): Promise<v
   await client.$executeRawUnsafe(
     'DELETE FROM "_open_science_migrations" WHERE id >= \'0030_literature_foundation\''
   )
-  await client.$executeRawUnsafe('ALTER TABLE "Project" DROP COLUMN "category"')
   for (const table of [
     'ArtifactLiteratureManifest',
     'ProjectLiterature',
@@ -313,8 +315,94 @@ describe('application database migrations', () => {
   let client: PrismaClient | undefined
 
   afterEach(async () => {
+    vi.restoreAllMocks()
     await client?.$disconnect()
     if (storageRoot) await rm(storageRoot, { force: true, recursive: true })
+  })
+
+  it('upgrades the released EconoMind category ledger and preserves projects across restart', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'economind-category-upgrade-'))
+    client = createProjectDbClient(storageRoot)
+    const released = manifestBefore('0042_bookmarks')
+    expect(released.at(-1)).toMatchObject({
+      id: '0041_project_category',
+      checksum: 'aadac55d74d447aca0fb697c6c1f838e2eee2e74b9fb43c5e6b5d7281e5cfb98'
+    })
+    // Match the released runner's table rebuild policy: old foreign keys keep their public target.
+    await client.$executeRawUnsafe('PRAGMA legacy_alter_table = ON')
+    await createDatabaseAtReleasedManifest(client, released)
+    await client.$executeRawUnsafe('PRAGMA legacy_alter_table = OFF')
+    await client.$executeRawUnsafe(
+      `INSERT INTO "Project" ("id", "name", "category", "updatedAt") VALUES ('economics-existing', 'Existing research', 'economics', CURRENT_TIMESTAMP)`
+    )
+    const result = await migrateApplicationDatabase(client)
+    expect(result.applied).toEqual(MIGRATION_MANIFEST.slice(released.length).map(({ id }) => id))
+    await expect(
+      client.project.findUnique({ where: { id: 'economics-existing' } })
+    ).resolves.toMatchObject({
+      name: 'Existing research',
+      category: 'economics'
+    })
+    await client.$disconnect()
+    client = createProjectDbClient(storageRoot)
+    await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({ applied: [] })
+    await expect(
+      client.project.findUnique({ where: { id: 'economics-existing' } })
+    ).resolves.toMatchObject({
+      name: 'Existing research',
+      category: 'economics'
+    })
+    const tables = await client.$queryRawUnsafe<Array<{ name: string }>>(
+      `SELECT name FROM sqlite_schema WHERE type = 'table'`
+    )
+    expect(tables.map(({ name }) => name)).toEqual(
+      expect.arrayContaining([
+        'bookmarks',
+        'pdf_annotations',
+        'LiteratureSmartCollection',
+        'SessionReplayProgress'
+      ])
+    )
+  })
+
+  it('adds journal storage to the previous release without changing historical references', async () => {
+    const journalMigrations: readonly MigrationManifestEntry[] = MIGRATION_MANIFEST.filter(
+      ({ id }) => /journal/i.test(id)
+    )
+    expect(journalMigrations.map(({ id }) => id)).toEqual(['0047_journal_attributes'])
+    expect(journalMigrations[0].operations ?? []).toEqual([])
+    expect(
+      journalMigrations[0].statements.every((statement) =>
+        /^CREATE (?:TABLE|(?:UNIQUE )?INDEX)\b/.test(statement.trim())
+      )
+    ).toBe(true)
+    storageRoot = await mkdtemp(join(tmpdir(), 'journal-schema-upgrade-'))
+    client = createProjectDbClient(storageRoot)
+    await migrateApplicationDatabase(client)
+    await client.$executeRawUnsafe('DROP TABLE "JournalItemBinding"')
+    await client.$executeRawUnsafe('DROP TABLE "JournalDatasetEntry"')
+    await client.$executeRawUnsafe('DROP TABLE "JournalDataset"')
+    await client.$executeRawUnsafe('DROP TABLE "Journal"')
+    await client.$executeRawUnsafe(
+      `DELETE FROM "_open_science_migrations" WHERE id IN ('0047_journal_attributes', '0048_session_replay')`
+    )
+    await client.literatureItem.create({
+      data: {
+        id: 'synthetic-history',
+        itemType: 'journalArticle',
+        title: 'Independent migration fixture',
+        containerTitle: 'Imaginary Planetary Review'
+      }
+    })
+    const before = await client.literatureItem.findMany()
+    await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({
+      applied: ['0047_journal_attributes', '0048_session_replay']
+    })
+    expect(await client.literatureItem.findMany()).toEqual(before)
+    expect(await client.$queryRawUnsafe('SELECT * FROM "Journal"')).toEqual([])
+    expect(await client.$queryRawUnsafe('SELECT * FROM "JournalDataset"')).toEqual([])
+    expect(await client.$queryRawUnsafe('PRAGMA foreign_key_check')).toEqual([])
+    await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({ applied: [] })
   })
 
   it('adds empty metadata commit receipts without inventing proof for historical references', async () => {
@@ -331,28 +419,38 @@ describe('application database migrations', () => {
       }
     })
     const before = await client.literatureItem.findMany()
+    await client.$executeRawUnsafe('DROP TABLE "JournalItemBinding"')
+    await client.$executeRawUnsafe('DROP TABLE "JournalDatasetEntry"')
+    await client.$executeRawUnsafe('DROP TABLE "JournalDataset"')
+    await client.$executeRawUnsafe('DROP TABLE "Journal"')
     await client.$executeRawUnsafe('DROP TABLE "LiteratureMetadataCommitReceipt"')
     await client.$executeRawUnsafe(
-      `DELETE FROM "_open_science_migrations" WHERE id IN ('0039_literature_metadata_commit_receipt', '0040_literature_collection_revision', '0041_project_category')`
+      `DELETE FROM "_open_science_migrations" WHERE id IN ('0039_literature_metadata_commit_receipt', '0040_literature_collection_revision', '0041_project_category', '0042_bookmarks', '0043_classification_usage', '0044_pdf_annotations', '0045_literature_smart_collections', '0046_literature_smart_pause_run', '0047_journal_attributes', '0048_session_replay')`
     )
-    await client.$executeRawUnsafe('ALTER TABLE "Project" DROP COLUMN "category"')
     const ledger = await client.$queryRawUnsafe(
       'SELECT * FROM "_open_science_migrations" ORDER BY id'
     )
     await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({
       from: '0038_literature_search_text',
-      to: '0041_project_category',
+      to: '0048_session_replay',
       applied: [
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
-        '0041_project_category'
+        '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay'
       ]
     })
     expect(await client.literatureMetadataCommitReceipt.count()).toBe(0)
     expect(await client.literatureItem.findMany()).toEqual(before)
     expect(
       await client.$queryRawUnsafe(
-        `SELECT * FROM "_open_science_migrations" WHERE id NOT IN ('0039_literature_metadata_commit_receipt', '0040_literature_collection_revision', '0041_project_category') ORDER BY id`
+        `SELECT * FROM "_open_science_migrations" WHERE id NOT IN ('0039_literature_metadata_commit_receipt', '0040_literature_collection_revision', '0041_project_category', '0042_bookmarks', '0043_classification_usage', '0044_pdf_annotations', '0045_literature_smart_collections', '0046_literature_smart_pause_run', '0047_journal_attributes', '0048_session_replay') ORDER BY id`
       )
     ).toEqual(ledger)
     await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({ applied: [] })
@@ -378,7 +476,6 @@ describe('application database migrations', () => {
     await client.$executeRawUnsafe(
       `DELETE FROM "_open_science_migrations" WHERE "id" >= '0035_literature_pdf_provenance'`
     )
-    await client.$executeRawUnsafe('ALTER TABLE "Project" DROP COLUMN "category"')
     const checksum = 'a'.repeat(64)
     const oldCandidate = literatureCandidateInputSchema.parse({
       item: { itemType: 'journalArticle', title: 'Historical Inbox paper' },
@@ -563,7 +660,6 @@ describe('application database migrations', () => {
       data: { id: 'adopted', itemType: 'book', title: 'ÉTUDE' }
     })
     await client.$executeRaw`DELETE FROM "_open_science_migrations" WHERE id >= '0038_literature_search_text'`
-    await client.$executeRawUnsafe('ALTER TABLE "Project" DROP COLUMN "category"')
     await migrateApplicationDatabase(client)
     expect(
       (
@@ -650,8 +746,38 @@ describe('application database migrations', () => {
     })
   })
 
+  it(
+    'commits a slow ordinary migration and its ledger entry atomically',
+    async () => {
+      storageRoot = await mkdtemp(join(tmpdir(), 'slow-migration-'))
+      client = createProjectDbClient(storageRoot)
+      const execute = migrationSqlExecutor.execute
+      let delayed = false
+      vi.spyOn(migrationSqlExecutor, 'execute').mockImplementation(
+        async (target, statement, ...values) => {
+          if (!delayed && statement === grantedLocalRootsMigration.statements[0]) {
+            delayed = true
+            // Reproduce scanner/disk latency exceeding Prisma's default 5-second transaction.
+            await delay(6_000)
+          }
+          return execute(target, statement, ...values)
+        }
+      )
+
+      await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({
+        applied: expect.arrayContaining([grantedLocalRootsMigration.id])
+      })
+      expect(delayed).toBe(true)
+      await expect(
+        client.$queryRawUnsafe('SELECT COUNT(*) AS count FROM "GrantedLocalRoot"')
+      ).resolves.toEqual([{ count: 0n }])
+      await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({ applied: [] })
+    },
+    WINDOWS_SQLITE_TEST_TIMEOUT_MS
+  )
+
   it('records the runtime baseline once for a fresh database', async () => {
-    storageRoot = await mkdtemp(join(tmpdir(), 'open science 数据 baseline-'))
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science 数据 baseline-'))
     client = createProjectDbClient(storageRoot)
     const compatibility: Array<{ sqliteVersion: string }> = []
 
@@ -702,10 +828,17 @@ describe('application database migrations', () => {
         '0038_literature_search_text',
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
-        '0041_project_category'
+        '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay'
       ],
       from: null,
-      to: '0041_project_category'
+      to: '0048_session_replay'
     })
     expect(compatibility).toEqual([{ sqliteVersion: expect.stringMatching(/^\d+\.\d+\.\d+$/) }])
     await expect(
@@ -718,8 +851,8 @@ describe('application database migrations', () => {
     await expect(migrateApplicationDatabase(client)).resolves.toEqual({
       adoptedLegacy: false,
       applied: [],
-      from: '0041_project_category',
-      to: '0041_project_category'
+      from: '0048_session_replay',
+      to: '0048_session_replay'
     })
   })
 
@@ -741,7 +874,6 @@ describe('application database migrations', () => {
     await client.$executeRawUnsafe(
       `DELETE FROM "_open_science_migrations" WHERE "id" >= '0034_background_result_delivery'`
     )
-    await client.$executeRawUnsafe('ALTER TABLE "Project" DROP COLUMN "category"')
 
     await expect(migrateApplicationDatabase(client)).resolves.toEqual({
       adoptedLegacy: false,
@@ -753,10 +885,17 @@ describe('application database migrations', () => {
         '0038_literature_search_text',
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
-        '0041_project_category'
+        '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay'
       ],
       from: '0033_compute_job_harvest_retry',
-      to: '0041_project_category'
+      to: '0048_session_replay'
     })
     await expect(
       client.$queryRaw<Array<{ name: string }>>`
@@ -829,11 +968,7 @@ describe('application database migrations', () => {
     await client.$executeRawUnsafe('ALTER TABLE "ComputeJob" DROP COLUMN "fileEvidence"')
     await client.$executeRawUnsafe('ALTER TABLE "ComputeJob" DROP COLUMN "producerRunId"')
     await client.$executeRawUnsafe('ALTER TABLE "ComputeJob" DROP COLUMN "sensitiveDataEncrypted"')
-    // Raw SQL insert: Prisma's generated INSERT references the category column, which this test
-    // drops to simulate a pre-0041 database.
-    await client.$executeRawUnsafe(
-      `INSERT INTO "Project" ("id", "name", "updatedAt") VALUES ('project-1', 'Project', CURRENT_TIMESTAMP)`
-    )
+    await client.project.create({ data: { id: 'project-1', name: 'Project' } })
     await client.$executeRawUnsafe(`INSERT INTO "Session" (
       "id", "number", "projectId", "title", "status", "presentedStatus", "createdAtMs", "updatedAtMs"
     ) VALUES ('session-1', 1, 'project-1', 'Session', 'idle', 'idle', 1, 2)`)
@@ -869,7 +1004,14 @@ describe('application database migrations', () => {
         '0038_literature_search_text',
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
-        '0041_project_category'
+        '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay'
       ]
     })
     await expect(
@@ -964,7 +1106,14 @@ describe('application database migrations', () => {
         '0038_literature_search_text',
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
-        '0041_project_category'
+        '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay'
       ]
     })
     await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({ applied: [] })
@@ -1009,7 +1158,7 @@ describe('application database migrations', () => {
 
     await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({
       applied: expect.arrayContaining(['0010_compute_password_auth']),
-      to: '0041_project_category'
+      to: '0048_session_replay'
     })
     await expect(
       client.$executeRawUnsafe(
@@ -1073,10 +1222,17 @@ describe('application database migrations', () => {
         '0038_literature_search_text',
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
-        '0041_project_category'
+        '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay'
       ],
       from: '0005_project_preview_state_owner_fk',
-      to: '0041_project_category'
+      to: '0048_session_replay'
     })
     await expect(verifyCurrentApplicationSchema(client)).resolves.toBeUndefined()
   })
@@ -1168,10 +1324,17 @@ describe('application database migrations', () => {
         '0038_literature_search_text',
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
-        '0041_project_category'
+        '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay'
       ],
       from: '0005_project_preview_state_owner_fk',
-      to: '0041_project_category'
+      to: '0048_session_replay'
     })
     await expect(
       client.$queryRaw<
@@ -1294,7 +1457,7 @@ describe('application database migrations', () => {
       })
     ).rejects.toMatchObject({
       code: 'database_validation_failed',
-      migrationId: '0041_project_category'
+      migrationId: '0048_session_replay'
     })
     expect(retired).toEqual([])
     await expect(access(backupPath)).resolves.toBeUndefined()
@@ -1311,7 +1474,7 @@ describe('application database migrations', () => {
     ).resolves.toEqual({
       adoptedLegacy: false,
       applied: ['9997_test_suffix'],
-      from: '0041_project_category',
+      from: '0048_session_replay',
       to: '9997_test_suffix'
     })
     await expect(
@@ -1360,6 +1523,13 @@ describe('application database migrations', () => {
       { id: '0039_literature_metadata_commit_receipt' },
       { id: '0040_literature_collection_revision' },
       { id: '0041_project_category' },
+      { id: '0042_bookmarks' },
+      { id: '0043_classification_usage' },
+      { id: '0044_pdf_annotations' },
+      { id: '0045_literature_smart_collections' },
+      { id: '0046_literature_smart_pause_run' },
+      { id: '0047_journal_attributes' },
+      { id: '0048_session_replay' },
       { id: '9997_test_suffix' }
     ])
   })
@@ -1453,10 +1623,17 @@ describe('application database migrations', () => {
         '0038_literature_search_text',
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
-        '0041_project_category'
+        '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay'
       ],
       from: '0001_runtime_schema_baseline',
-      to: '0041_project_category'
+      to: '0048_session_replay'
     })
     expect(backupEvents).toEqual([
       {
@@ -1551,7 +1728,14 @@ describe('application database migrations', () => {
       { id: '0038_literature_search_text' },
       { id: '0039_literature_metadata_commit_receipt' },
       { id: '0040_literature_collection_revision' },
-      { id: '0041_project_category' }
+      { id: '0041_project_category' },
+      { id: '0042_bookmarks' },
+      { id: '0043_classification_usage' },
+      { id: '0044_pdf_annotations' },
+      { id: '0045_literature_smart_collections' },
+      { id: '0046_literature_smart_pause_run' },
+      { id: '0047_journal_attributes' },
+      { id: '0048_session_replay' }
     ])
   })
 
@@ -1686,6 +1870,13 @@ describe('application database migrations', () => {
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
         '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay',
         '9997_test_suffix'
       ],
       to: '9997_test_suffix'
@@ -1823,7 +2014,7 @@ describe('application database migrations', () => {
       adoptedLegacy: false,
       applied: MIGRATION_MANIFEST.slice(computePasswordAuthIndex).map(({ id }) => id),
       from: '0009_vision_evidence',
-      to: '0041_project_category'
+      to: '0048_session_replay'
     })
     await expect(
       client.$queryRaw<Array<{ projectId: string }>>`
@@ -1952,7 +2143,14 @@ describe('application database migrations', () => {
         '0038_literature_search_text',
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
-        '0041_project_category'
+        '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay'
       ]
     })
     await expect(
@@ -2090,7 +2288,14 @@ describe('application database migrations', () => {
         '0038_literature_search_text',
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
-        '0041_project_category'
+        '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay'
       ]
     })
     await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({ applied: [] })
@@ -2180,7 +2385,14 @@ describe('application database migrations', () => {
         '0038_literature_search_text',
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
-        '0041_project_category'
+        '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay'
       ]
     })
     await expect(
@@ -2273,7 +2485,14 @@ describe('application database migrations', () => {
         '0038_literature_search_text',
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
-        '0041_project_category'
+        '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay'
       ]
     })
     await expect(verifyCurrentApplicationSchema(client)).resolves.toBeUndefined()
@@ -2400,7 +2619,14 @@ describe('application database migrations', () => {
         '0038_literature_search_text',
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
-        '0041_project_category'
+        '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay'
       ]
     })
     await expect(
@@ -2899,6 +3125,68 @@ describe('application database migrations', () => {
       client.$queryRaw<Array<{ id: string; name: string }>>`SELECT "id", "name" FROM "Project"`
     ).resolves.toEqual([{ id: 'legacy-project', name: 'Preserved' }])
   })
+  it('adds Session replay state and selections directly after the released migrations', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'session-replay-migration-'))
+    client = createProjectDbClient(storageRoot)
+    await migrateApplicationDatabase(client)
+    await client.$executeRawUnsafe('DROP TABLE "SessionDiscussionSnapshot"')
+    await client.$executeRawUnsafe('DROP TABLE "SessionReplayProgress"')
+    await client.$executeRawUnsafe(
+      `DELETE FROM "_open_science_migrations" WHERE id = '0048_session_replay'`
+    )
+    await client.project.create({ data: { id: 'project', name: 'Project' } })
+    const session = await client.session.create({
+      data: {
+        id: 'ordinary',
+        number: 1,
+        projectId: 'project',
+        title: 'Keep my conversation',
+        status: 'idle',
+        presentedStatus: 'idle',
+        createdAtMs: 1,
+        updatedAtMs: 2
+      }
+    })
+    await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({
+      applied: ['0048_session_replay']
+    })
+    expect(await client.session.findUnique({ where: { id: 'ordinary' } })).toEqual(session)
+    await client.sessionReplayProgress.create({
+      data: {
+        projectId: 'project',
+        sessionId: 'source',
+        stateJson: '{"timeMs":42}',
+        revision: 3
+      }
+    })
+    await client.sessionDiscussionSnapshot.create({
+      data: {
+        id: 'selection',
+        sourceProjectId: 'project',
+        sourceSessionId: 'source',
+        contextJson: '{"excerpt":"Saved selection"}'
+      }
+    })
+    await expect(verifyCurrentApplicationSchema(client)).resolves.toBeUndefined()
+    await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({ applied: [] })
+    expect(await client.sessionReplayProgress.findFirst()).toMatchObject({
+      sessionId: 'source',
+      revision: 3,
+      updatedAt: expect.any(Date)
+    })
+    expect(await client.sessionDiscussionSnapshot.findFirst()).toMatchObject({
+      sourceProjectId: 'project',
+      sourceSessionId: 'source',
+      createdAt: expect.any(Date),
+      contextJson: '{"excerpt":"Saved selection"}'
+    })
+    // Existing Session rows intentionally restrict Project deletion.
+    await client.session.delete({ where: { id: 'ordinary' } })
+    await client.project.delete({ where: { id: 'project' } })
+    expect(await client.sessionReplayProgress.count()).toBe(0)
+    expect(await client.sessionDiscussionSnapshot.count()).toBe(0)
+  })
+
   it('prunes historical retained backups to the newest two without deleting an unknown backup', async () => {
     storageRoot = await mkdtemp(join(tmpdir(), 'open-science-database-bounded-backups-'))
     const databasePath = join(storageRoot, 'open-science.db')
@@ -2923,8 +3211,8 @@ describe('application database migrations', () => {
         entries.filter((entry) => entry.endsWith('.backup')).sort()
       )
     ).resolves.toEqual([
-      'open-science.db.before-0040_literature_collection_revision.backup',
-      'open-science.db.before-0041_project_category.backup',
+      'open-science.db.before-0047_journal_attributes.backup',
+      'open-science.db.before-0048_session_replay.backup',
       unknownBackupName
     ])
     expect(retired).toHaveLength(MIGRATION_MANIFEST.length - 2)
@@ -3234,10 +3522,17 @@ describe('application database migrations', () => {
         '0038_literature_search_text',
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
-        '0041_project_category'
+        '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay'
       ],
       from: '0024_compute_job_file_evidence',
-      to: '0041_project_category'
+      to: '0048_session_replay'
     })
     await expect(
       client.$queryRawUnsafe<Array<{ currentVersionId: string | null }>>(
@@ -3296,7 +3591,7 @@ describe('application database migrations', () => {
         MIGRATION_MANIFEST.findIndex(({ id }) => id === '0009_vision_evidence')
       ).map(({ id }) => id),
       from: '0008_database_json_constraints',
-      to: '0041_project_category'
+      to: '0048_session_replay'
     })
     await expect(verifyCurrentApplicationSchema(client)).resolves.toBeUndefined()
   })
@@ -3369,10 +3664,17 @@ describe('application database migrations', () => {
         '0038_literature_search_text',
         '0039_literature_metadata_commit_receipt',
         '0040_literature_collection_revision',
-        '0041_project_category'
+        '0041_project_category',
+        '0042_bookmarks',
+        '0043_classification_usage',
+        '0044_pdf_annotations',
+        '0045_literature_smart_collections',
+        '0046_literature_smart_pause_run',
+        '0047_journal_attributes',
+        '0048_session_replay'
       ],
       from: '0024_compute_job_file_evidence',
-      to: '0041_project_category'
+      to: '0048_session_replay'
     })
     await expect(
       client.$queryRaw<Array<{ uploadVersionId: string }>>`

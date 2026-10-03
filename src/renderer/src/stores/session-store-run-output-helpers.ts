@@ -46,6 +46,7 @@ export type AppendAgentMessageChunkInput = {
   sessionId: string
   streamId: string
   eventId: string
+  timestamp?: number
   promptMessageId?: string
   content?: string
   image?: AcpMessageImage
@@ -344,7 +345,12 @@ export const projectAgentMessageChunks = (
         now
       )
       if (hasVisibleOutput) awaitingFirstAgentOutput = undefined
-      if (status !== 'waiting-for-user' && status !== 'waiting-permission') status = 'running'
+      if (
+        session.runtimeTranscriptOwner !== 'main' &&
+        status !== 'waiting-for-user' &&
+        status !== 'waiting-permission'
+      )
+        status = 'running'
       shouldCommit = true
       continue
     }
@@ -375,7 +381,8 @@ export const projectAgentMessageChunks = (
           eventIds: [...baseEventIds, input.eventId],
           images: sanitizedImage ? [{ id: input.eventId, ...sanitizedImage }] : undefined,
           sortIndex: createSortIndex(),
-          createdAt: now,
+          // Presentation may lag behind tools; preserve the runtime timeline on first materialization.
+          createdAt: input.timestamp ?? now,
           updatedAt: now
         }
     clearStreamingEntry(messageId)
@@ -404,7 +411,14 @@ export const projectAgentMessageChunks = (
     shouldCommit = true
   }
 
-  if (status !== 'waiting-for-user' && status !== 'waiting-permission' && changed) {
+  // Presentation can drain after Main's terminal transcript and ownership release. A text
+  // delta has no lifecycle authority in a Main-owned Session, even when it creates a Message.
+  if (
+    session.runtimeTranscriptOwner !== 'main' &&
+    status !== 'waiting-for-user' &&
+    status !== 'waiting-permission' &&
+    changed
+  ) {
     status = 'running'
   }
   const sessionChanged =

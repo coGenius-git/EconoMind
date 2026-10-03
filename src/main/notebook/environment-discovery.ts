@@ -56,6 +56,8 @@ export type DiscoveryDeps = {
   // Whether an R interpreter can actually back the kernel loop (jsonlite + protocol). Python
   // runnability is derived from a valid Python-3 version instead.
   rRunnable: (interpreterPath: string) => Promise<boolean>
+  // Production can read both facts in one R process; injected probes may keep them separate.
+  probeR?: (interpreterPath: string) => Promise<{ version?: string; runnable: boolean }>
   // Resolve a path to its canonical form for identity/dedup; tolerate a missing path (return as-is).
   realpath: (p: string) => string
   // App runtime root (<storageRoot>/runtime); used to classify provenance of an interpreter by whether
@@ -84,14 +86,15 @@ const interpreterNames = (language: NotebookLanguage, platform: NodeJS.Platform)
 const whichAll = async (
   name: string,
   platform: NodeJS.Platform,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  exec: DiscoveryExec = execFileAsync
 ): Promise<string[]> => {
   const options = { ...PROBE_EXEC_OPTS, env }
   try {
     const { stdout } =
       platform === 'win32'
-        ? await execFileAsync('where', [name], options)
-        : await execFileAsync('which', ['-a', name], options)
+        ? await exec('where', [name], options)
+        : await exec('which', ['-a', name], options)
     return stdout
       .split('\n')
       .map((line) => line.trim())
@@ -105,12 +108,13 @@ const whichAll = async (
 const listCondaPrefixes = async (
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
-  home: string
+  home: string,
+  exec: DiscoveryExec = execFileAsync
 ): Promise<string[]> => {
   const prefixes = new Set<string>()
   for (const bin of ['conda', 'mamba', 'micromamba']) {
     try {
-      const { stdout } = await execFileAsync(bin, ['env', 'list', '--json'], {
+      const { stdout } = await exec(bin, ['env', 'list', '--json'], {
         ...PROBE_EXEC_OPTS,
         env
       })
@@ -192,14 +196,9 @@ const prefixInterpreter = (
   prefix: string,
   language: NotebookLanguage,
   platform: NodeJS.Platform
-): string =>
-  language === 'python'
-    ? platform === 'win32'
-      ? join(prefix, 'python.exe')
-      : join(prefix, 'bin', 'python')
-    : rBin(prefix, platform)
+): string => (language === 'python' ? pythonBin(prefix, platform) : rBin(prefix, platform))
 
-// A conda-forge Windows R interpreter lives at <prefix>\Lib\R\bin\R[script].exe and depends on
+// A conda-forge Windows R interpreter lives in <prefix>\Lib\R\bin (optionally under x64) and depends on
 // DLLs in <prefix>\Library\bin. Return only that interpreter's own prefix: external CRAN R paths do
 // not match this layout, and an external conda R must never receive the app-managed prefix.
 export const windowsCondaPrefixForR = (
@@ -208,21 +207,39 @@ export const windowsCondaPrefixForR = (
 ): string | undefined => {
   if (platform !== 'win32') return undefined
   const normalized = win32.normalize(interpreterPath)
-  const match = normalized.match(/^(.*)\\Lib\\R\\bin\\R(?:script)?\.exe$/i)
+  const match = normalized.match(/^(.*)\\Lib\\R\\bin\\(?:x64\\)?R(?:script)?\.exe$/i)
   return match?.[1]
+}
+
+// App-managed Windows Python binaries load DLLs from their Conda prefix. Discovery probes must use
+// the same activated PATH as provisioning verification; otherwise a freshly rebuilt environment can
+// answer the provisioning check and still be reported non-runnable during post-repair binding.
+export const windowsCondaPrefixForPython = (
+  interpreterPath: string,
+  runtimeRoot: string,
+  platform: NodeJS.Platform = process.platform
+): string | undefined => {
+  if (platform !== 'win32') return undefined
+  const normalized = win32.normalize(interpreterPath)
+  if (!/\\python\.exe$/i.test(normalized)) return undefined
+  const prefix = win32.dirname(normalized)
+  const envsRoot = win32.normalize(win32.join(runtimeRoot, 'envs'))
+  const candidate = prefix.toLowerCase()
+  const appEnvsRoot = envsRoot.toLowerCase().replace(/[\\/]$/, '')
+  return candidate.startsWith(`${appEnvsRoot}\\`) ? prefix : undefined
 }
 
 // Default real enumeration: PATH + common dirs + pyenv + conda envs + the app's own runtime/envs, plus
 // any manually-added interpreter paths from the Settings catalog (so a picked interpreter that is not
 // on PATH / in a conda root still surfaces as a card). `manualPaths` is a sync getter over a settings
 // snapshot; a missing/failed lookup contributes nothing.
-export const defaultCandidatePaths =
-  (
-    runtimeRoot: string,
-    manualPaths?: (language: NotebookLanguage) => string[],
-    runtimeDeps: DiscoveryEnvironmentDeps = {}
-  ) =>
-  async (language: NotebookLanguage): Promise<string[]> => {
+export const defaultCandidatePaths = (
+  runtimeRoot: string,
+  manualPaths?: (language: NotebookLanguage) => string[],
+  runtimeDeps: DefaultDiscoveryRuntimeDeps = {}
+) => {
+  let condaRequest: Promise<string[]> | undefined
+  return async (language: NotebookLanguage): Promise<string[]> => {
     const platform = runtimeDeps.platform ?? process.platform
     const env = runtimeDeps.env ?? process.env
     const home = runtimeDeps.home ?? homedir()
@@ -238,7 +255,8 @@ export const defaultCandidatePaths =
     for (const p of manualPaths?.(language) ?? []) found.add(p)
 
     // On PATH (`which -a` / `where`) — the happy path when launched from a shell.
-    for (const name of names) for (const p of await whichAll(name, platform, env)) found.add(p)
+    for (const name of names)
+      for (const p of await whichAll(name, platform, env, runtimeDeps.exec)) found.add(p)
 
     // Well-known install bin dirs (Homebrew, /usr/local, /usr/bin) — reached even without a shell PATH.
     const commonBinDirs = ['/usr/bin', '/usr/local/bin', '/opt/homebrew/bin']
@@ -281,7 +299,16 @@ export const defaultCandidatePaths =
 
     // conda / mamba / micromamba envs: `env list --json` when a tool is reachable, else the conda-root
     // scan inside listCondaPrefixes (so envs are found even when conda itself is off the GUI PATH).
-    for (const prefix of await listCondaPrefixes(platform, env, home)) {
+    // Python and R share only an in-flight enumeration. A later Recheck must see new envs.
+    const conda = (condaRequest ??= listCondaPrefixes(
+      platform,
+      env,
+      home,
+      runtimeDeps.exec
+    ).finally(() => {
+      condaRequest = undefined
+    }))
+    for (const prefix of await conda) {
       const p = prefixInterpreter(prefix, language, platform)
       if (existsSync(p)) found.add(p)
     }
@@ -349,7 +376,7 @@ export const defaultCandidatePaths =
         const name = logicalEnvNameFromDirectory(directory)
         const prefix = join(appEnvsDir, directory)
         if (prefix !== envPrefix(runtimeRoot, name, platform)) continue
-        const p = language === 'python' ? pythonBin(prefix, platform) : rBin(prefix, platform)
+        const p = prefixInterpreter(prefix, language, platform)
         if (existsSync(p)) found.add(p)
       }
     } catch {
@@ -360,6 +387,7 @@ export const defaultCandidatePaths =
     // launcher/probe derives the sibling Rscript when needed (see rscriptFor), so nothing is lost.
     return collapseRscript([...found])
   }
+}
 
 // Drops a `Rscript` candidate when its sibling `R` (same dir) is also a candidate, so a detected R
 // installation surfaces as one environment, not a duplicate R + Rscript pair. A lone Rscript with no
@@ -441,7 +469,8 @@ export const discoverInterpreters = async (
     path: string
     envId: string
   }): Promise<DiscoveredInterpreter> => {
-    const version = await deps.probeVersion(path, language)
+    const rProbe = language === 'r' ? await deps.probeR?.(path) : undefined
+    const version = rProbe ? rProbe.version : await deps.probeVersion(path, language)
     const provenance = classify(path, deps.runtimeRoot, deps.platform ?? process.platform)
     const conda = condaEnvName(path)
     let runnable: boolean
@@ -451,7 +480,7 @@ export const discoverInterpreters = async (
       if (!runnable) detail = 'Not a runnable Python 3'
     } else {
       const versioned = version !== undefined
-      runnable = versioned && (await deps.rRunnable(path))
+      runnable = versioned && (rProbe ? rProbe.runnable : await deps.rRunnable(path))
       if (!versioned) detail = 'R did not run'
       else if (!runnable) detail = 'Needs jsonlite'
     }
@@ -519,9 +548,13 @@ export const defaultDiscoveryDeps = (
     })
   const probeOptions = (
     interpreterPath: string,
+    language: NotebookLanguage,
     timeout = PROBE_TIMEOUT_MS
   ): { timeout: number; windowsHide: boolean; env?: NodeJS.ProcessEnv } => {
-    const prefix = windowsCondaPrefixForR(interpreterPath, platform)
+    const prefix =
+      language === 'python'
+        ? windowsCondaPrefixForPython(interpreterPath, runtimeRoot, platform)
+        : windowsCondaPrefixForR(interpreterPath, platform)
     return prefix
       ? {
           timeout,
@@ -539,7 +572,7 @@ export const defaultDiscoveryDeps = (
       try {
         if (language === 'python') {
           const { stdout, stderr } = await exec(interpreterPath, ['--version'], {
-            ...probeOptions(interpreterPath),
+            ...probeOptions(interpreterPath, language),
             shell: platform === 'win32'
           })
           const output = `${stdout}\n${stderr}`
@@ -550,7 +583,7 @@ export const defaultDiscoveryDeps = (
         // already use for readiness checks and kernel launches. No shell means paths with spaces or
         // metacharacters are passed safely.
         const rscript = rscriptFor(interpreterPath)
-        const { stdout, stderr } = await exec(rscript, ['--version'], probeOptions(rscript))
+        const { stdout, stderr } = await exec(rscript, ['--version'], probeOptions(rscript, 'r'))
         return parseRVersion(`${stdout}\n${stderr}`)
       } catch {
         return undefined
@@ -561,9 +594,37 @@ export const defaultDiscoveryDeps = (
         exec: async (args) => {
           // No shell (see probeVersion): Rscript is run directly with a static arg vector.
           const rscript = rscriptFor(rInterpreterPath)
-          return exec(rscript, args, probeOptions(rscript, 15_000))
+          return exec(rscript, args, probeOptions(rscript, 'r', 15_000))
         }
       }),
+    probeR: async (interpreterPath) => {
+      const rscript = rscriptFor(interpreterPath)
+      try {
+        // Startup dominates these checks. Read the version and dependency in one process, with
+        // the same user profiles and activated Windows PATH as the separate probes.
+        const { stdout } = await exec(
+          rscript,
+          [
+            '-e',
+            'cat("\\nOPEN_SCIENCE_R_PROBE=", as.character(getRversion()), ";", requireNamespace("jsonlite", quietly=TRUE), "\\n", sep="")'
+          ],
+          probeOptions(rscript, 'r', 15_000)
+        )
+        const match = /^OPEN_SCIENCE_R_PROBE=(\d+\.\d+(?:\.\d+)?);(TRUE|FALSE)\r?$/m.exec(stdout)
+        if (match) {
+          const version = parseRVersion(`R version ${match[1]}`)
+          return { version, runnable: version !== undefined && match[2] === 'TRUE' }
+        }
+      } catch {
+        // Preserve the version-only diagnostic if a profile or dependency check cannot run.
+      }
+      try {
+        const { stdout, stderr } = await exec(rscript, ['--version'], probeOptions(rscript, 'r'))
+        return { version: parseRVersion(`${stdout}\n${stderr}`), runnable: false }
+      } catch {
+        return { runnable: false }
+      }
+    },
     realpath: safeRealpath,
     runtimeRoot,
     platform

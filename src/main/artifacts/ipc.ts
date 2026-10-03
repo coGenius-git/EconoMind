@@ -10,7 +10,10 @@ import type { ArtifactLiteratureManifest } from '../../shared/artifact-literatur
 
 import {
   ARTIFACT_FINALIZATION_INVALID_PROOF,
+  ARTIFACT_FINALIZATION_OPERATIONAL_FAILURE,
   ARTIFACT_OWNERSHIP_PERSISTENCE_RACE,
+  type ArtifactFinalizationErrorCode,
+  type ArtifactFinalizationExecutionState,
   type ArtifactFile,
   type ArtifactPreviewResult,
   type FinalizeRunArtifactsResult,
@@ -42,9 +45,11 @@ import type {
 } from '../../shared/artifacts'
 import { resolveDataRoot } from '../storage-root'
 import { withDataRootWrite } from '../storage/migration-state'
+import { assertResearchSessionWritable } from '../storage/session-package-state'
 import {
   readBoundedManagedFilePreviewLease,
-  type ManagedFilePreviewReadLease
+  type ManagedFilePreviewReadLease,
+  waitForManagedFilePublication
 } from '../managed-file-preview'
 import { createLogger, type Logger } from '../logger'
 import { ArtifactRepository } from './repository'
@@ -56,6 +61,32 @@ import {
 } from './provenance-repository'
 
 const log = createLogger('artifacts:finalization')
+
+class ArtifactFinalizationExecutionError extends Error {
+  constructor(
+    readonly execution: ArtifactFinalizationExecutionState,
+    readonly code: ArtifactFinalizationErrorCode,
+    cause: unknown
+  ) {
+    const completed = [
+      execution.durableFinalizationCompleted ? 'durable-finalization' : undefined,
+      execution.compatibilityPublicationCompleted ? 'compatibility-publication' : undefined,
+      execution.activationCompleted ? 'activation' : undefined
+    ].filter(Boolean)
+    super(
+      `Artifact finalization failed at ${execution.stage} for Project ${execution.projectId}, Session ${execution.sessionId}, run ${execution.runId}, Message ${execution.messageId}, Versions [${execution.artifactVersionIds.join(', ')}]. Completed stages: ${completed.length > 0 ? completed.join(', ') : 'none'}.`,
+      { cause }
+    )
+    this.name = 'ArtifactFinalizationExecutionError'
+  }
+}
+
+const artifactFinalizationFailureResult = (
+  error: unknown
+): Extract<FinalizeRunArtifactsResult, { ok: false }> | undefined =>
+  error instanceof ArtifactFinalizationExecutionError
+    ? { ok: false, code: error.code, message: error.message, execution: error.execution }
+    : undefined
 
 type ArtifactHandlers = {
   finalizeRunArtifacts: (request: FinalizeRunArtifactsRequest) => Promise<ArtifactFile[]>
@@ -92,6 +123,7 @@ type ArtifactHandlers = {
 }
 
 type ArtifactHandlerDependencies = {
+  onPublished?: (artifacts: readonly ArtifactFile[]) => void
   openPath?: (path: string) => Promise<string>
   logger?: Pick<Logger, 'error'>
   openLatestManagedFile?: (
@@ -121,7 +153,8 @@ type ArtifactHandlerDependencies = {
     | 'getVersionMessages'
     | 'getVersionReview'
     | 'resolveVersionDescriptors'
-  >
+  > &
+    Partial<Pick<ArtifactProvenanceRepository, 'withSessionMutation'>>
   codeReconstruction?: {
     get(request: GetArtifactCodeReconstructionRequest): Promise<ArtifactCodeReconstructionState>
     generate(
@@ -171,7 +204,7 @@ const createArtifactHandlers = (
   return {
     finalizeRunArtifacts: (request) =>
       withDataRootWrite(() =>
-        withClaimLock(finalizeLocks, request.claimId, () => {
+        withClaimLock(finalizeLocks, request.claimId, async () => {
           const claim = runRegistry.resolve(request.claimId)
           const finalize = (): Promise<ArtifactFile[]> =>
             finalizeRunArtifacts(
@@ -181,20 +214,36 @@ const createArtifactHandlers = (
               dependencies.provenance,
               dependencies.logger ?? log
             )
-          return dependencies.withSessionMutation
+          const artifacts = await (dependencies.withSessionMutation
             ? dependencies.withSessionMutation(claim.projectId, claim.sessionId, finalize)
-            : finalize()
+            : finalize())
+          // Enrichment may acquire Session authority itself; start only after publication's
+          // mutation barrier is released, and never turn a published run into a failed run.
+          try {
+            dependencies.onPublished?.(artifacts)
+          } catch (error) {
+            ;(dependencies.logger ?? log).error('artifact publication enrichment failed', error)
+          }
+          return artifacts
         })
       ),
     reconcilePendingArtifacts: (request) =>
       withDataRootWrite(async () => {
-        const reconcileCompatibility = (pendingPaths: string[]): Promise<ArtifactFile[]> =>
-          repository.reconcilePendingArtifactPaths({
-            projectId: resolveProjectId(request),
-            sessionId: request.sessionId,
-            messageId: request.messageId,
-            pendingPaths
-          })
+        const reconcileCompatibility = (pendingPaths: string[]): Promise<ArtifactFile[]> => {
+          const reconcile = (): Promise<ArtifactFile[]> =>
+            repository.reconcilePendingArtifactPaths({
+              projectId: resolveProjectId(request),
+              sessionId: request.sessionId,
+              messageId: request.messageId,
+              pendingPaths
+            })
+          return dependencies.provenance?.withSessionMutation
+            ? dependencies.provenance.withSessionMutation(
+                { projectId: resolveProjectId(request), appSessionId: request.sessionId },
+                reconcile
+              )
+            : reconcile()
+        }
         if (dependencies.recoverPendingArtifacts) {
           const recovered = await dependencies.recoverPendingArtifacts(request)
           if (recovered) {
@@ -257,16 +306,21 @@ const createArtifactHandlers = (
               }
             : undefined
       const lease = logicalRequest
-        ? logicalRequest.versionId
-          ? dependencies.openManagedFileVersion
-            ? await dependencies.openManagedFileVersion({
-                ...logicalRequest,
-                versionId: logicalRequest.versionId
-              })
-            : undefined
-          : dependencies.openLatestManagedFile
-            ? await dependencies.openLatestManagedFile({ ...logicalRequest, versionId: undefined })
-            : undefined
+        ? await waitForManagedFilePublication(() =>
+            logicalRequest.versionId
+              ? dependencies.openManagedFileVersion
+                ? dependencies.openManagedFileVersion({
+                    ...logicalRequest,
+                    versionId: logicalRequest.versionId
+                  })
+                : Promise.resolve(undefined)
+              : dependencies.openLatestManagedFile
+                ? dependencies.openLatestManagedFile({
+                    ...logicalRequest,
+                    versionId: undefined
+                  })
+                : Promise.resolve(undefined)
+          )
         : undefined
       if (lease) {
         try {
@@ -326,7 +380,14 @@ const createArtifactHandlers = (
       }
       // Hold one migration lease across evidence reads, model work, and the cache commit so a data
       // root move cannot switch beneath an in-flight reconstruction.
-      return withDataRootWrite(() => codeReconstruction.generate(request))
+      return withDataRootWrite(async () => {
+        await assertResearchSessionWritable(
+          resolveDataRoot(),
+          request.projectId,
+          request.appSessionId
+        )
+        return codeReconstruction.generate(request)
+      })
     },
     resolveVersionDescriptors: (request) => {
       if (!dependencies.provenance) throw new Error('Artifact Provenance is not configured.')
@@ -343,10 +404,28 @@ const finalizeRunArtifacts = async (
   provenance?: Pick<
     ArtifactProvenanceRepository,
     'finalizeRun' | 'activateFinalizedRun' | 'listRunVersions'
-  >,
+  > &
+    Partial<Pick<ArtifactProvenanceRepository, 'withSessionMutation'>>,
   logger: Pick<Logger, 'error'> = log
 ): Promise<ArtifactFile[]> => {
   const claim = runRegistry.resolve(request.claimId)
+  if (provenance?.withSessionMutation) {
+    return provenance.withSessionMutation(
+      { projectId: claim.projectId, appSessionId: claim.sessionId },
+      () =>
+        finalizeRunArtifacts(
+          repository,
+          runRegistry,
+          request,
+          {
+            finalizeRun: provenance.finalizeRun.bind(provenance),
+            activateFinalizedRun: provenance.activateFinalizedRun.bind(provenance),
+            listRunVersions: provenance.listRunVersions.bind(provenance)
+          },
+          logger
+        )
+    )
+  }
 
   if (claim.finalizedMessageId) {
     // A retry for the same message should return the final list; a different message is a bug.
@@ -371,7 +450,8 @@ const finalizeRunArtifacts = async (
 
   let durableFinalizationCompleted = false
   let compatibilityPublicationCompleted = false
-  let stage: 'durable-finalization' | 'compatibility-publication' = 'durable-finalization'
+  let activationCompleted = false
+  let stage: ArtifactFinalizationExecutionState['stage'] = 'durable-finalization'
 
   try {
     let provenanceArtifacts: ArtifactFile[] | undefined
@@ -442,7 +522,9 @@ const finalizeRunArtifacts = async (
     compatibilityPublicationCompleted = true
 
     if (provenance && provenanceRequest) {
+      stage = 'activation'
       provenanceArtifacts = await provenance.activateFinalizedRun(provenanceRequest)
+      activationCompleted = true
     }
 
     runRegistry.markFinalized(request.claimId, request.messageId)
@@ -474,7 +556,32 @@ const finalizeRunArtifacts = async (
       ...(claim.runtimeSegmentId ? { runtimeSegmentId: claim.runtimeSegmentId } : {}),
       ...(claim.promptMessageId ? { promptMessageId: claim.promptMessageId } : {})
     })
-    throw error
+    if (
+      error instanceof ArtifactFinalizationProofError &&
+      !durableFinalizationCompleted &&
+      !compatibilityPublicationCompleted
+    ) {
+      throw error
+    }
+    throw new ArtifactFinalizationExecutionError(
+      {
+        stage,
+        projectId: claim.projectId,
+        sessionId: claim.sessionId,
+        runId: claim.runId,
+        messageId: request.messageId,
+        artifactVersionIds: [...(claim.artifactVersionIds ?? [])],
+        durableFinalizationCompleted,
+        compatibilityPublicationCompleted,
+        activationCompleted
+      },
+      error instanceof ArtifactOwnershipPersistenceRaceError
+        ? ARTIFACT_OWNERSHIP_PERSISTENCE_RACE
+        : error instanceof ArtifactFinalizationProofError
+          ? ARTIFACT_FINALIZATION_INVALID_PROOF
+          : ARTIFACT_FINALIZATION_OPERATIONAL_FAILURE,
+      error
+    )
   }
 }
 
@@ -512,6 +619,8 @@ const registerArtifactIpcHandlers = (
       try {
         return { ok: true, artifacts: await handlers.finalizeRunArtifacts(request) }
       } catch (error) {
+        const operationalFailure = artifactFinalizationFailureResult(error)
+        if (operationalFailure) return operationalFailure
         if (
           !(error instanceof ArtifactOwnershipPersistenceRaceError) &&
           !(error instanceof ArtifactFinalizationProofError)
@@ -601,5 +710,11 @@ const registerArtifactIpcHandlers = (
   )
 }
 
-export { createArtifactHandlers, createDefaultArtifactRepository, registerArtifactIpcHandlers }
+export {
+  ArtifactFinalizationExecutionError,
+  artifactFinalizationFailureResult,
+  createArtifactHandlers,
+  createDefaultArtifactRepository,
+  registerArtifactIpcHandlers
+}
 export type { ArtifactHandlers }

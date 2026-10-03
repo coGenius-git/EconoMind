@@ -4,7 +4,6 @@ import {
   Boxes,
   Check,
   ChevronDown,
-  File,
   Folder,
   Monitor,
   Paperclip,
@@ -36,6 +35,7 @@ import type { ProjectFileItem } from '../../../../shared/project-files'
 
 import { ArtifactPreview } from './artifact-preview'
 import { ExtensionPreservingFileName } from './ExtensionPreservingFileName'
+import { FileTypeIcon } from './file-type-icon'
 import { ManagedFileDownloadButton } from './ManagedFileDownloadButton'
 import type { MessageArtifact } from './preview-file-item'
 import { GrantedRootMenuRow } from './project-files-granted-root-menu-row'
@@ -219,7 +219,9 @@ const FileTile = ({
   })
 
   return (
-    <div className="group relative h-[128px] min-w-0 overflow-hidden rounded-lg border border-border-300/50 bg-bg-000 shadow-sm hover:border-border-200 hover:bg-bg-100 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring/50 has-[:focus-visible]:ring-inset">
+    // The focus ring stays non-inset: an inset ring paints below the opaque preview area, so the
+    // focus returned by the preview dialog (Escape) would show only the ring's bottom half.
+    <div className="group relative h-[128px] min-w-0 overflow-hidden rounded-lg border border-border-300/50 bg-bg-000 shadow-sm hover:border-border-200 hover:bg-bg-100 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring/50">
       <button
         ref={setTileElement}
         type="button"
@@ -323,8 +325,8 @@ const FileListRow = ({
         title={file.name}
         onClick={onPreview}
       >
-        <span className="flex size-7 shrink-0 items-center justify-center rounded bg-bg-200 text-text-300">
-          <File className="size-4" strokeWidth={1.7} aria-hidden="true" />
+        <span className="flex size-7 shrink-0 items-center justify-center text-text-300">
+          <FileTypeIcon name={file.name} mimeType={file.mimeType} />
         </span>
         <ExtensionPreservingFileName
           name={file.name}
@@ -731,5 +733,28 @@ const ProjectFilesFilterMenu = ({
   )
 }
 
-export { ProjectFileItems, ProjectFilesFilterMenu }
+const ProjectFilesEmptyState = ({
+  query,
+  onAction
+}: {
+  query?: string
+  onAction: () => void
+}): React.JSX.Element => {
+  const { t } = useTranslation()
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-[12px] text-text-300">
+      <p>{query ? t('No files match “{{query}}”', { query }) : t('No files yet')}</p>
+      {!query ? (
+        <p className="max-w-sm">
+          {t('Attach files in the conversation. Research tasks save generated files here.')}
+        </p>
+      ) : null}
+      <Button variant="outline" size="sm" onClick={onAction}>
+        {query ? t('Clear search') : t('Go to conversation')}
+      </Button>
+    </div>
+  )
+}
+
+export { ProjectFileItems, ProjectFilesEmptyState, ProjectFilesFilterMenu }
 export type { ProjectFilesViewMode }

@@ -2,7 +2,7 @@
 
 EconoMind unterstützt Forschung in Wirtschaft, Management, Finanzwesen, Rechnungswesen und öffentlicher Politik. Die lokale Weboberfläche benötigt das Anwendungsbackend.
 
-Dieses Repository basiert auf AIPOCH Open Science. Der Quellcode trägt Version 0.27.2; ein separates angepasstes Installationspaket verwendet 3.0.0. Veröffentlichungen und DOI-Einträge des Upstream-Projekts sind keine Veröffentlichungen dieses Repositorys.
+Dieses Repository basiert auf AIPOCH Open Science. Der Quellcode trägt Version 0.34.1; ein separates angepasstes Installationspaket verwendet 3.0.0. Veröffentlichungen und DOI-Einträge des Upstream-Projekts sind keine Veröffentlichungen dieses Repositorys.
 
 ## Dokumentation und Start
 
@@ -11,7 +11,7 @@ Dieses Repository basiert auf AIPOCH Open Science. Der Quellcode trägt Version 
 - [Docs](../README.md)
 - [Startup](../DEPLOY.md)
 
-`Node.js 22` + `npm`:
+`Node.js 24` + `npm`:
 
 ```bash
 git clone https://github.com/coGenius-git/EconoMind.git

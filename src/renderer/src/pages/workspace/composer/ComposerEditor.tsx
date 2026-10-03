@@ -12,7 +12,6 @@ import { usePreviewWorkbenchStore } from '@/stores/preview-workbench-store'
 
 import { createPreviewFileItemFromLocal, LOCAL_PREVIEW_SESSION_ID } from '../preview-file-item'
 import { createPreviewFileItemFromMention } from '../preview-file-item'
-import { createPreviewRequestScope } from '../previews/preview-file-reader'
 
 import {
   ArtifactMentionPopup,
@@ -26,6 +25,7 @@ import {
   docArtifactCount,
   docSessionCount,
   domToDoc,
+  domToDocWithCaret,
   isPastedTextCaretHost,
   MAX_COMPOSER_ARTIFACT_MENTIONS,
   MAX_COMPOSER_SESSION_MENTIONS,
@@ -46,7 +46,7 @@ import { useMentionTrigger } from './useMentionTrigger'
 // rendered as a model-driven overlay (see below) rather than a CSS :empty hint, so it shows whenever
 // the doc is empty — including when the editor is blurred or retains a stray browser-inserted node.
 const composerEditorClassName =
-  'min-h-[36px] max-h-[200px] w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent py-1.5 text-[15px] leading-relaxed text-text-000 outline-none'
+  'min-h-[36px] max-h-[200px] w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent py-1.5 text-[15px] leading-relaxed text-text-000 outline-none focus-visible:outline-none'
 
 // Placeholder overlay aligned to the editor's text start; pointer-events-none lets clicks reach the box.
 const composerPlaceholderClassName =
@@ -71,12 +71,13 @@ type ComposerEditorProps = {
   ariaLabel: string
   // Undefined shows Main-enabled Skills; an empty array intentionally hides every Skill.
   allowedSkillIds?: readonly string[]
+  onSelectWslSetup?: () => void
   isHistoryBrowsing?: boolean
   historyStatus?: string
   onNavigateHistory?: (direction: 'previous' | 'next') => boolean
-  // Scope for previewing clicked `@` mention chips (uploads/artifacts); without it those chips
-  // stay inert on click (linked-folder chips resolve through the granted-roots store instead).
+  // Legacy paths need their owner context; version locators already carry their source Session.
   mentionPreviewContext?: { sessionId: string; projectId?: string }
+  onPreviewMentionArtifact?: (part: Parameters<typeof createPreviewFileItemFromMention>[0]) => void
   focusRequest?: string | number
   restoreFocusRequest?: number
   caretRequest?: { key: number; position: ComposerCaretPosition }
@@ -416,6 +417,12 @@ const currentCaretPosition = (root: HTMLElement): ComposerCaretPosition | undefi
   if (!selection || selection.rangeCount === 0) return undefined
   const range = selection.getRangeAt(0)
   if (!root.contains(range.startContainer)) return undefined
+  const hasBrowserBlocks = Array.from(root.children).some(
+    (child) => child.tagName === 'DIV' || child.tagName === 'P' || child.tagName === 'BR'
+  )
+  if (hasBrowserBlocks) {
+    return domToDocWithCaret(root, range.startContainer, range.startOffset).caret
+  }
   if (range.startContainer === root) {
     return { nodeIndex: Math.min(range.startOffset, root.childNodes.length), offset: 0 }
   }
@@ -430,7 +437,8 @@ const currentCaretPosition = (root: HTMLElement): ComposerCaretPosition | undefi
 }
 
 const canReceiveFocus = (root: HTMLElement): boolean =>
-  root.getAttribute('contenteditable') === 'true' && root.closest('[hidden]') === null
+  root.getAttribute('contenteditable') === 'true' &&
+  root.closest('[hidden], [inert], [aria-hidden="true"]') === null
 
 // A contenteditable composer driven by a pure ComposerDoc model. External doc changes flow into the
 // DOM via applyDocToDom; user edits flow out via domToDoc. A `/` mention trigger mounts a skill popup.
@@ -448,10 +456,12 @@ export const ComposerEditor = ({
   className,
   ariaLabel,
   allowedSkillIds,
+  onSelectWslSetup,
   isHistoryBrowsing = false,
   historyStatus = '',
   onNavigateHistory,
   mentionPreviewContext,
+  onPreviewMentionArtifact,
   focusRequest,
   restoreFocusRequest,
   caretRequest
@@ -524,6 +534,14 @@ export const ComposerEditor = ({
     const root = editorRef.current
     if (root) {
       const nextDoc = domToDoc(root)
+      const hasBrowserBlocks = Array.from(root.children).some(
+        (child) => child.tagName === 'DIV' || child.tagName === 'P' || child.tagName === 'BR'
+      )
+      if (hasBrowserBlocks) {
+        const caret = currentCaretPosition(root)
+        applyDocToDom(root, nextDoc)
+        if (caret) moveCaretToPosition(root, caret)
+      }
       if (undoCaretRef.current) onDocChange(nextDoc, undoCaretRef.current)
       else onDocChange(nextDoc)
     }
@@ -552,6 +570,8 @@ export const ComposerEditor = ({
     }
   }, [caretRequest, doc, focusRequest])
 
+  // Consume each request once, including while a blocking interaction covers the composer.
+  // Removing the blocker must not replay focus and open a mobile software keyboard.
   useLayoutEffect(() => {
     const root = editorRef.current
     if (root && focusRequest !== undefined && canReceiveFocus(root)) moveCaretToEnd(root)
@@ -567,9 +587,8 @@ export const ComposerEditor = ({
   }, [emitDocFromDom])
 
   // Clicking an `@` mention chip opens the file in the preview workbench, like the sent-message
-  // pills do. Linked-folder chips resolve rootId + relativePath through the granted-roots store
-  // (inert once the root is revoked); upload/artifact chips probe first so a stale chip stays
-  // inert, then open through the mention preview item.
+  // pills do. The preview surface owns loading, errors and retry; do not gate it on a separate
+  // read probe. Linked-folder chips still require a currently granted root.
   const handleClick = (event: React.MouseEvent<HTMLDivElement>): void => {
     const root = editorRef.current
     const pastedTextMarker = (event.target as HTMLElement).closest?.(
@@ -627,10 +646,7 @@ export const ComposerEditor = ({
       return
     }
 
-    if (
-      (source !== 'upload' && source !== 'artifact' && source !== 'literature') ||
-      !mentionPreviewContext
-    ) {
+    if (source !== 'upload' && source !== 'artifact' && source !== 'literature') {
       return
     }
     const path = chip.getAttribute('data-mention-path')
@@ -639,36 +655,25 @@ export const ComposerEditor = ({
     const part: Parameters<typeof createPreviewFileItemFromMention>[0] = {
       type: 'artifact',
       id: chip.getAttribute('data-mention-id') ?? path,
+      sourceFileId: chip.getAttribute('data-mention-source-file-id') ?? undefined,
       name: chip.getAttribute('data-mention-filename') ?? path,
       path,
       source,
       mimeType: chip.getAttribute('data-mention-mime-type') ?? undefined,
       versionId: chip.getAttribute('data-mention-version-id') ?? undefined
     }
-    const { sessionId, projectId } = mentionPreviewContext
-    if (source === 'literature') {
-      usePreviewWorkbenchStore
-        .getState()
-        .upsertAndActivateItem(createPreviewFileItemFromMention(part, '__literature__', projectId))
+    if (onPreviewMentionArtifact && source !== 'literature') {
+      onPreviewMentionArtifact(part)
       return
     }
-    void (async () => {
-      const read =
-        source === 'upload' ? window.api.uploads.readPreview : window.api.artifacts.readPreview
-      try {
-        await read({
-          ...createPreviewRequestScope({ projectId, sessionId, source, path }),
-          path,
-          maxBytes: 1,
-          encoding: 'utf8'
-        })
-      } catch {
-        return
-      }
-      usePreviewWorkbenchStore
-        .getState()
-        .upsertAndActivateItem(createPreviewFileItemFromMention(part, sessionId, projectId))
-    })()
+    const item = createPreviewFileItemFromMention(
+      part,
+      source === 'literature' ? '__literature__' : (mentionPreviewContext?.sessionId ?? ''),
+      mentionPreviewContext?.projectId ?? activeProjectId
+    )
+    // An unscoped legacy path cannot identify its source Session. Do not guess from the filename.
+    if (!item.sessionId) return
+    usePreviewWorkbenchStore.getState().upsertAndActivateItem(item)
   }
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
@@ -752,7 +757,13 @@ export const ComposerEditor = ({
       }
     }
     // Enter submits; Shift+Enter inserts a newline; IME composition never submits.
-    if (event.key === 'Enter' && !event.shiftKey && !composingRef.current) {
+    if (
+      event.key === 'Enter' &&
+      !event.shiftKey &&
+      !composingRef.current &&
+      !event.nativeEvent.isComposing &&
+      event.nativeEvent.keyCode !== 229
+    ) {
       event.preventDefault()
       onSubmit()
     }
@@ -890,6 +901,11 @@ export const ComposerEditor = ({
     }
   }
 
+  const handleSelectWslSetup = (): void => {
+    mention.cancel()
+    onSelectWslSetup?.()
+  }
+
   // Replace the active `@query` token with an artifact chip, then close the popup.
   const handleSelectArtifact = (ref: PickedMention): void => {
     const root = editorRef.current
@@ -991,6 +1007,7 @@ export const ComposerEditor = ({
           listboxId={mentionListboxId}
           onActiveOptionIdChange={setActiveMentionOptionId}
           onSelect={handleSelectSkill}
+          onSelectWslSetup={onSelectWslSetup ? handleSelectWslSetup : undefined}
           onClose={mention.cancel}
         />
       ) : null}

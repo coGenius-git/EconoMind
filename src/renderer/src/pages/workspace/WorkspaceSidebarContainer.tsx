@@ -89,6 +89,7 @@ const WorkspaceSidebarContainer = ({
   return (
     <WorkspaceSidebar
       {...sidebarProps}
+      importProjectId={projectId}
       onMobileClose={onMobileClose}
       sessions={sessions}
       credentialPendingSessionIds={credentialPendingSessionIds}

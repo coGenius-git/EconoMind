@@ -1,5 +1,3 @@
-import { createReadStream } from 'node:fs'
-
 import type { PrismaClient } from '@prisma/client'
 
 import {
@@ -29,14 +27,14 @@ import {
 } from './verified-legacy-cleanup-owner'
 
 type UploadRepositoryOptions = {
+  onFinalized?: (projectId: string, sessionId: string, attachments: UploadedAttachment[]) => void
   maxFileBytes?: number
   getClient?: () => Promise<PrismaClient>
   getLegacyFileChecksum?: (path: string) => Promise<string>
   renameLegacyForCleanup?: (source: string, destination: string) => Promise<void>
-  createLocalReadStream?: (
-    sourcePath: string,
-    options: { highWaterMark: number; signal: AbortSignal }
-  ) => ReturnType<typeof createReadStream>
+  createLocalReadStream?: NonNullable<
+    ConstructorParameters<typeof ActiveTransferOwner>[1]
+  >['createLocalReadStream']
 }
 
 // Public upload seam. Owners are composed once here; all behavior lives behind the existing 15
@@ -49,7 +47,10 @@ class UploadRepository {
   private readonly legacyRecoveryOwner: LegacyRecoveryOwner
   private readonly dataRoot: string
 
-  constructor(dataRoot: string, options: UploadRepositoryOptions = {}) {
+  constructor(
+    dataRoot: string,
+    private readonly options: UploadRepositoryOptions = {}
+  ) {
     this.dataRoot = dataRoot
     this.contentRepository = options.getClient
       ? new ContentRepository({ storageRoot: dataRoot, getClient: options.getClient })
@@ -106,13 +107,21 @@ class UploadRepository {
   async finalizePendingSessionUploads(
     sessionId: string,
     attachments: UploadedAttachment[],
-    projectId = DEFAULT_UPLOAD_PROJECT_ID
+    projectId = DEFAULT_UPLOAD_PROJECT_ID,
+    options: { deferVisibility?: boolean } = {}
   ): Promise<UploadedAttachment[]> {
-    return this.stagedPublicationOwner.finalizePendingSessionUploads(
+    const finalized = await this.stagedPublicationOwner.finalizePendingSessionUploads(
       sessionId,
       attachments,
-      projectId
+      projectId,
+      options
     )
+    const newlyPublished = finalized.filter((file) =>
+      attachments.some((input) => input.id === file.id && input.versionId !== file.versionId)
+    )
+    // Reusing an immutable upload must not resurrect native annotations deleted by the user.
+    if (newlyPublished.length) this.options.onFinalized?.(projectId, sessionId, newlyPublished)
+    return finalized
   }
 
   async upgradeLegacySessionUploads(

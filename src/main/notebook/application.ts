@@ -9,6 +9,7 @@ import type { ProjectIdScope } from '../../shared/project-scope'
 type NotebookApplicationDeps = Pick<
   NotebookRuntimeServiceOptions,
   | 'configRoot'
+  | 'admitSessionWork'
   | 'dataRoot'
   | 'repository'
   | 'getPackageMirror'
@@ -22,6 +23,8 @@ type NotebookApplicationDeps = Pick<
   | 'onBackgroundRunTerminal'
   | 'onBackgroundRunAdmitted'
   | 'onBackgroundRunObserved'
+  | 'dependencyAnalyzer'
+  | 'getGrantedLocalRoots'
 > &
   ProjectIdScope & {
     events: ApplicationEventPublisher

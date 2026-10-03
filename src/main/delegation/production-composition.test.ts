@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { buildSessionProjection } from '../session-persistence/projection'
 import { installAppLifecycle, type AppLifecycleDeps } from '../app-lifecycle'
 import { clearApplicationShutdownTrigger } from '../application-shutdown-trigger'
 import {
@@ -23,7 +24,7 @@ import { ArtifactRepository } from '../artifacts/repository'
 import { ArtifactRunRegistry } from '../artifacts/run-registry'
 import { writeArtifactFileForCurrentRun } from '../artifacts/mcp-server'
 import { DELEGATION_DISABLED_MESSAGE } from './durable-delegated-work-error'
-import { DelegateMessageParkedError } from './execution-port'
+import { DelegateExecutionCleanupError, DelegateMessageParkedError } from './execution-port'
 import { createArtifactHandlers } from '../artifacts/ipc'
 import { createProjectDbClient, migrateApplicationDatabase } from '../projects/prisma-client'
 import { createFrameNotebookLane } from '../notebook/lane-identity'
@@ -46,7 +47,10 @@ import type { ReviewWithChecks } from '../../shared/reviewer'
 import type { DelegatedWorkRecordCommands } from './session-records'
 import { projectRootArtifactVisibility } from '../../shared/artifact-visibility'
 import { normalizeSessionFile } from '../../shared/session-persistence'
-import { finalizeDelegatedArtifactPublication } from './delegated-artifact-publication'
+import {
+  DelegatedArtifactPublicationError,
+  finalizeDelegatedArtifactPublication
+} from './delegated-artifact-publication'
 import { createProductionDelegatedFrameworks } from './production-frameworks'
 import type { AcpDelegateExecutionCallbacks, AcpDelegateRuntime } from './acp-execution'
 import type { DelegateExecutionInput } from './execution-port'
@@ -110,7 +114,11 @@ const createCompositionHarness = async (
   admissionError?: Error,
   owners: Pick<
     ProductionDelegatedWorkOptions,
-    'artifactEvidence' | 'reviewEvidence' | 'parentMessages' | 'settlementContinuations'
+    | 'artifactEvidence'
+    | 'reviewEvidence'
+    | 'parentMessages'
+    | 'settlementContinuations'
+    | 'resolvePermissionPrompts'
   > = {},
   initialRootInvocations: readonly Readonly<{
     rootMessageId: string
@@ -214,6 +222,7 @@ const createCompositionHarness = async (
     assertSessionIdentityOwnership: async () => undefined,
     saveSession: async (next) => {
       durable = structuredClone(next)
+      return structuredClone(durable)
     },
     saveCommittedProjectSession: async () => undefined,
     deleteSession: async () => undefined,
@@ -426,6 +435,7 @@ const createFrameworkCompositionHarness = async (
                         HOME: base.runtimeHome,
                         CODEX_HOME: base.runtimeHome,
                         CODEX_CONFIG: JSON.stringify({
+                          agents: { enabled: false },
                           features: { multi_agent: false, multi_agent_v2: false }
                         })
                       } as Record<string, string>
@@ -589,6 +599,197 @@ afterEach(async () => {
 })
 
 describe('production delegated-work composition', () => {
+  it('resumes delegation with a fresh execution without restarting cancelled children', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-resume-'))
+    const harness = await createCompositionHarness(root, 'codex')
+    const { composition, caller, execution } = harness
+    const start = (rootExecutionId: string): typeof caller & { rootExecutionId: string } => {
+      composition.root.rootExecutionStarted!(
+        caller.session.sessionId,
+        caller.originMessageId,
+        rootExecutionId
+      )
+      return { ...caller, rootExecutionId }
+    }
+    const first = start('execution-1')
+    const child = (
+      await composition.host.delegate(first, { task: 'wait', name: 'child' }, { wait: false })
+    ).children[0]
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.control(child.attemptId).accept()
+    await composition.root.cancelTurn!(caller.session.sessionId, caller.originMessageId)
+    expect(harness.durable().runtimeContext!.delegatedWork!.records[0].attempts[0].status).toBe(
+      'cancelled'
+    )
+
+    const resumed = start('execution-2')
+    await composition.root.rootTurnStarted!({
+      sessionId: caller.session.sessionId,
+      originatingPromptId: caller.originMessageId
+    })
+    expect(execution.controls()).toHaveLength(1)
+    expect((await composition.host.children(resumed))[0].status).toBe('cancelled')
+    await expect(
+      composition.host.delegate(
+        { ...first, toolInvocationId: 'late-delegate' },
+        { task: 'stale', name: 'stale' },
+        { wait: false }
+      )
+    ).rejects.toThrow('cancelled')
+    await expect(
+      composition.host.sendMessage(first, child.frameId, 'late continuation', { requestId: 'late' })
+    ).rejects.toThrow('cancelled')
+    const continued = await composition.host.sendMessage(
+      resumed,
+      child.frameId,
+      'continue explicitly',
+      { requestId: 'resume-child' }
+    )
+    expect(continued.disposition).toBe('continued')
+    await expect.poll(() => execution.controls()).toHaveLength(2)
+    const attempts = harness.durable().runtimeContext!.delegatedWork!.records[0].attempts
+    expect(attempts).toHaveLength(2)
+    expect(attempts[0]).toMatchObject({ id: child.attemptId, status: 'cancelled' })
+    expect(attempts[1].id).not.toBe(child.attemptId)
+
+    await composition.root.cancelTurn!(caller.session.sessionId, caller.originMessageId)
+    const third = start('execution-3')
+    await expect(
+      composition.host.delegate(resumed, { task: 'stale again', name: 'stale' }, { wait: false })
+    ).rejects.toThrow('cancelled')
+    const fresh = await composition.host.delegate(
+      { ...third, toolInvocationId: 'fresh-delegate' },
+      { task: 'new work', name: 'new child' },
+      { wait: false }
+    )
+    expect(fresh.children[0].frameId).not.toBe(child.frameId)
+    harness.replaceDurable({ ...harness.durable(), delegationPolicy: 'deny' })
+    await expect(
+      composition.host.delegate(third, { task: 'disabled', name: 'disabled' }, { wait: false })
+    ).rejects.toThrow(/disabled/i)
+    await composition.root.stopAll()
+  })
+
+  it('does not revive a pre-Stop continuation when its reservation returns after Resume', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-resume-continuation-'))
+    const execution = createDeterministicDelegateExecution()
+    let release!: () => void
+    let entered!: () => void
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const entering = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    let reservations = 0
+    const harness = await createCompositionHarness(root, 'codex', {
+      ...execution,
+      reserve: async (count) => {
+        if (++reservations === 2) {
+          entered()
+          await blocked
+        }
+        return execution.reserve(count)
+      }
+    })
+    const { composition, caller } = harness
+    composition.root.rootExecutionStarted!(
+      caller.session.sessionId,
+      caller.originMessageId,
+      'first'
+    )
+    const child = (
+      await composition.host.delegate(
+        { ...caller, rootExecutionId: 'first' },
+        { task: 'work', name: 'child' },
+        { wait: false }
+      )
+    ).children[0]
+    await composition.root.cancelTurn!(caller.session.sessionId, caller.originMessageId)
+    composition.root.rootExecutionStarted!(
+      caller.session.sessionId,
+      caller.originMessageId,
+      'second'
+    )
+    const pending = composition.host.sendMessage(
+      { ...caller, rootExecutionId: 'second' },
+      child.frameId,
+      'delayed continuation',
+      { requestId: 'delayed' }
+    )
+    const rejection = expect(pending).rejects.toThrow('cancelled')
+    await entering
+    const stopping = composition.root.cancelTurn!(caller.session.sessionId, caller.originMessageId)
+    composition.root.rootExecutionStarted!(
+      caller.session.sessionId,
+      caller.originMessageId,
+      'third'
+    )
+    release()
+    await rejection
+    await stopping
+    expect(harness.durable().runtimeContext!.delegatedWork!.records[0].attempts).toHaveLength(1)
+    await expect(
+      composition.host.sendMessage(
+        { ...caller, rootExecutionId: 'third' },
+        child.frameId,
+        'fresh continuation',
+        { requestId: 'fresh' }
+      )
+    ).resolves.toMatchObject({ disposition: 'continued' })
+    await composition.root.stopAll()
+  })
+
+  it('rejects an admission delayed before Stop after the same prompt resumes', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-resume-delayed-'))
+    let release!: () => void
+    let entered!: () => void
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const entering = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    let calls = 0
+    const harness = await createCompositionHarness(
+      root,
+      'codex',
+      undefined,
+      undefined,
+      {},
+      [],
+      async () => {
+        if (++calls === 1) {
+          entered()
+          await blocked
+        }
+        return testExecutionModel('codex')
+      }
+    )
+    const { composition, caller } = harness
+    composition.root.rootExecutionStarted!(caller.session.sessionId, caller.originMessageId, 'old')
+    const pending = composition.host.delegate(
+      { ...caller, rootExecutionId: 'old' },
+      { task: 'late work', name: 'late' },
+      { wait: false }
+    )
+    const rejected = expect(pending).rejects.toThrow('cancelled')
+    await entering
+    await composition.root.cancelTurn!(caller.session.sessionId, caller.originMessageId)
+    composition.root.rootExecutionStarted!(caller.session.sessionId, caller.originMessageId, 'new')
+    release()
+    await rejected
+    expect(harness.durable().runtimeContext?.delegatedWork?.records ?? []).toHaveLength(0)
+    await expect(
+      composition.host.delegate(
+        { ...caller, rootExecutionId: 'new' },
+        { task: 'fresh', name: 'fresh' },
+        { wait: false }
+      )
+    ).resolves.toMatchObject({ kind: 'receipts' })
+    await composition.root.stopAll()
+  })
+
   it('wakes the root through application context when a background child settles', async () => {
     vi.useFakeTimers()
     root = await mkdtemp(join(tmpdir(), 'delegated-production-settlement-wake-'))
@@ -742,7 +943,6 @@ describe('production delegated-work composition', () => {
   })
 
   it('batches three staggered children without overlapping Session wake continuations', async () => {
-    vi.useFakeTimers()
     root = await mkdtemp(join(tmpdir(), 'delegated-production-staggered-wake-'))
     const dispatch = vi.fn(async (request: DelegationSettlementDispatch) => {
       void request
@@ -767,8 +967,11 @@ describe('production delegated-work composition', () => {
       ],
       { wait: false }
     )
-    await expect.poll(() => harness.execution.controls()).toHaveLength(3)
+    // Child admission prepares real filesystem workspaces; its deadline is not the
+    // settlement debounce under test. Keep real timers until all children have started.
+    await expect.poll(() => harness.execution.controls(), { timeout: 10_000 }).toHaveLength(3)
     for (const { attemptId } of delegated.children) harness.execution.control(attemptId).accept()
+    vi.useFakeTimers()
     await harness.composition.root.rootTurnEnded?.({
       sessionId: harness.session.id,
       originatingPromptId: harness.caller.originMessageId,
@@ -925,7 +1128,10 @@ describe('production delegated-work composition', () => {
         if (finalSave !== 'no-quit') {
           if (finalSave !== 'conflict-without-work') {
             await prompt(harness.caller.originMessageId)
-            await expect.poll(() => harness.execution.controls()).toHaveLength(1)
+            // Launch prepares a real workspace; fake timers do not accelerate filesystem I/O.
+            await expect
+              .poll(() => harness.execution.controls(), { timeout: 10_000 })
+              .toHaveLength(1)
             harness.execution.control(receipts[0].attemptId).accept()
           }
           const app = Object.assign(new EventEmitter(), { exit: vi.fn() })
@@ -988,7 +1194,15 @@ describe('production delegated-work composition', () => {
           expect(sendAppContinuation).not.toHaveBeenCalled()
         }
         await prompt(nextPromptId)
-        await expect.poll(() => harness.execution.controls()).toHaveLength(receipts.length)
+        await expect
+          .poll(
+            async () => {
+              await vi.advanceTimersByTimeAsync(50)
+              return harness.execution.controls()
+            },
+            { timeout: 10_000 }
+          )
+          .toHaveLength(receipts.length)
         const child = receipts.at(-1)!
         harness.execution.control(child.attemptId).accept()
         harness.execution.control(child.attemptId).complete('new result')
@@ -1153,7 +1367,7 @@ describe('production delegated-work composition', () => {
       provenanceContext: { promptMessageId: harness.caller.originMessageId }
     })
     if (!staggered) throw new Error('Background model turn did not delegate children.')
-    await expect.poll(() => harness.execution.controls()).toHaveLength(4)
+    await expect.poll(() => harness.execution.controls(), { timeout: 10_000 }).toHaveLength(4)
     for (const child of staggered.children) harness.execution.control(child.attemptId).accept()
     let releaseAdmission!: () => void
     const admission = new Promise<void>((resolve) => {
@@ -1612,44 +1826,52 @@ describe('production delegated-work composition', () => {
   it('requires non-emoji names and persists caller-chosen unique names across production reopen', async () => {
     root = await mkdtemp(join(tmpdir(), 'delegated-production-naming-'))
     const harness = await createCompositionHarness(root, 'codex')
-    const task = `Trace sources\n${'full prompt detail '.repeat(20)}`
+    const compositions = [harness.composition]
+    try {
+      const task = `Trace sources\n${'full prompt detail '.repeat(20)}`
 
-    await expect(
-      harness.composition.host.delegate(harness.caller, { task } as never, { wait: false })
-    ).rejects.toMatchObject({ code: 'admission_rejection' })
-    await expect(
-      harness.composition.host.delegate(
-        { ...harness.caller, toolInvocationId: 'call-codex-emoji' },
-        { task, name: 'Trace sources 🧪' },
+      await expect(
+        harness.composition.host.delegate(harness.caller, { task } as never, { wait: false })
+      ).rejects.toMatchObject({ code: 'admission_rejection' })
+      await expect(
+        harness.composition.host.delegate(
+          { ...harness.caller, toolInvocationId: 'call-codex-emoji' },
+          { task, name: 'Trace sources 🧪' },
+          { wait: false }
+        )
+      ).rejects.toMatchObject({ code: 'admission_rejection' })
+      expect(harness.execution.reservationCounts()).toEqual([])
+      const first = await harness.composition.host.delegate(
+        { ...harness.caller, toolInvocationId: 'call-codex-named' },
+        { task, name: 'Source audit' },
         { wait: false }
       )
-    ).rejects.toMatchObject({ code: 'admission_rejection' })
-    expect(harness.execution.reservationCounts()).toEqual([])
-    const first = await harness.composition.host.delegate(
-      { ...harness.caller, toolInvocationId: 'call-codex-named' },
-      { task, name: 'Source audit' },
-      { wait: false }
-    )
-    const second = await harness
-      .reopen()
-      .host.delegate(
+      const reopened = harness.reopen()
+      compositions.push(reopened)
+      const second = await reopened.host.delegate(
         { ...harness.caller, toolInvocationId: 'call-codex-reopened' },
         { task, name: 'Source audit 2' },
         { wait: false }
       )
 
-    expect(first).toMatchObject({ kind: 'receipts', children: [{ name: 'Source audit' }] })
-    expect(second).toMatchObject({ kind: 'receipts', children: [{ name: 'Source audit 2' }] })
-    await expect(harness.reopen().host.children(harness.caller)).resolves.toMatchObject([
-      { name: 'Source audit' },
-      { name: 'Source audit 2' }
-    ])
-    expect(
-      harness
-        .durable()
-        .conversationGraph?.frames.filter(({ kind }) => kind === 'delegate')
-        .map(({ delegateName }) => delegateName)
-    ).toEqual(['Source audit', 'Source audit 2'])
+      expect(first).toMatchObject({ kind: 'receipts', children: [{ name: 'Source audit' }] })
+      expect(second).toMatchObject({ kind: 'receipts', children: [{ name: 'Source audit 2' }] })
+      const verification = harness.reopen()
+      compositions.push(verification)
+      await expect(verification.host.children(harness.caller)).resolves.toMatchObject([
+        { name: 'Source audit' },
+        { name: 'Source audit 2' }
+      ])
+      expect(
+        harness
+          .durable()
+          .conversationGraph?.frames.filter(({ kind }) => kind === 'delegate')
+          .map(({ delegateName }) => delegateName)
+      ).toEqual(['Source audit', 'Source audit 2'])
+    } finally {
+      // Reopened owners can still be recovering the wait:false children. Drain them before rm.
+      for (const composition of compositions) await composition.root.shutdown()
+    }
   })
 
   it('records the admitted cross-provider model on every child Runtime Segment', async () => {
@@ -1847,12 +2069,17 @@ describe('production delegated-work composition', () => {
         { wait: false }
       )
       if (dispatched.kind !== 'receipts') throw new Error('Question child was not dispatched.')
-      await expect.poll(() => harness.controls.size).toBe(1)
+      // Preparation and durable continuation writes can exceed the default 1s poll on Windows.
+      const waitOptions = { timeout: 10_000 }
+      await expect.poll(() => harness.controls.size, waitOptions).toBe(1)
       const source = [...harness.controls.values()][0]
       await source.askUser()
       await source.complete({ submit: false, text: 'Waiting for the user.' })
       await expect
-        .poll(() => harness.durable().runtimeContext?.delegatedWork?.questionRequests?.[0]?.status)
+        .poll(
+          () => harness.durable().runtimeContext?.delegatedWork?.questionRequests?.[0]?.status,
+          waitOptions
+        )
         .toBe('pending')
       const question = harness.durable().runtimeContext!.delegatedWork!.questionRequests![0]
 
@@ -1864,7 +2091,7 @@ describe('production delegated-work composition', () => {
         answers: [{ questionIndex: 0, value: 'Focused' }]
       })
 
-      await expect.poll(() => harness.controls.size).toBe(2)
+      await expect.poll(() => harness.controls.size, waitOptions).toBe(2)
       const continuation = [...harness.controls.values()].find(
         (control) => control.input.attemptId !== source.input.attemptId
       )!
@@ -1872,7 +2099,10 @@ describe('production delegated-work composition', () => {
       expect(continuation.input.task).toContain('Answer: Focused')
       await continuation.complete({ submit: false, text: 'Framework question continued.' })
       await expect
-        .poll(() => harness.durable().runtimeContext?.delegatedWork?.questionRequests?.[0]?.status)
+        .poll(
+          () => harness.durable().runtimeContext?.delegatedWork?.questionRequests?.[0]?.status,
+          waitOptions
+        )
         .toBe('confirmed')
       expect(
         harness
@@ -2268,6 +2498,31 @@ describe('production delegated-work composition', () => {
     ).resolves.toMatchObject([{ status: 'running' }])
   })
 
+  it.each([undefined, 'none'] as const)(
+    'captures permission prompts %s before asynchronous admission',
+    async (initialPolicy) => {
+      root = await mkdtemp(join(tmpdir(), 'delegated-production-policy-'))
+      let currentPolicy = initialPolicy
+      const resolvePermissionPrompts = vi.fn(() => currentPolicy)
+      const harness = await createCompositionHarness(root, 'opencode', undefined, undefined, {
+        resolvePermissionPrompts
+      })
+      const pending = harness.composition.host.delegate(
+        harness.caller,
+        { task: 'Check the cohort', name: 'Cohort' },
+        { wait: false }
+      )
+      // A finished root prompt or a later prompt must not alter the admitted execution.
+      currentPolicy = initialPolicy === 'none' ? undefined : 'none'
+      await pending
+      await vi.waitFor(() => expect(harness.execution.controls()).toHaveLength(1))
+      expect(harness.execution.controls()[0].input.permissionPrompts).toBe(initialPolicy)
+      expect(resolvePermissionPrompts).toHaveBeenCalledOnce()
+      expect(JSON.stringify(harness.durable())).not.toContain('permissionPrompts')
+      await harness.composition.root.stopSession(harness.session.id)
+    }
+  )
+
   it('runs authenticated Host delegation through durable Session records and a staged Frame cwd', async () => {
     root = await mkdtemp(join(tmpdir(), 'delegated-production-composition-'))
     const rootMessage = {
@@ -2316,6 +2571,7 @@ describe('production delegated-work composition', () => {
       assertSessionIdentityOwnership: async () => undefined,
       saveSession: async (next) => {
         durable = structuredClone(next)
+        return structuredClone(durable)
       },
       saveCommittedProjectSession: async () => undefined,
       deleteSession: async () => undefined,
@@ -2440,6 +2696,9 @@ describe('production delegated-work composition', () => {
       awaiting: true,
       requestId: 'provider-permission-1',
       title: 'Read evidence',
+      providerToolName: 'WebFetch',
+      isMcp: false,
+      toolKind: 'fetch',
       options: [
         { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once', scope: 'once' },
         { optionId: 'allow', name: 'This session', kind: 'allow_always', scope: 'session' },
@@ -2450,6 +2709,9 @@ describe('production delegated-work composition', () => {
     const projected = harness.composition.root.pendingPermissions()[0]
     expect(projected).toMatchObject({
       sessionId: harness.session.id,
+      providerToolName: 'WebFetch',
+      isMcp: false,
+      toolKind: 'fetch',
       delegated: {
         frameId: receipt.children[0].frameId,
         attemptId: receipt.children[0].attemptId,
@@ -2822,11 +3084,84 @@ describe('production delegated-work composition', () => {
     expect(projectRootArtifactVisibility(durable, rootBranch.id)).toMatchObject({ placements: [] })
   })
 
+  it('preserves finalized delegated Artifact facts when Session attachment is unconfirmed', async () => {
+    const artifact: ArtifactFile = {
+      id: 'version-committed',
+      versionId: 'version-committed',
+      artifactId: 'artifact-committed',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      runId: 'run-1',
+      messageId: 'message-1',
+      name: 'result.txt',
+      path: '/managed/result.txt',
+      fileUrl: 'file:///managed/result.txt',
+      size: 1,
+      mtimeMs: 1
+    }
+    const failure = await finalizeDelegatedArtifactPublication({
+      publication: {
+        appSessionId: 'session-1',
+        artifactStorageSessionId: 'session-1',
+        runId: 'run-1',
+        promptMessageId: 'prompt-1',
+        artifactClaimId: 'claim-1',
+        artifacts: [artifact]
+      },
+      terminalMessageId: 'message-1',
+      scope: {
+        session: { projectId: 'project-1', sessionId: 'session-1' },
+        executionId: 'attempt-1',
+        attemptId: 'attempt-1',
+        rootFrameId: 'root-frame',
+        agentFrameId: 'agent-frame',
+        messageBranchId: 'branch-1',
+        runtimeSegmentId: 'runtime-1',
+        promptMessageId: 'prompt-1',
+        agentName: 'delegate'
+      },
+      commands: {
+        attachDelegatedMessageArtifacts: async () => {
+          throw new Error('SECRET_TOKEN=attachment-secret')
+        }
+      } as unknown as DelegatedWorkRecordCommands,
+      handlers: { finalizeRunArtifacts: async () => [artifact] }
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    )
+
+    expect(failure).toBeInstanceOf(DelegatedArtifactPublicationError)
+    expect(failure).toMatchObject({
+      committed: {
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        runId: 'run-1',
+        messageId: 'message-1',
+        artifactVersionIds: ['version-committed'],
+        artifactFinalization: 'committed',
+        sessionAttachment: 'unconfirmed',
+        artifacts: [artifact]
+      }
+    })
+    expect((failure as Error).message).not.toContain('attachment-secret')
+  })
+
   it('publishes a child frame Notebook file through the Artifact write boundary and projects its Version', async () => {
     root = await mkdtemp(join(tmpdir(), 'delegated-production-notebook-artifacts-'))
     const client = createProjectDbClient(root)
     disconnect = () => client.$disconnect()
-    await migrateApplicationDatabase(client)
+    const migrationStartedAt = Date.now()
+    await migrateApplicationDatabase(client, {
+      onProgress: (progress) =>
+        console.info('Child Notebook artifact fixture migration', {
+          ...progress,
+          elapsedMs: Date.now() - migrationStartedAt
+        })
+    })
+    console.info('Child Notebook artifact fixture migration completed', {
+      elapsedMs: Date.now() - migrationStartedAt
+    })
     const artifactRepository = new ArtifactRepository(root)
     const artifactMcpRepository = new ArtifactRepository(root)
     const artifactRunRegistry = new ArtifactRunRegistry()
@@ -2841,14 +3176,7 @@ describe('production delegated-work composition', () => {
     })
     server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
       transport: 'tcp',
-      artifactProvenance: {
-        createVersion: (request, signal) => provenance.createVersion(request, signal),
-        replayVersion: (request) => provenance.replayVersion(request),
-        reserveWrite: (request) => provenance.reserveWrite(request),
-        releaseWriteReservation: (request) => provenance.releaseWriteReservation(request),
-        releaseRunWriteReservations: (request) => provenance.releaseRunWriteReservations(request),
-        releaseAllWriteReservations: () => provenance.releaseAllWriteReservations()
-      }
+      artifactProvenance: provenance
     })
     const connection = await server.ensureStarted()
     const turns = new ArtifactTurnOwner({
@@ -3020,7 +3348,9 @@ describe('production delegated-work composition', () => {
         }
       ]
     })
-  })
+    // This scenario migrates a real SQLite database. Match the existing provenance/database
+    // suites' budget on hosted Windows; a 30s test timeout can leave migration running during rm.
+  }, 120_000)
 
   it('keeps running and continued production Turns independently owned across a late reload', async () => {
     root = await mkdtemp(join(tmpdir(), 'delegated-production-artifacts-'))
@@ -3419,6 +3749,128 @@ describe('production delegated-work composition', () => {
     ).toBe('accepted')
   })
 
+  it('pre-admits another upward lane while the first parent delivery is settling', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-parent-admission-fairness-'))
+    const deliveries: string[] = []
+    const releases = new Map<string, () => void>()
+    const harness = await createCompositionHarness(root, 'opencode', undefined, undefined, {
+      parentMessages: {
+        deliver: async (delivery) => {
+          deliveries.push(delivery.messageId)
+          delivery.onRootAdmissionQueued?.()
+          await delivery.startDispatch()
+          await new Promise<void>((resolve) => releases.set(delivery.messageId, resolve))
+          return 'provider_prompt_accepted'
+        }
+      }
+    })
+    const delegated = await harness.composition.host.delegate(
+      harness.caller,
+      [
+        { task: 'Ask the parent from lane A', name: 'Ask the parent from lane A' },
+        { task: 'Ask the parent from lane B', name: 'Ask the parent from lane B' }
+      ],
+      { wait: false }
+    )
+    await expect.poll(() => harness.execution.controls()).toHaveLength(2)
+    for (const control of harness.execution.controls()) control.accept()
+
+    const send = (
+      child: (typeof delegated.children)[number],
+      requestId: string
+    ): ReturnType<typeof harness.composition.host.sendMessage> =>
+      harness.composition.host.sendMessage(
+        {
+          ...harness.caller,
+          frameId: child.frameId,
+          attemptId: child.attemptId,
+          role: 'delegate',
+          toolInvocationId: requestId
+        },
+        'parent',
+        requestId
+      )
+
+    const first = await send(delegated.children[0], 'parent-admission-fairness-a')
+    const second = await send(delegated.children[1], 'parent-admission-fairness-b')
+    await expect.poll(() => deliveries).toHaveLength(2)
+    await expect.poll(() => releases.size).toBe(2)
+    releases.get(first.message_id)!()
+    releases.get(second.message_id)!()
+    await expect.poll(() => deliveries).toHaveLength(2)
+    await expect
+      .poll(() =>
+        harness
+          .durable()
+          .runtimeContext?.delegatedWork?.messageCommands?.filter(({ requestId }) =>
+            requestId.startsWith('parent-admission-fairness-')
+          )
+          .map(({ receipt }) => receipt.status)
+          .sort()
+      )
+      .toEqual(['accepted', 'accepted'])
+  })
+
+  it('retries an upward lane when a wake arrives during a parked dispatch', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-parent-wake-race-'))
+    let releaseFirst!: () => void
+    const firstParked = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    let attempts = 0
+    const deliveries: string[] = []
+    const harness = await createCompositionHarness(root, 'opencode', undefined, undefined, {
+      parentMessages: {
+        deliver: async (delivery): Promise<'provider_prompt_accepted'> => {
+          if (attempts++ === 0) {
+            await firstParked
+            throw new DelegateMessageParkedError('root admission is still settling')
+          }
+          await delivery.startDispatch()
+          deliveries.push(delivery.messageId)
+          return 'provider_prompt_accepted'
+        }
+      }
+    })
+    const delegated = await harness.composition.host.delegate(
+      harness.caller,
+      [
+        { task: 'Ask the parent from lane A', name: 'Ask the parent from lane A' },
+        { task: 'Ask the parent from lane B', name: 'Ask the parent from lane B' }
+      ],
+      { wait: false }
+    )
+    await expect.poll(() => harness.execution.controls()).toHaveLength(2)
+    for (const control of harness.execution.controls()) control.accept()
+
+    const send = (
+      child: (typeof delegated.children)[number],
+      requestId: string
+    ): ReturnType<typeof harness.composition.host.sendMessage> =>
+      harness.composition.host.sendMessage(
+        {
+          ...harness.caller,
+          frameId: child.frameId,
+          attemptId: child.attemptId,
+          role: 'delegate',
+          toolInvocationId: requestId
+        },
+        'parent',
+        requestId
+      )
+    const first = await send(delegated.children[0], 'parent-wake-race-a')
+    const second = await send(delegated.children[1], 'parent-wake-race-b')
+    await expect.poll(() => attempts).toBe(1)
+
+    const wake = harness.composition.root.wakeMessages?.(harness.session.id)
+    releaseFirst()
+    await wake
+    await expect
+      .poll(() => deliveries)
+      .toEqual(expect.arrayContaining([first.message_id, second.message_id]))
+    expect(deliveries).toHaveLength(2)
+  })
+
   it('discovers a durable queued parent message when a cold composition is woken after restart', async () => {
     root = await mkdtemp(join(tmpdir(), 'delegated-production-parent-restart-wake-'))
     let branchActive = false
@@ -3812,3 +4264,174 @@ describe('reported production admission Stop regression', () => {
     await harness.composition.root.stopSession(harness.session.id)
   })
 })
+
+describe('unreaped delegated execution lifecycle', () => {
+  it('delivers completed work and presents an idle Session while cleanup remains protected', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-completed-cleanup-'))
+    const execution = createDeterministicDelegateExecution()
+    const run = execution.run
+    vi.spyOn(execution, 'run').mockImplementation((...args) => {
+      const running = run(...args)
+      return {
+        ...running,
+        completion: running.completion.then((outcome) => ({
+          ...outcome,
+          cleanupError: new DelegateExecutionCleanupError('process cleanup remains unconfirmed')
+        }))
+      }
+    })
+    const harness = await createCompositionHarness(root, 'codex', execution)
+    const receipt = await harness.composition.host.delegate(
+      harness.caller,
+      { task: 'Publish final result', name: 'Figure' },
+      { wait: false }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    expect(buildSessionProjection(harness.durable()).summary.presentedStatus).toBe('running')
+    execution.controls()[0].accept()
+    execution.controls()[0].complete('Published result')
+    await expect(
+      harness.composition.host.collect(harness.caller, [receipt.children[0].frameId])
+    ).resolves.toMatchObject([{ status: 'completed', response: 'Published result' }])
+    expect(buildSessionProjection(harness.durable()).summary.presentedStatus).toBe('idle')
+    await expect(harness.composition.root.deleteSession(harness.session.id)).rejects.toThrow()
+    expect(buildSessionProjection(harness.durable()).summary.presentedStatus).toBe('idle')
+    await expect(
+      harness.composition.host.collect(harness.caller, [receipt.children[0].frameId])
+    ).resolves.toMatchObject([{ status: 'completed', response: 'Published result' }])
+  })
+
+  it.each([
+    'deleteSession',
+    'deleteProject',
+    'shutdown',
+    'stopAll',
+    'shutdownForQuit',
+    'shutdownForUpdateGate'
+  ] as const)(
+    'keeps the cleanup failure visible to %s after terminal history is written',
+    async (operation) => {
+      root = await mkdtemp(join(tmpdir(), 'delegated-unreaped-lifecycle-'))
+      const harness = await createCompositionHarness(root, 'codex')
+      const receipt = await harness.composition.host.delegate(
+        harness.caller,
+        { task: 'Retain process-owned evidence', name: 'Retain evidence' },
+        { wait: false }
+      )
+      await expect.poll(() => harness.execution.controls()).toHaveLength(1)
+      const control = harness.execution.controls()[0]
+      control.accept()
+      control.fail(new DelegateExecutionCleanupError('process cleanup could not be confirmed'))
+      await expect(
+        harness.composition.host.collect(harness.caller, [receipt.children[0].frameId])
+      ).resolves.toMatchObject([{ status: 'error' }])
+      const workspace = join(root, 'delegation', harness.session.projectId, harness.session.id)
+      const evidence = join(workspace, 'keep.txt')
+      await writeFile(evidence, 'process-owned evidence')
+      const snapshot: AcpStateSnapshot = {
+        status: 'closed',
+        cwd: root,
+        sessionIds: [],
+        events: [],
+        pendingPermissions: [],
+        permissionProfiles: {},
+        permissionGrants: {},
+        contextUsageBySession: {},
+        promptInFlight: false,
+        promptInFlightSessionIds: []
+      }
+      const runtime = {
+        getState: () => snapshot,
+        getSnapshot: () => snapshot,
+        shutdownForQuit: async () => ({ reaped: true }),
+        shutdownForUpdateGate: async () => ({ reaped: true })
+      } as unknown as AcpRuntime
+      const coordinator = new AcpRuntimeCoordinator(
+        () => runtime,
+        {},
+        '',
+        undefined,
+        undefined,
+        undefined,
+        {},
+        undefined,
+        harness.composition.root
+      )
+      const run = (): Promise<void | { reaped: boolean }> =>
+        operation === 'shutdownForQuit' || operation === 'shutdownForUpdateGate'
+          ? coordinator[operation]()
+          : operation === 'deleteSession'
+            ? harness.composition.root.deleteSession(harness.session.id)
+            : operation === 'deleteProject'
+              ? harness.composition.root.deleteProject(harness.session.projectId)
+              : harness.composition.root[operation]()
+      // Global quit/update operations suppress cleanup-pending errors and resolve successfully,
+      // but workspace evidence is preserved because the receipt remains quarantined.
+      if (operation === 'shutdownForQuit' || operation === 'shutdownForUpdateGate') {
+        await expect.soft(run()).resolves.toEqual({ reaped: true })
+        await expect.soft(readFile(evidence, 'utf8')).resolves.toBe('process-owned evidence')
+        // Retrying must still preserve the quarantined owner.
+        await expect.soft(run()).resolves.toEqual({ reaped: true })
+        await expect.soft(readFile(evidence, 'utf8')).resolves.toBe('process-owned evidence')
+      } else {
+        // Other operations (stopAll, deleteSession, deleteProject) still reject on cleanup failures.
+        await expect.soft(run()).rejects.toThrow()
+        await expect.soft(readFile(evidence, 'utf8')).resolves.toBe('process-owned evidence')
+        // Retrying a lifecycle operation must not forget the quarantined owner.
+        await expect.soft(run()).rejects.toThrow()
+        await expect.soft(readFile(evidence, 'utf8')).resolves.toBe('process-owned evidence')
+      }
+    }
+  )
+})
+
+it.each(
+  (['deleteSession', 'deleteProject'] as const).flatMap((operation) =>
+    [0, 1200].map((startupDelayMs) => ({ operation, startupDelayMs }))
+  )
+)(
+  'retains unreaped workspace evidence after reopening composition before $operation (startup delay: $startupDelayMs ms)',
+  async ({ operation, startupDelayMs }) => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-unreaped-reopen-'))
+    const harness = await createCompositionHarness(root, 'codex')
+    if (startupDelayMs > 0) {
+      // Exercise startup beyond expect.poll's default 1 s budget, as on a busy Windows runner.
+      const startAttemptRuntime = harness.commands.startAttemptRuntime.bind(harness.commands)
+      vi.spyOn(harness.commands, 'startAttemptRuntime').mockImplementation(async (...args) => {
+        await new Promise((resolve) => setTimeout(resolve, startupDelayMs))
+        return startAttemptRuntime(...args)
+      })
+    }
+    const executionStarted = Promise.withResolvers<void>()
+    const run = harness.execution.run.bind(harness.execution)
+    vi.spyOn(harness.execution, 'run').mockImplementation((...args) => {
+      const handle = run(...args)
+      executionStarted.resolve()
+      return handle
+    })
+    const receipt = await harness.composition.host.delegate(
+      harness.caller,
+      { task: 'Retain evidence', name: 'Retain evidence' },
+      { wait: false }
+    )
+    // Synchronize with execution readiness; the enclosing test timeout still bounds a failed start.
+    await executionStarted.promise
+    expect(harness.execution.controls()).toHaveLength(1)
+    const control = harness.execution.controls()[0]
+    control.accept()
+    control.fail(new DelegateExecutionCleanupError('process cleanup could not be confirmed'))
+    await expect(
+      harness.composition.host.collect(harness.caller, [receipt.children[0].frameId])
+    ).resolves.toMatchObject([{ status: 'error' }])
+    const workspace = join(root, 'delegation', harness.session.projectId, harness.session.id)
+    const evidence = join(workspace, 'keep.txt')
+    await writeFile(evidence, 'process-owned evidence')
+    const reopened = harness.reopen()
+    const deletion =
+      operation === 'deleteSession'
+        ? reopened.root.deleteSession(harness.session.id)
+        : reopened.root.deleteProject(harness.session.projectId)
+    await expect.soft(deletion).rejects.toThrow()
+    await expect.soft(readFile(evidence, 'utf8')).resolves.toBe('process-owned evidence')
+  }
+)

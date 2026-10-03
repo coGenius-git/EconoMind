@@ -150,6 +150,29 @@ describe('preview persistence projections', () => {
     expect(persisted.items[0]).not.toHaveProperty('type')
   })
 
+  it('does not persist the Library tool tab or its active identity', () => {
+    usePreviewWorkbenchStore.setState({
+      panelState: 'open',
+      activeItemId: 'tool:project:library',
+      items: [
+        {
+          type: 'tool',
+          sessionId: '__project_library__',
+          createdAt: 1,
+          updatedAt: 2,
+          id: 'tool:project:library',
+          toolKind: 'library',
+          title: 'Library',
+          libraryScopeRequest: { section: 'inbox' }
+        }
+      ]
+    })
+    const persisted = toPersistedPreviewState(usePreviewWorkbenchStore.getState())
+    expect(persisted.items).toEqual([])
+    expect(persisted.activeItemId).toBeUndefined()
+    expect(persisted.version).toBe(PREVIEW_STATE_VERSION)
+  })
+
   it('keeps source preview URLs and identifiers out of the durable projection', () => {
     usePreviewWorkbenchStore.setState({
       panelState: 'open',
@@ -273,6 +296,7 @@ describe('preview persistence projections', () => {
           artifactId: 'artifact-1',
           managedFileId: 'managed-file-1',
           selectedVersionId: 'artifact-version-2',
+          fileViewState: { provenanceOpen: true, provenanceTab: 'reproducibility' },
           versionNumber: 2,
           originSession: {
             state: 'deleted',
@@ -283,7 +307,9 @@ describe('preview persistence projections', () => {
       ]
     })
 
-    const restored = toRestoredSlice(toPersistedPreviewState(usePreviewWorkbenchStore.getState()))
+    const persisted = toPersistedPreviewState(usePreviewWorkbenchStore.getState())
+    expect(persisted.items[0]).not.toHaveProperty('fileViewState')
+    const restored = toRestoredSlice(persisted)
 
     expect(restored.items?.[0]).toMatchObject({
       size: 4096,
@@ -298,6 +324,36 @@ describe('preview persistence projections', () => {
         deletedAt: '2026-07-28T12:00:00.000Z'
       }
     })
+  })
+
+  it('migrates historical Literature preview ids to immutable version ids', () => {
+    const restored = toRestoredSlice({
+      version: PREVIEW_STATE_VERSION,
+      panelState: 'open',
+      activeItemId: 'literature:attachment-1',
+      items: [
+        {
+          id: 'literature:attachment-1',
+          sessionId: '__literature__',
+          title: 'paper.pdf',
+          source: 'literature',
+          path: 'literature-attachment-version:version-1',
+          format: 'pdf',
+          name: 'paper.pdf',
+          managedFileId: 'attachment-1',
+          selectedVersionId: 'version-1'
+        }
+      ]
+    })
+
+    expect(restored.activeItemId).toBe('literature:version-1')
+    expect(restored.items).toEqual([
+      expect.objectContaining({
+        id: 'literature:version-1',
+        managedFileId: 'attachment-1',
+        selectedVersionId: 'version-1'
+      })
+    ])
   })
 
   it('recovers managed identity from a persisted authoritative artifact id', () => {
@@ -1122,6 +1178,52 @@ describe('usePreviewPersistence per-project save/restore', () => {
     await flushPreviewPersistence()
 
     expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ expectedRevision: 11 }))
+  })
+
+  it('does not resurrect a remotely closed Literature tab after restoring a legacy id', async () => {
+    const legacyLiteratureState: PersistedPreviewState = {
+      version: PREVIEW_STATE_VERSION,
+      panelState: 'open',
+      activeItemId: 'literature:attachment-1',
+      items: [
+        {
+          id: 'literature:attachment-1',
+          sessionId: '__literature__',
+          title: 'paper.pdf',
+          source: 'literature',
+          path: 'literature-attachment-version:version-1',
+          format: 'pdf',
+          name: 'paper.pdf',
+          managedFileId: 'attachment-1',
+          selectedVersionId: 'version-1'
+        }
+      ]
+    }
+    load.mockResolvedValueOnce({ state: legacyLiteratureState, revision: 7 })
+
+    await act(async () => {
+      root.render(<PersistenceHarness projectId="project-a" />)
+    })
+    await flushPreviewPersistence()
+    expect(usePreviewWorkbenchStore.getState().items[0]?.id).toBe('literature:version-1')
+
+    save.mockClear()
+    save.mockResolvedValueOnce({
+      status: 'conflict',
+      snapshot: {
+        revision: 8,
+        state: {
+          version: PREVIEW_STATE_VERSION,
+          panelState: 'collapsed',
+          items: []
+        }
+      }
+    })
+    act(() => usePreviewWorkbenchStore.getState().collapsePanel())
+    await flushPreviewPersistence()
+
+    expect(save.mock.calls[1]?.[0].state.items).toEqual([])
+    expect(usePreviewWorkbenchStore.getState().items).toEqual([])
   })
 
   it('rebases a user change queued after the conflicting snapshot', async () => {

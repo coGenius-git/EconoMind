@@ -158,7 +158,7 @@ describe('ComputePanel i18n', () => {
 
     switchTo('zh-Hans')
 
-    const primary = container.querySelector('.text-destructive')
+    const primary = container.querySelector('[role="alert"] p')
     expect(primary?.textContent).toBe('无法加载主机。')
     expect(primary?.textContent).not.toContain('/private/data/compute.db')
     const details = container.querySelector('details')
@@ -291,18 +291,18 @@ describe('ComputeApprovalDialog i18n', () => {
 
     expect(document.body.textContent).toContain('Allow remote command?')
     expect(findBodyButton('Deny')).toBeDefined()
-    expect(findBodyButton('This session')).toBeDefined()
+    expect(findBodyButton('Allow for this conversation')).toBeDefined()
 
     switchTo('zh-Hans')
     expect(document.body.textContent).toContain('允许执行远程命令？')
     expect(document.body.textContent).not.toContain('Allow remote command?')
     expect(findBodyButton('拒绝')).toBeDefined()
-    expect(findBodyButton('此会话')).toBeDefined()
+    expect(findBodyButton('允许此对话')).toBeDefined()
 
     switchTo('zh-Hant')
     expect(document.body.textContent).toContain('允許執行遠端指令？')
     expect(findBodyButton('拒絕')).toBeDefined()
-    expect(findBodyButton('此工作階段')).toBeDefined()
+    expect(findBodyButton('允許此對話')).toBeDefined()
     expect(document.body.textContent).not.toContain('{{')
 
     // provider_name, intent and the command preview come from the agent, not the catalog.

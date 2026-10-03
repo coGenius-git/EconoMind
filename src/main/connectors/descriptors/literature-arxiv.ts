@@ -1,3 +1,5 @@
+// Modified by EconoMind contributors: deduplicate model-facing tool documentation.
+// Based on AIPOCH Open Science; see LICENSE and NOTICE.
 import { DOMParser } from '@xmldom/xmldom'
 import type { ToolDescriptor } from '../types'
 
@@ -162,7 +164,7 @@ export const ARXIV_LITERATURE_TOOLS: ToolDescriptor[] = [
     id: 'arxiv_search',
     connector: 'literature',
     description:
-      "Search arXiv preprints (physics, math, CS, stats, q-bio, ...) via the official Atom API. Args: query (arXiv query string; plain terms search all fields, field prefixes ti:/au:/abs: and booleans AND/OR/ANDNOT work; optional if category or a date range is set), category (arXiv code AND-ed in, e.g. q-bio.GN, cs.LG, stat.ML), date_from / date_to (submission date YYYY-MM-DD, inclusive), start (0-based paging offset; the API paces ~3s between requests — page politely), max_results (default 25, max 100 per call), sort_by (relevance default / submittedDate / lastUpdatedDate), sort_order (descending default / ascending). Returns {search_query (the exact query sent), api_total (arXiv's total match count), start_index, n_records_returned, records_truncated, sort_by, sort_order, records}; each record {arxiv_id, version, id_versioned, title, abstract, authors, published, updated, primary_category, categories, doi, journal_ref, comment, abs_url, pdf_url}. doi/journal_ref appear only after journal publication. Malformed queries raise an error (arXiv's HTTP-200 error feed is detected, never returned as data).",
+      'Atom preprints: query/category/date required. query: all-field terms, ti:/au:/abs:, AND/OR/ANDNOT; category AND-ed. Dates: inclusive submission YYYY-MM-DD; start: 0-based. max_results cap 100; pace ~3s/request. Bad queries/HTTP-200 error feeds raise errors. doi/journal_ref may be absent until publication.',
     input: {
       type: 'object',
       properties: {
@@ -183,7 +185,7 @@ export const ARXIV_LITERATURE_TOOLS: ToolDescriptor[] = [
     },
     required: [],
     returns:
-      '`{ search_query, api_total, start_index, n_records_returned, records_truncated, sort_by, sort_order, records: [ { arxiv_id, version, id_versioned, title, abstract, authors, published, updated, primary_category, categories, doi, journal_ref, comment, abs_url, pdf_url } ] }` — `records_truncated` flags more matches beyond this page; `records` is `[]` when nothing matches.',
+      '{search_query (exact),api_total,start_index,n_records_returned,records_truncated (more beyond page),sort_by,sort_order,records:[ArxivRecord]}; no matches: records=[]. ArxivRecord={arxiv_id,version,id_versioned,title,abstract,authors,published,updated,primary_category,categories,doi,journal_ref,comment,abs_url,pdf_url}.',
     example:
       'const result = await host.mcp("literature", "arxiv_search", {"query": "ti:transformer", "category": "cs.LG", "max_results": 10})',
     run: async (ctx, a) => {
@@ -234,7 +236,7 @@ export const ARXIV_LITERATURE_TOOLS: ToolDescriptor[] = [
     id: 'arxiv_get_papers',
     connector: 'literature',
     description:
-      'Batch-fetch arXiv paper metadata (incl. abstracts) by ID — one paced request for up to 100 papers. Args: arxiv_ids (up to 100 IDs in any common form — 2103.14030, versioned 2103.14030v2, old-style q-bio/0601001, arXiv:-prefixed, or abs/pdf URLs; unversioned IDs resolve to the latest version). Returns {n_requested, n_found, duplicates (inputs that resolved to an already-returned paper), not_found (unknown AND malformed IDs — arXiv silently skips unknowns and rejects whole batches over malformed ones; this tool does neither), records} — records in requested order, same shape as arxiv_search records. Withdrawn papers still return metadata (check comment for withdrawal notes).',
+      'Metadata/abstracts: one paced request, max 100 IDs. Accepts 2103.14030, v2 suffix, q-bio/0601001, arXiv: prefix, abs/pdf URLs; unversioned=latest. Withdrawn papers retain metadata; check comment.',
     input: {
       type: 'object',
       properties: {
@@ -244,7 +246,7 @@ export const ARXIV_LITERATURE_TOOLS: ToolDescriptor[] = [
     },
     required: ['arxiv_ids'],
     returns:
-      '`{ n_requested, n_found, duplicates: [str], not_found: [str], records: [ ...same shape as arxiv_search records ] }` — `records` in requested (deduped) order; `not_found` lists requested ids with no matching record.',
+      '{n_requested,n_found,duplicates:[str] (same base paper),not_found:[str] (unknown or malformed IDs),records:[ArxivRecord] (deduplicated input order, shape above)}.',
     example:
       'const result = await host.mcp("literature", "arxiv_get_papers", {"arxiv_ids": ["2103.14030", "1706.03762v5"]})',
     run: async (ctx, a) => {

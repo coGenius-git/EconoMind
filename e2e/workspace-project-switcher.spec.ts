@@ -1,5 +1,6 @@
 import { expect } from '@playwright/test'
 import type { Page } from 'playwright'
+
 import { test } from './fixtures/electron-app'
 
 const createProject = async (

@@ -57,7 +57,7 @@ export type ApplicationRuntime<Interfaces> = {
 
 export type ApplicationSurfaceShutdown = {
   disposeApplicationRuntime(): Awaitable<void>
-  shutdownRemoteAccess(): Awaitable<void>
+
   disposeWebController(): Awaitable<void>
   disposeIpcHandlers(): Awaitable<void>
   log?: Pick<Logger, 'error'>
@@ -65,20 +65,16 @@ export type ApplicationSurfaceShutdown = {
 
 export type ApplicationLifecycleShutdownDependencies = {
   disposeApplicationRuntime: ApplicationSurfaceShutdown['disposeApplicationRuntime']
-  remoteAccess?: { shutdown(): Awaitable<void> }
+
   webController: { dispose(): Awaitable<void> }
   disposeIpcHandlers: ApplicationSurfaceShutdown['disposeIpcHandlers']
   log?: ApplicationSurfaceShutdown['log']
 }
 
-// Direct Web/Task adapters close before the application command router, which in turn closes before
-// its underlying RemoteAccess owner. Closing Web first can publish RemoteAccess's stopped state, but
-// this path runs only while the app is quitting. Phase caps preserve the runtime's configured backend
-// budget and reserve time for RemoteAccess/IPC under one absolute deadline. A failed surface still
-// cannot strand a later one before app.exit().
+// Close Web/Task adapters, then application owners and IPC under one bounded deadline.
 export const shutdownApplicationSurfaces = async ({
   disposeApplicationRuntime,
-  shutdownRemoteAccess,
+
   disposeWebController,
   disposeIpcHandlers,
   log
@@ -155,7 +151,7 @@ export const shutdownApplicationSurfaces = async ({
   const surfaces: ReadonlyArray<readonly [string, () => Awaitable<void>, number]> = [
     ['web-controller', disposeWebController, APPLICATION_WEB_SHUTDOWN_BUDGET_MS],
     ['application-runtime', disposeApplicationRuntime, APPLICATION_RUNTIME_SHUTDOWN_BUDGET_MS],
-    ['remote-access', shutdownRemoteAccess, APPLICATION_FINAL_SURFACE_SHUTDOWN_BUDGET_MS],
+
     ['ipc-handlers', disposeIpcHandlers, APPLICATION_FINAL_SURFACE_SHUTDOWN_BUDGET_MS]
   ]
   const shutdownDeadline = Date.now() + APPLICATION_SURFACE_SHUTDOWN_BUDGET_MS
@@ -170,7 +166,7 @@ export const shutdownApplicationSurfaces = async ({
 // prevents index wiring from falling back to surface-only cleanup and orphaning backend ownership.
 export const createApplicationLifecycleShutdown = ({
   disposeApplicationRuntime,
-  remoteAccess,
+
   webController,
   disposeIpcHandlers,
   log
@@ -179,7 +175,7 @@ export const createApplicationLifecycleShutdown = ({
   return () => {
     shutdownPromise ??= shutdownApplicationSurfaces({
       disposeApplicationRuntime,
-      shutdownRemoteAccess: () => remoteAccess?.shutdown(),
+
       disposeWebController: () => webController.dispose(),
       disposeIpcHandlers,
       log

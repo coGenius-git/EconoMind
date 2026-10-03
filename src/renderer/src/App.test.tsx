@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-import { act, type ReactNode } from 'react'
+import { act, useImperativeHandle, type ReactNode, type Ref } from 'react'
+import type { SettingsPageHandle } from './pages/settings/SettingsPage'
 import { createRoot, type Root } from 'react-dom/client'
+import { WindowsTitleBar } from '@/components/WindowsTitleBar'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createLinearConversationGraph } from '../../shared/conversation-graph'
@@ -33,9 +35,15 @@ const mocks = vi.hoisted(() => {
       load: vi.fn().mockResolvedValue(true),
       checkEnvironment: vi.fn().mockResolvedValue(undefined),
       openSettings: vi.fn(),
+      openSettingsToPanel: vi.fn(),
       closeSettings: vi.fn()
     },
-    skillImport: { enqueue: vi.fn(), dismiss: vi.fn(), pending: [] as unknown[] },
+    skillImport: {
+      enqueue: vi.fn(),
+      dismiss: vi.fn(),
+      pending: [] as unknown[],
+      closedIds: [] as string[]
+    },
     compute: {
       enqueueApproval: vi.fn(),
       dismissApproval: vi.fn(),
@@ -79,6 +87,7 @@ const mocks = vi.hoisted(() => {
     })),
     initUpdates: vi.fn(),
     openSessionById: vi.fn(),
+    requestSettingsLeave: vi.fn((leave: () => void) => leave()),
     notificationNudgeBox,
     notifications: {
       onOpenSession: vi.fn((listener: () => void) => {
@@ -132,11 +141,16 @@ const mocks = vi.hoisted(() => {
     getStatus: vi.fn(),
     getInfo: vi.fn(),
     onboarding: {
+      pending: undefined as Promise<void> | undefined,
       props: undefined as { loadStorageInfo: () => Promise<unknown> } | undefined
     },
     syncWindowFindAppearance: vi.fn(),
     syncUnreadTaskView: vi.fn(),
-    globalSearch: { props: undefined as { open: boolean } | undefined },
+    globalSearch: {
+      props: undefined as
+        | { open: boolean; isSessionPersistenceReady: boolean; onOpenRecovery?: () => void }
+        | undefined
+    },
     literaturePage: { renderCount: 0 },
     homePage: { props: undefined as { onOpenGlobalSearch: () => void } | undefined },
     closeActiveModal: {
@@ -144,6 +158,8 @@ const mocks = vi.hoisted(() => {
     },
     sideChatParentSessionIds: new Set<string>(),
     presentationProps: {
+      settings: undefined as
+        { sessionLoadError?: string; onRetryCatalogRecovery?: () => void } | undefined,
       closeConfirmation: undefined as { active?: boolean } | undefined,
       update: undefined as { active?: boolean } | undefined,
       computeApproval: undefined as { active?: boolean } | undefined,
@@ -185,7 +201,11 @@ vi.mock('@/hooks/useUnreadTaskViewSync', () => ({
   useUnreadTaskViewSync: mocks.syncUnreadTaskView
 }))
 vi.mock('@/components/global-search/GlobalSearchDialog', () => ({
-  GlobalSearchDialog: (props: { open: boolean }) => {
+  GlobalSearchDialog: (props: {
+    open: boolean
+    isSessionPersistenceReady: boolean
+    onOpenRecovery?: () => void
+  }) => {
     mocks.globalSearch.props = props
     return <div data-testid="global-search" />
   }
@@ -340,6 +360,7 @@ vi.mock('@/pages/literature/LiteratureLibraryPage', () => ({
 }))
 vi.mock('@/pages/onboarding/OnboardingWizard', () => ({
   OnboardingWizard: (props: { loadStorageInfo: () => Promise<unknown> }): React.JSX.Element => {
+    if (mocks.onboarding.pending) throw mocks.onboarding.pending
     mocks.onboarding.props = props
     return <div data-testid="onboarding-page" />
   }
@@ -370,27 +391,51 @@ vi.mock('@/pages/settings/ComputeApprovalDialog', () => ({
 }))
 vi.mock('@/pages/settings/SettingsPage', () => ({
   SettingsPage: ({
+    ref,
     open,
-    onOpenSession
+    onOpenSession,
+    sessionLoadError,
+    onRetryCatalogRecovery
   }: {
+    ref?: Ref<SettingsPageHandle>
     open: boolean
     onOpenSession?: (sessionId: string) => void
-  }): React.JSX.Element => (
-    <div>
-      <span data-testid="settings-page">{open ? 'open' : 'closed'}</span>
-      <button
-        type="button"
-        data-testid="open-settings-session"
-        onClick={() => onOpenSession?.('settings-session')}
-      >
-        Open settings session
-      </button>
-    </div>
-  )
+    sessionLoadError?: string
+    onRetryCatalogRecovery?: () => void
+  }): React.JSX.Element => {
+    mocks.presentationProps.settings = { sessionLoadError, onRetryCatalogRecovery }
+    useImperativeHandle(ref, () => ({
+      requestLeave: mocks.requestSettingsLeave,
+      closeActivePane: () => false
+    }))
+    return (
+      <div>
+        <span data-testid="settings-page">{open ? 'open' : 'closed'}</span>
+        <button
+          type="button"
+          data-testid="open-settings-session"
+          onClick={() => onOpenSession?.('settings-session')}
+        >
+          Open settings session
+        </button>
+      </div>
+    )
+  }
 }))
 vi.mock('@/pages/workspace/EnvStatusBanner', () => ({
-  EnvStatusBanner: ({ onRetry }: { onRetry?: () => void }): React.JSX.Element => (
-    <button type="button" data-testid="env-banner" onClick={onRetry} />
+  EnvStatusBanner: ({
+    onRetry,
+    onOpenRuntimes
+  }: {
+    onRetry?: () => void
+    onOpenRuntimes?: () => void
+  }): React.JSX.Element => (
+    <>
+      <button type="button" data-testid="env-banner" onClick={onRetry} />
+      {onOpenRuntimes ? (
+        <button type="button" data-testid="env-open-runtimes" onClick={onOpenRuntimes} />
+      ) : null}
+    </>
   )
 }))
 vi.mock('@/pages/workspace/WorkspacePage', () => ({
@@ -427,6 +472,10 @@ vi.mock('@/pages/workspace/use-side-chat-controller', () => ({
 }))
 
 import { useStorageInfoStore } from '@/stores/storage-info-store'
+import {
+  useApplicationEventBindings,
+  type ApplicationEventProjection
+} from '@/hooks/useApplicationEventBindings'
 import App from './App'
 
 describe('App startup routing', () => {
@@ -456,7 +505,9 @@ describe('App startup routing', () => {
     mocks.settings.load.mockReset().mockResolvedValue(true)
     mocks.settings.checkEnvironment.mockReset().mockResolvedValue(undefined)
     mocks.settings.openSettings.mockClear()
+    mocks.settings.openSettingsToPanel.mockClear()
     mocks.settings.closeSettings.mockClear()
+    mocks.requestSettingsLeave.mockReset().mockImplementation((leave: () => void) => leave())
     mocks.settings.enqueueApproval.mockClear()
     mocks.settings.dismissApproval.mockClear()
     mocks.settings.enqueueCredentialRequest.mockClear()
@@ -497,6 +548,7 @@ describe('App startup routing', () => {
     mocks.settings.pendingCredentialRequests = []
     mocks.compute.pendingApprovals = []
     mocks.skillImport.pending = []
+    mocks.skillImport.closedIds = []
     mocks.preview.fileDialogItem = undefined
     mocks.preview.expandedToolItemId = null
     mocks.preview.activeItemId = undefined
@@ -521,6 +573,7 @@ describe('App startup routing', () => {
       usage: { categories: [], totalBytes: 0 },
       availableBytes: 1_000_000_000
     })
+    mocks.onboarding.pending = undefined
     mocks.onboarding.props = undefined
     window.api = {
       storage: { getStatus: mocks.getStatus, getInfo: mocks.getInfo },
@@ -592,6 +645,62 @@ describe('App startup routing', () => {
     root = createRoot(container)
     await act(async () => root.render(<App />))
   }
+
+  it('routes Windows menu commands through startup and dialog presentation guards', async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (
+      this: HTMLCanvasElement
+    ) {
+      if (this.width !== 1 || this.height !== 1) return null
+      return {
+        fillStyle: '',
+        fillRect: vi.fn(),
+        getImageData: () => ({ data: new Uint8ClampedArray([255, 255, 255, 255]) })
+      } as unknown as CanvasRenderingContext2D
+    })
+    window.api.platform = 'win32'
+    const showMenu = vi.fn().mockResolvedValue('settings')
+    window.api.window = {
+      ...window.api.window,
+      showTitleBarMenu: showMenu,
+      updateTitleBar: vi.fn().mockResolvedValue(undefined)
+    }
+    root = createRoot(container)
+    const renderFrame = (): Promise<void> =>
+      act(async () =>
+        root.render(
+          <WindowsTitleBar>
+            <App />
+          </WindowsTitleBar>
+        )
+      )
+    const selectSettings = async (): Promise<void> => {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[role="menuitem"]')!.click()
+      })
+    }
+    await renderFrame()
+    await selectSettings()
+    expect(showMenu).toHaveBeenLastCalledWith(
+      expect.objectContaining({ settingsEnabled: false, searchEnabled: false })
+    )
+    expect(mocks.settings.openSettings).not.toHaveBeenCalled()
+
+    mocks.settings.isLoaded = true
+    await renderFrame()
+    await selectSettings()
+    expect(showMenu).toHaveBeenLastCalledWith(
+      expect.objectContaining({ settingsEnabled: true, searchEnabled: true })
+    )
+    expect(mocks.settings.openSettings).toHaveBeenCalledOnce()
+
+    mocks.update.isDialogOpen = true
+    await renderFrame()
+    await selectSettings()
+    expect(showMenu).toHaveBeenLastCalledWith(
+      expect.objectContaining({ settingsEnabled: false, searchEnabled: false })
+    )
+    expect(mocks.settings.openSettings).toHaveBeenCalledOnce()
+  })
 
   it('hydrates the persisted non-terminal Compute Job projection at app startup', async () => {
     mocks.settings.isLoaded = true
@@ -740,6 +849,55 @@ describe('App startup routing', () => {
     expect(document.querySelector('[data-testid="global-search"]')).toBeNull()
   })
 
+  it('routes blocked search to existing recovery settings after closing search', async () => {
+    mocks.settings.isLoaded = true
+    mocks.sessionPersistence.isReady = false
+    mocks.sessionPersistence.catalogRecovery = { kind: 'repairable', reason: 'session-scan' }
+    await render()
+    await act(async () => mocks.homePage.props?.onOpenGlobalSearch())
+    expect(mocks.globalSearch.props?.isSessionPersistenceReady).toBe(false)
+    expect(mocks.globalSearch.props?.onOpenRecovery).toBeTypeOf('function')
+    await act(async () => mocks.globalSearch.props?.onOpenRecovery?.())
+    expect(mocks.settings.openSettingsToPanel).toHaveBeenCalledWith('archived')
+    expect(document.querySelector('[data-testid="global-search"]')).toBeNull()
+  })
+
+  it('projects search recovery as an owner command that transfers presentation to Settings', async () => {
+    let events!: ApplicationEventProjection
+    const BindingsHarness = (): null => {
+      events = useApplicationEventBindings({
+        startupView: 'app',
+        sessionPersistence: mocks.sessionPersistence,
+        hasDataRootRecovery: false,
+        hasLegacyDataMove: false,
+        closeActiveSettingsPane: vi.fn(),
+        requestSettingsLeave: mocks.requestSettingsLeave
+      })
+      return null
+    }
+    mocks.settings.openSettingsToPanel.mockImplementationOnce(() => {
+      mocks.settings.isSettingsOpen = true
+    })
+    root = createRoot(container)
+    await act(async () => root.render(<BindingsHarness />))
+    await act(async () => events.globalSearch.open())
+    expect(events.presentation.active).toBe('globalSearch')
+    await act(async () => events.globalSearch.openRecovery())
+    expect(mocks.settings.openSettingsToPanel).toHaveBeenCalledExactlyOnceWith('archived')
+    expect(events.presentation.active).toBe('settings')
+    expect(mocks.requestSettingsLeave).not.toHaveBeenCalled()
+  })
+
+  it('does not offer catalog recovery for temporary search unavailability', async () => {
+    mocks.settings.isLoaded = true
+    mocks.sessionPersistence.isReady = false
+    await render()
+    await act(async () => mocks.homePage.props?.onOpenGlobalSearch())
+    expect(mocks.globalSearch.props?.isSessionPersistenceReady).toBe(false)
+    expect(mocks.globalSearch.props?.onOpenRecovery).toBeUndefined()
+    expect(mocks.settings.openSettingsToPanel).not.toHaveBeenCalled()
+  })
+
   it.each(['metaKey', 'ctrlKey'] as const)(
     'ignores repeated global search shortcuts with %s and permits a fresh press',
     async (modifier) => {
@@ -851,6 +1009,39 @@ describe('App startup routing', () => {
     dialog.remove()
   })
 
+  it('releases the modal slot while a Skill approval is closed', async () => {
+    mocks.settings.isLoaded = true
+    mocks.settings.isSettingsOpen = true
+    mocks.skillImport.pending = [{ id: 'skill', sessionId: 'skill-session' }]
+    mocks.skillImport.closedIds = ['skill']
+    await render()
+    expect(container.querySelector('[data-testid="settings-page"]')?.textContent).toBe('open')
+    mocks.skillImport.pending = [{ id: 'new-skill', sessionId: 'skill-session' }]
+    await act(async () => root.render(<App />))
+    await vi.waitFor(() => expect(mocks.presentationProps.skillImportApproval?.active).toBe(true))
+    expect(container.querySelector('[data-testid="settings-page"]')?.textContent).toBe('closed')
+  })
+
+  it.each(['connector', 'compute', 'credential'] as const)(
+    'releases the modal slot for a closed %s request',
+    async (kind) => {
+      mocks.settings.isLoaded = true
+      mocks.settings.isSettingsOpen = true
+      const request = { id: 'pending', closed: true }
+      if (kind === 'connector') mocks.settings.pendingApprovals = [request]
+      else if (kind === 'compute') mocks.compute.pendingApprovals = [request]
+      else mocks.settings.pendingCredentialRequests = [request]
+      await render()
+      expect(container.querySelector('[data-testid="settings-page"]')?.textContent).toBe('open')
+      const nextRequest = { id: 'new-request' }
+      if (kind === 'connector') mocks.settings.pendingApprovals = [request, nextRequest]
+      else if (kind === 'compute') mocks.compute.pendingApprovals = [request, nextRequest]
+      else mocks.settings.pendingCredentialRequests = [request, nextRequest]
+      await act(async () => root.render(<App />))
+      expect(container.querySelector('[data-testid="settings-page"]')?.textContent).toBe('closed')
+    }
+  )
+
   it('activates only the highest-priority pending approval and resumes the next one', async () => {
     mocks.settings.isLoaded = true
     mocks.settings.isSettingsOpen = true
@@ -859,9 +1050,9 @@ describe('App startup routing', () => {
     mocks.skillImport.pending = [{ id: 'skill', sessionId: 'skill-session' }]
     await render()
 
-    expect(mocks.presentationProps.computeApproval?.active).toBe(true)
+    await vi.waitFor(() => expect(mocks.presentationProps.computeApproval?.active).toBe(true))
     expect(mocks.presentationProps.connectorApproval?.active).toBe(false)
-    expect(mocks.presentationProps.skillImportApproval?.active).toBe(false)
+    expect(mocks.presentationProps.skillImportApproval).toBeUndefined()
     expect(container.querySelector('[data-testid="settings-page"]')?.textContent).toBe('closed')
     expect(
       container.querySelector('[data-testid="home-page"]')?.closest('[aria-hidden="true"]')
@@ -883,6 +1074,14 @@ describe('App startup routing', () => {
 
     expect(mocks.presentationProps.computeApproval?.active).toBe(false)
     expect(mocks.presentationProps.connectorApproval?.active).toBe(true)
+    expect(mocks.presentationProps.skillImportApproval).toBeUndefined()
+
+    mocks.settings.pendingApprovals = []
+    await act(async () => root.render(<App />))
+    await vi.waitFor(() => expect(mocks.presentationProps.skillImportApproval?.active).toBe(true))
+
+    mocks.skillImport.pending = []
+    await act(async () => root.render(<App />))
     expect(mocks.presentationProps.skillImportApproval?.active).toBe(false)
   })
 
@@ -904,17 +1103,17 @@ describe('App startup routing', () => {
     expect(mocks.presentationProps.workspace?.isPreviewPresentationActive).toBe(false)
   })
 
-  it('does not let Side Chat-owned approvals block workspace visibility or global search', async () => {
+  it('presents main approvals even when a Side chat is open', async () => {
     mocks.settings.isLoaded = true
     mocks.navigation.view = 'workspace'
     mocks.sideChatParentSessionIds.add('side-chat-session')
     mocks.compute.pendingApprovals = [{ id: 'compute', sessionId: 'side-chat-session' }]
     await render()
 
-    expect(mocks.presentationProps.computeApproval?.active).toBe(false)
-    expect(mocks.presentationProps.workspace?.isPreviewPresentationActive).toBe(true)
+    await vi.waitFor(() => expect(mocks.presentationProps.computeApproval?.active).toBe(true))
+    expect(mocks.presentationProps.workspace?.isPreviewPresentationActive).toBe(false)
     expect(mocks.syncUnreadTaskView).toHaveBeenLastCalledWith({
-      isSessionContentVisible: true
+      isSessionContentVisible: false
     })
 
     await act(async () => {
@@ -923,7 +1122,7 @@ describe('App startup routing', () => {
       )
     })
 
-    expect(mocks.globalSearch.props?.open).toBe(true)
+    expect(mocks.globalSearch.props?.open).not.toBe(true)
   })
 
   it('consumes the close shortcut while a decision-required approval is active', async () => {
@@ -949,6 +1148,21 @@ describe('App startup routing', () => {
 
     dialog.remove()
     expect(mocks.settings.openSettings).toHaveBeenCalledOnce()
+  })
+
+  it('loads the update owner on first activation and retains it for its close lifecycle', async () => {
+    mocks.settings.isLoaded = true
+    await render()
+    expect(document.querySelector('[data-testid="update-dialog"]')).toBeNull()
+
+    mocks.update.isDialogOpen = true
+    await act(async () => root.render(<App />))
+    await vi.waitFor(() => expect(mocks.presentationProps.update?.active).toBe(true))
+
+    mocks.update.isDialogOpen = false
+    await act(async () => root.render(<App />))
+    expect(mocks.presentationProps.update?.active).toBe(false)
+    expect(document.querySelector('[data-testid="update-dialog"]')).not.toBeNull()
   })
 
   it('closes the update dialog before underlying surfaces', async () => {
@@ -1112,6 +1326,40 @@ describe('App startup routing', () => {
     expect(container.querySelector('[data-testid="onboarding-page"]')).toBeNull()
   })
 
+  it('keeps the startup logo centered while onboarding suspends, then shows the wizard', async () => {
+    mocks.settings.isLoaded = true
+    mocks.startupView = 'onboarding'
+    let finishLoading!: () => void
+    mocks.onboarding.pending = new Promise<void>((resolve) => {
+      finishLoading = resolve
+    })
+
+    await render()
+
+    const logo = container.querySelector('[data-testid="open-science-logo-loader"]')
+    expect(logo).not.toBeNull()
+    const shell = logo?.closest('main')
+    expect(shell).not.toBeNull()
+    for (const className of [
+      'flex',
+      'min-h-svh',
+      'items-center',
+      'justify-center',
+      'bg-background'
+    ]) {
+      expect(shell?.classList.contains(className)).toBe(true)
+    }
+    expect(container.querySelector('[data-testid="onboarding-page"]')).toBeNull()
+
+    await act(async () => {
+      mocks.onboarding.pending = undefined
+      finishLoading()
+    })
+
+    expect(container.querySelector('[data-testid="open-science-logo-loader"]')).toBeNull()
+    expect(container.querySelector('[data-testid="onboarding-page"]')).not.toBeNull()
+  })
+
   it('shows a settings load error in the standard error notice and retries initialization', async () => {
     mocks.settings.loadError = 'settings IPC unavailable'
     mocks.settings.load.mockReset().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
@@ -1130,7 +1378,7 @@ describe('App startup routing', () => {
     const retry = container.querySelector<HTMLButtonElement>('button')
     expect(retry).not.toBeNull()
     expect(retry?.dataset.slot).toBe('button')
-    expect(retry?.className).toContain('focus-visible:ring-3')
+    expect(retry?.className).toContain('focus-visible:keyboard-focus')
     expect(retry?.className).toContain('disabled:pointer-events-none')
     await act(async () => retry?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
 
@@ -1207,7 +1455,9 @@ describe('App startup routing', () => {
 
     const alert = container.querySelector('[data-testid="session-persistence-alert"]')
     expect(alert).not.toBeNull()
-    expect(alert?.classList.contains('bg-card')).toBe(true)
+    expect(alert?.closest('[data-action-toast-stack]')).toBeNull()
+    expect(alert?.classList.contains('bottom-3')).toBe(true)
+    expect(alert?.querySelector('section')?.classList.contains('bg-card')).toBe(true)
     expect(alert?.classList.contains('bg-bg-000')).toBe(false)
     expect(alert?.classList.contains('bg-bg-100')).toBe(false)
     expect(container.querySelector('[data-testid="home-page"]')).not.toBeNull()
@@ -1223,7 +1473,6 @@ describe('App startup routing', () => {
 
     expect(mocks.loadProjects).toHaveBeenCalledOnce()
 
-    mocks.sessionPersistence.isHydrated = false
     mocks.sessionPersistence.isLoading = true
     await act(async () => root.render(<App />))
 
@@ -1247,6 +1496,27 @@ describe('App startup routing', () => {
     expect(mocks.syncUnreadTaskView).toHaveBeenLastCalledWith({
       isSessionContentVisible: false
     })
+  })
+
+  it('waits for the Settings leave guard before host session navigation', async () => {
+    mocks.settings.isLoaded = true
+    mocks.settings.isSettingsOpen = true
+    mocks.sessions = [{ id: 'settings-session' }]
+    mocks.openSessionById.mockReturnValue(true)
+    let acceptLeave: (() => void) | undefined
+    mocks.requestSettingsLeave.mockImplementation((leave) => {
+      acceptLeave = leave
+    })
+    await render()
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="open-settings-session"]')?.click()
+    )
+    expect(mocks.requestSettingsLeave).toHaveBeenCalledOnce()
+    expect(mocks.openSessionById).not.toHaveBeenCalled()
+    expect(mocks.settings.closeSettings).not.toHaveBeenCalled()
+    await act(async () => acceptLeave?.())
+    expect(mocks.openSessionById).toHaveBeenCalledOnce()
+    expect(mocks.settings.closeSettings).toHaveBeenCalledOnce()
   })
 
   it('closes Settings only after remembered-session navigation completes', async () => {
@@ -1284,6 +1554,33 @@ describe('App startup routing', () => {
     expect(mocks.settings.closeSettings).toHaveBeenCalledOnce()
   })
 
+  it('keeps a hydrated workspace visible through a retry while queuing lifecycle updates', async () => {
+    mocks.settings.isLoaded = true
+    mocks.navigation.view = 'workspace'
+    mocks.sessionPersistence.isHydrated = true
+    mocks.sessionPersistence.isReady = false
+    mocks.sessionPersistence.hasCompleteSessionCatalog = false
+    mocks.sessionPersistence.canDeleteSessionsAndProjects = false
+    mocks.sessionPersistence.catalogRecovery = { kind: 'repairable', reason: 'session-scan' }
+    await render()
+
+    mocks.sessionPersistence.isLoading = true
+    await act(async () => root.render(<App />))
+    expect(container.querySelector('[data-testid="workspace-page"]')).not.toBeNull()
+    expect(
+      container.querySelector('[data-testid="session-persistence-startup-loading"]')
+    ).toBeNull()
+    expect(mocks.lifecycleSync).toHaveBeenLastCalledWith({ isSessionPersistenceHydrated: false })
+
+    mocks.sessionPersistence.isLoading = false
+    mocks.sessionPersistence.loadError = 'saved conversations unavailable'
+    await act(async () => root.render(<App />))
+    expect(container.querySelector('[data-testid="workspace-page"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="session-persistence-startup-error"]')).toBeNull()
+    expect(container.querySelector('[data-testid="session-persistence-alert"]')).not.toBeNull()
+    expect(mocks.lifecycleSync).toHaveBeenLastCalledWith({ isSessionPersistenceHydrated: true })
+  })
+
   it('reports retained session content as hidden during retry loading and hard failure', async () => {
     mocks.settings.isLoaded = true
     mocks.navigation.view = 'workspace'
@@ -1311,6 +1608,16 @@ describe('App startup routing', () => {
     expect(mocks.syncUnreadTaskView).toHaveBeenLastCalledWith({
       isSessionContentVisible: false
     })
+  })
+
+  it('opens the Runtimes settings panel from the home recovery banner', async () => {
+    mocks.settings.isLoaded = true
+    mocks.startupView = 'app'
+    await render()
+    const action = container.querySelector<HTMLButtonElement>('[data-testid="env-open-runtimes"]')
+    expect(action).not.toBeNull()
+    await act(async () => action?.click())
+    expect(mocks.settings.openSettingsToPanel).toHaveBeenCalledWith('runtimes')
   })
 
   it('routes first-run users to onboarding after settings hydration', async () => {
@@ -1478,9 +1785,32 @@ describe('App startup routing', () => {
       '[data-testid="session-persistence-retry"]'
     )
     expect(retry?.dataset.slot).toBe('button')
-    expect(retry?.className).toContain('focus-visible:ring-3')
+    expect(retry?.className).toContain('focus-visible:keyboard-focus')
     retry?.click()
     expect(mocks.sessionPersistence.retryLoad).toHaveBeenCalledOnce()
+  })
+
+  it('dismisses a post-hydration load error without opening storage gates or removing Settings recovery', async () => {
+    mocks.settings.isLoaded = true
+    mocks.sessionPersistence.isHydrated = true
+    mocks.sessionPersistence.isReady = false
+    mocks.sessionPersistence.loadError = 'Storage unavailable'
+    mocks.sessionPersistence.canDeleteSessionsAndProjects = false
+    await render()
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="session-persistence-dismiss"]')!
+        .click()
+    )
+    expect(container.querySelector('[data-testid="session-persistence-alert"]')).toBeNull()
+    expect(container.querySelector('[data-testid="home-page"]')).not.toBeNull()
+    expect(mocks.sessionPersistence.isReady).toBe(false)
+    expect(mocks.sessionPersistence.loadError).toBe('Storage unavailable')
+    expect(mocks.sessionPersistence.retryLoad).not.toHaveBeenCalled()
+    expect(mocks.presentationProps.settings?.sessionLoadError).toBe('Storage unavailable')
+    expect(mocks.presentationProps.settings?.onRetryCatalogRecovery).toBe(
+      mocks.sessionPersistence.retryLoad
+    )
   })
 
   it('warns that in-memory conversation changes are not durable and retries them', async () => {
@@ -1517,7 +1847,7 @@ describe('App startup routing', () => {
     const alert = container.querySelector('[data-testid="session-persistence-alert"]')
     expect(alert?.textContent).toContain('Conversation storage limit reached')
     expect(container.querySelector('[data-testid="session-persistence-retry"]')).toBeNull()
-    expect(alert?.querySelector('[data-testid="session-persistence-dismiss"]')).toBeNull()
+    expect(alert?.querySelector('[data-testid="session-persistence-dismiss"]')).not.toBeNull()
 
     container
       .querySelector<HTMLButtonElement>('[data-testid="session-persistence-action"]')
@@ -1526,6 +1856,16 @@ describe('App startup routing', () => {
     expect(mocks.presentationProps.workspace?.persistenceBlockedSessionIds).toEqual(['session-1'])
     mocks.presentationProps.workspace?.onSessionSizeLimit?.('session-plan')
     expect(mocks.sessionPersistence.reportSessionSizeLimit).toHaveBeenCalledWith('session-plan')
+    await act(async () =>
+      alert
+        ?.querySelector<HTMLButtonElement>('[data-testid="session-persistence-dismiss"]')
+        ?.click()
+    )
+    expect(container.querySelector('[data-testid="session-persistence-alert"]')).toBeNull()
+    expect(mocks.presentationProps.workspace?.persistenceBlockedSessionIds).toEqual(['session-1'])
+    expect(mocks.sessionPersistence.dismissWriteWarning).not.toHaveBeenCalled()
+    await act(async () => root.render(<App />))
+    expect(container.querySelector('[data-testid="session-persistence-alert"]')).toBeNull()
   })
 
   it('stops a persistence-blocked active run while the Home page is visible', async () => {
@@ -1562,8 +1902,14 @@ describe('App startup routing', () => {
       container.querySelectorAll('[data-testid="session-persistence-alert"]')
     )
     expect(alerts).toHaveLength(2)
-    expect(alerts[0]?.textContent).toContain('Project index needs repair')
-    expect(alerts[1]?.textContent).toContain('Conversation storage needs attention')
+    const catalogAlert = alerts.find((alert) =>
+      alert.textContent?.includes('Project index needs repair')
+    )
+    const writeAlert = alerts.find((alert) =>
+      alert.textContent?.includes('Conversation storage needs attention')
+    )
+    expect(catalogAlert?.closest('[data-bottom-notice-stack]')).toBeTruthy()
+    expect(writeAlert?.closest('[data-action-toast-stack]')).toBeTruthy()
 
     const retries = Array.from(
       container.querySelectorAll<HTMLButtonElement>('[data-testid="session-persistence-retry"]')
@@ -1591,8 +1937,10 @@ describe('App startup routing', () => {
     const alert = container.querySelector('[data-testid="session-persistence-alert"]')
     expect(alert?.textContent).toContain('Project archive needs attention')
     expect(alert?.textContent).toContain('A damaged saved conversation was moved aside')
-    expect(alert?.textContent).toContain('You can still permanently delete the project')
-    expect(alert?.textContent).toContain('New Compute jobs may remain queued')
+    expect(alert?.textContent).toContain(
+      'You can still permanently delete the affected project data'
+    )
+    expect(alert?.textContent).toContain('Compute jobs in affected Sessions may remain queued')
     const recheck = container.querySelector<HTMLButtonElement>(
       '[data-testid="session-persistence-retry"]'
     )
@@ -1812,6 +2160,53 @@ describe('App startup routing', () => {
     expect(mocks.openSessionById).toHaveBeenCalledWith('s-9', 'notification')
   })
 
+  it('retries a notification peek after the desktop handler is installed', async () => {
+    mocks.settings.isLoaded = true
+    mocks.sessions = [{ id: 's-late' }]
+    mocks.notifications.peekPendingOpenSession
+      .mockRejectedValueOnce(
+        new Error("No handler registered for 'notifications:peek-pending-open-session'")
+      )
+      .mockResolvedValue({ sessionId: 's-late', token: 5 })
+    mocks.notifications.takePendingOpenSession.mockResolvedValue({
+      sessionId: 's-late',
+      token: 5
+    })
+
+    await render()
+    expect(mocks.openSessionById).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150))
+    })
+
+    expect(mocks.notifications.peekPendingOpenSession).toHaveBeenCalledTimes(2)
+    expect(mocks.notifications.takePendingOpenSession).toHaveBeenCalledWith(5)
+    expect(mocks.openSessionById).toHaveBeenCalledWith('s-late', 'notification')
+  })
+
+  it('does not retry a notification peek after unmount', async () => {
+    let rejectPeek: ((error: Error) => void) | undefined
+    mocks.settings.isLoaded = true
+    mocks.notifications.peekPendingOpenSession.mockImplementation(
+      () =>
+        new Promise<null>((_resolve, reject) => {
+          rejectPeek = reject
+        })
+    )
+
+    await render()
+    expect(mocks.notifications.peekPendingOpenSession).toHaveBeenCalledOnce()
+
+    await act(async () => root.unmount())
+    await act(async () => {
+      rejectPeek?.(new Error("No handler registered for 'notifications:peek-pending-open-session'"))
+      await new Promise((resolve) => setTimeout(resolve, 150))
+    })
+
+    expect(mocks.notifications.peekPendingOpenSession).toHaveBeenCalledOnce()
+  })
+
   it('opens an already-hydrated notification target during partial recovery', async () => {
     mocks.settings.isLoaded = true
     mocks.sessionPersistence.isReady = false
@@ -1916,9 +2311,10 @@ describe('App startup routing', () => {
       container.querySelectorAll('[data-testid="session-persistence-alert"]')
     ).find((candidate) => candidate.textContent?.includes('Quit was canceled'))
     expect(alert?.textContent).toContain('Quit was canceled')
+    expect(alert?.closest('[data-bottom-notice-stack]')).toBeNull()
     expect(alert?.closest('[inert]')).toBeNull()
     expect(alert?.closest('[aria-hidden="true"]')).toBeNull()
-    expect(alert?.classList.contains('z-toast')).toBe(true)
+    expect(alert?.classList.contains('z-[70]!')).toBe(true)
   })
 
   it('does not let a later notification peek override navigation while an earlier peek is pending', async () => {

@@ -24,8 +24,16 @@ import type {
   SetSessionDetailsModelRequest,
   SetSubagentModelRequest,
   SetVisionModelRequest,
-  ValidateProviderRequest
+  ValidateProviderRequest,
+  UpsertProviderRequest,
+  SaveValidatedProviderResult
 } from '../../shared/settings'
+import type {
+  InstallMissingWslDependenciesRequest,
+  InstallWslDistroRequest,
+  OpenWslTerminalRequest,
+  SelectWslProfileRequest
+} from '../../shared/wsl-setup'
 import {
   defineApplicationCommand,
   defineApplicationCommandGroup,
@@ -34,6 +42,15 @@ import {
 } from '../application-command-router'
 import type { CallerContext } from '../caller-context'
 import type { SettingsService } from './service'
+import type {
+  ClassificationMutation,
+  ClassificationMutationResult,
+  ClassificationProbe,
+  ClassificationProbeResult,
+  ClassificationSnapshot
+} from '../../shared/classification'
+import type { ClassificationSettingsOwner } from './classification-settings'
+
 import type { SettingsSnapshotCommitOwner } from './settings-snapshot-commit-owner'
 import {
   readAppIconVariant,
@@ -50,9 +67,11 @@ import {
 } from './transport-validation'
 import type { AppearanceSettingsWorkflows } from './workflows/appearance'
 import type { RuntimeSettingsWorkflows } from './workflows/runtime'
+import type { LocalShellSettingsWorkflows } from './workflows/local-shell'
 
 type CoreSettingsCommandStore = Pick<
   SettingsService,
+  | 'bootstrap'
   | 'cancelClaudeLogin'
   | 'cancelCodexLogin'
   | 'cancelClaudeIsolatedLogin'
@@ -64,6 +83,9 @@ type CoreSettingsCommandStore = Pick<
   | 'getConnectorDetail'
   | 'getPackageMirror'
   | 'getNotebookNetworkStatus'
+  | 'getLocalShellRuntimePreference'
+  | 'getWsl2BashPreviewStatus'
+  | 'getWslSetupStatus'
   | 'getGitHubTokenStatus'
   | 'getPreflight'
   | 'getSettingsView'
@@ -73,15 +95,22 @@ type CoreSettingsCommandStore = Pick<
   | 'installCodex'
   | 'installOpencode'
   | 'installNotebookNetwork'
+  | 'cancelNotebookNetworkSetup'
+  | 'installMissingWslDependencies'
+  | 'installRecommendedWslDistro'
+  | 'installWslPlatform'
   | 'removeNotebookNetwork'
   | 'isEncryptionAvailable'
   | 'isNpmAvailable'
   | 'listConnectors'
   | 'listSkills'
   | 'markOnboardingComplete'
+  | 'createWslSupportHandoff'
+  | 'openWslTerminal'
   | 'previewAgentHomeSkill'
   | 'previewGitHubSkill'
   | 'previewSkillZip'
+  | 'probeWslSetup'
   | 'refreshProviderModels'
   | 'scanRepoSkills'
   | 'saveGitHubToken'
@@ -95,17 +124,24 @@ type CoreSettingsCommandStore = Pick<
   | 'setNotebookNetwork'
   | 'setProjectFilesFilter'
   | 'setReviewerModel'
+  | 'selectWslProfile'
   | 'setSessionDetailsModel'
   | 'setSubagentModel'
   | 'setVisionModel'
   | 'validateProvider'
->
+> & {
+  classification: Pick<ClassificationSettingsOwner, 'snapshot' | 'mutate' | 'probe'>
+}
 
 type StoreResult<Method extends keyof CoreSettingsCommandStore> =
   CoreSettingsCommandStore[Method] extends (...args: infer _Args) => infer Result
     ? Awaited<Result>
     : never
 type AppearanceResult = Awaited<ReturnType<AppearanceSettingsWorkflows['setAppIconVariant']>>
+type SwitchToPowerShellResult = Awaited<
+  ReturnType<LocalShellSettingsWorkflows['switchToPowerShell']>
+>
+type UseWsl2BashResult = Awaited<ReturnType<LocalShellSettingsWorkflows['useWsl2Bash']>>
 
 const settingsCoreApplicationCommands = Object.freeze({
   cancelClaudeLogin: defineApplicationCommand<
@@ -158,6 +194,11 @@ const settingsCoreApplicationCommands = Object.freeze({
     readonly [id: string],
     StoreResult<'getConnectorDetail'>
   >('settings:get-connector-detail'),
+  getClassification: defineApplicationCommand<
+    'settings:get-classification',
+    readonly [],
+    ClassificationSnapshot
+  >('settings:get-classification'),
   getPackageMirror: defineApplicationCommand<
     'settings:get-package-mirror',
     readonly [],
@@ -168,6 +209,21 @@ const settingsCoreApplicationCommands = Object.freeze({
     readonly [],
     StoreResult<'getNotebookNetworkStatus'>
   >('settings:get-notebook-network-status'),
+  getWsl2BashPreviewStatus: defineApplicationCommand<
+    'settings:get-wsl2-bash-preview-status',
+    readonly [],
+    StoreResult<'getWsl2BashPreviewStatus'>
+  >('settings:get-wsl2-bash-preview-status'),
+  getWslSetupStatus: defineApplicationCommand<
+    'settings:get-wsl-setup-status',
+    readonly [],
+    StoreResult<'getWslSetupStatus'>
+  >('settings:get-wsl-setup-status'),
+  getLocalShellRuntimePreference: defineApplicationCommand<
+    'settings:get-local-shell-runtime-preference',
+    readonly [],
+    StoreResult<'getLocalShellRuntimePreference'>
+  >('settings:get-local-shell-runtime-preference'),
   getPreflight: defineApplicationCommand<
     'settings:get-preflight',
     readonly [],
@@ -203,6 +259,11 @@ const settingsCoreApplicationCommands = Object.freeze({
     readonly [request: InstallOpencodeRequest],
     StoreResult<'installOpencode'>
   >('settings:install-opencode'),
+  cancelNotebookNetworkSetup: defineApplicationCommand<
+    'settings:cancel-notebook-network-setup',
+    [],
+    boolean
+  >('settings:cancel-notebook-network-setup'),
   installNotebookNetwork: defineApplicationCommand<
     'settings:install-notebook-network',
     readonly [],
@@ -256,6 +317,36 @@ const settingsCoreApplicationCommands = Object.freeze({
     readonly [request: PreviewSkillZipRequest],
     StoreResult<'previewSkillZip'>
   >('settings:preview-skill-zip'),
+  probeWslSetup: defineApplicationCommand<
+    'settings:probe-wsl-setup',
+    readonly [],
+    StoreResult<'probeWslSetup'>
+  >('settings:probe-wsl-setup'),
+  installWslPlatform: defineApplicationCommand<
+    'settings:install-wsl-platform',
+    readonly [],
+    StoreResult<'installWslPlatform'>
+  >('settings:install-wsl-platform'),
+  installMissingWslDependencies: defineApplicationCommand<
+    'settings:install-missing-wsl-dependencies',
+    readonly [request: InstallMissingWslDependenciesRequest],
+    StoreResult<'installMissingWslDependencies'>
+  >('settings:install-missing-wsl-dependencies'),
+  createWslSupportHandoff: defineApplicationCommand<
+    'settings:create-wsl-support-handoff',
+    readonly [],
+    StoreResult<'createWslSupportHandoff'>
+  >('settings:create-wsl-support-handoff'),
+  installRecommendedWslDistro: defineApplicationCommand<
+    'settings:install-recommended-wsl-distro',
+    readonly [request: InstallWslDistroRequest],
+    StoreResult<'installRecommendedWslDistro'>
+  >('settings:install-recommended-wsl-distro'),
+  openWslTerminal: defineApplicationCommand<
+    'settings:open-wsl-terminal',
+    readonly [request: OpenWslTerminalRequest],
+    StoreResult<'openWslTerminal'>
+  >('settings:open-wsl-terminal'),
   refreshProviderModels: defineApplicationCommand<
     'settings:refresh-provider-models',
     readonly [request: RefreshProviderModelsRequest],
@@ -326,6 +417,19 @@ const settingsCoreApplicationCommands = Object.freeze({
     readonly [request: SetReviewerModelRequest],
     StoreResult<'setReviewerModel'>
   >('settings:set-reviewer-model'),
+  selectWslProfile: defineApplicationCommand<
+    'settings:select-wsl-profile',
+    readonly [request: SelectWslProfileRequest],
+    StoreResult<'selectWslProfile'>
+  >('settings:select-wsl-profile'),
+  switchLocalShellToPowerShell: defineApplicationCommand<
+    'settings:switch-local-shell-to-powershell',
+    readonly [],
+    SwitchToPowerShellResult
+  >('settings:switch-local-shell-to-powershell'),
+  useWsl2Bash: defineApplicationCommand<'settings:use-wsl2-bash', readonly [], UseWsl2BashResult>(
+    'settings:use-wsl2-bash'
+  ),
   setSessionDetailsModel: defineApplicationCommand<
     'settings:set-session-details-model',
     readonly [request: SetSessionDetailsModelRequest],
@@ -341,6 +445,21 @@ const settingsCoreApplicationCommands = Object.freeze({
     readonly [request: SetVisionModelRequest],
     StoreResult<'setVisionModel'>
   >('settings:set-vision-model'),
+  updateClassification: defineApplicationCommand<
+    'settings:update-classification',
+    readonly [request: ClassificationMutation],
+    ClassificationMutationResult
+  >('settings:update-classification'),
+  testClassification: defineApplicationCommand<
+    'settings:test-classification',
+    readonly [request: ClassificationProbe],
+    ClassificationProbeResult
+  >('settings:test-classification'),
+  saveValidatedProvider: defineApplicationCommand<
+    'settings:save-validated-provider',
+    readonly [request: UpsertProviderRequest],
+    SaveValidatedProviderResult
+  >('settings:save-validated-provider'),
   validateProvider: defineApplicationCommand<
     'settings:validate-provider',
     readonly [request: ValidateProviderRequest],
@@ -358,9 +477,13 @@ const settingsCoreApplicationCommandGroup = defineApplicationCommandGroup('setti
   settingsCoreApplicationCommands.detectCodex,
   settingsCoreApplicationCommands.detectOpencode,
   settingsCoreApplicationCommands.getConnectorDetail,
+  settingsCoreApplicationCommands.getClassification,
   settingsCoreApplicationCommands.getGitHubTokenStatus,
   settingsCoreApplicationCommands.getPackageMirror,
   settingsCoreApplicationCommands.getNotebookNetworkStatus,
+  settingsCoreApplicationCommands.getLocalShellRuntimePreference,
+  settingsCoreApplicationCommands.getWsl2BashPreviewStatus,
+  settingsCoreApplicationCommands.getWslSetupStatus,
   settingsCoreApplicationCommands.getPreflight,
   settingsCoreApplicationCommands.getSettings,
   settingsCoreApplicationCommands.getSkillDetail,
@@ -369,16 +492,24 @@ const settingsCoreApplicationCommandGroup = defineApplicationCommandGroup('setti
   settingsCoreApplicationCommands.installCodex,
   settingsCoreApplicationCommands.installOpencode,
   settingsCoreApplicationCommands.installNotebookNetwork,
+  settingsCoreApplicationCommands.cancelNotebookNetworkSetup,
   settingsCoreApplicationCommands.removeNotebookNetwork,
   settingsCoreApplicationCommands.isEncryptionAvailable,
   settingsCoreApplicationCommands.isNpmAvailable,
   settingsCoreApplicationCommands.listAppIcons,
   settingsCoreApplicationCommands.listConnectors,
   settingsCoreApplicationCommands.listSkills,
+
   settingsCoreApplicationCommands.markOnboardingComplete,
   settingsCoreApplicationCommands.previewAgentHomeSkill,
   settingsCoreApplicationCommands.previewGitHubSkill,
   settingsCoreApplicationCommands.previewSkillZip,
+  settingsCoreApplicationCommands.probeWslSetup,
+  settingsCoreApplicationCommands.installWslPlatform,
+  settingsCoreApplicationCommands.installMissingWslDependencies,
+  settingsCoreApplicationCommands.createWslSupportHandoff,
+  settingsCoreApplicationCommands.installRecommendedWslDistro,
+  settingsCoreApplicationCommands.openWslTerminal,
   settingsCoreApplicationCommands.refreshProviderModels,
   settingsCoreApplicationCommands.scanRepoSkills,
   settingsCoreApplicationCommands.saveGitHubToken,
@@ -393,16 +524,23 @@ const settingsCoreApplicationCommandGroup = defineApplicationCommandGroup('setti
   settingsCoreApplicationCommands.setNotebookNetwork,
   settingsCoreApplicationCommands.setProjectFilesFilter,
   settingsCoreApplicationCommands.setReviewerModel,
+  settingsCoreApplicationCommands.selectWslProfile,
+  settingsCoreApplicationCommands.switchLocalShellToPowerShell,
+  settingsCoreApplicationCommands.useWsl2Bash,
   settingsCoreApplicationCommands.setSessionDetailsModel,
   settingsCoreApplicationCommands.setSubagentModel,
   settingsCoreApplicationCommands.setVisionModel,
+  settingsCoreApplicationCommands.updateClassification,
+  settingsCoreApplicationCommands.testClassification,
+  settingsCoreApplicationCommands.saveValidatedProvider,
   settingsCoreApplicationCommands.validateProvider
 ] as const)
 
 type CoreSettingsApplicationCommandDependencies = Readonly<{
   service: CoreSettingsCommandStore
-  runtime: Pick<RuntimeSettingsWorkflows, 'refreshProviderModels'>
+  runtime: Pick<RuntimeSettingsWorkflows, 'refreshProviderModels' | 'saveValidatedProvider'>
   appearance: Pick<AppearanceSettingsWorkflows, 'setAppIconVariant'>
+  localShell: Pick<LocalShellSettingsWorkflows, 'switchToPowerShell' | 'useWsl2Bash'>
   snapshotCommits: SettingsSnapshotCommitOwner
   emitInstallEvent: (event: ClaudeInstallEvent) => void
   listAppIconPreviews?: () => AppIconPreview[]
@@ -446,12 +584,28 @@ const registerCoreSettingsApplicationCommands = (
         dependencies.snapshotCommits.currentSnapshotAfter(dependencies.service.detectOpencode()),
       'settings:get-connector-detail': ({ args }) =>
         dependencies.service.getConnectorDetail(args[0]),
+      'settings:get-classification': ({ callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:get-classification')
+        return dependencies.service.classification.snapshot()
+      },
       'settings:get-github-token-status': ({ callerContext }) => {
         requireLocalCaller(callerContext, 'settings:get-github-token-status')
         return dependencies.service.getGitHubTokenStatus()
       },
       'settings:get-package-mirror': () => dependencies.service.getPackageMirror(),
       'settings:get-notebook-network-status': () => dependencies.service.getNotebookNetworkStatus(),
+      'settings:get-local-shell-runtime-preference': ({ callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:get-local-shell-runtime-preference')
+        return dependencies.service.getLocalShellRuntimePreference()
+      },
+      'settings:get-wsl2-bash-preview-status': ({ callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:get-wsl2-bash-preview-status')
+        return dependencies.service.getWsl2BashPreviewStatus()
+      },
+      'settings:get-wsl-setup-status': ({ callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:get-wsl-setup-status')
+        return dependencies.service.getWslSetupStatus()
+      },
       'settings:get-preflight': () => dependencies.service.getPreflight(),
       'settings:get-settings': () => dependencies.snapshotCommits.readCurrentSnapshot(),
       'settings:get-skill-detail': ({ args }) => dependencies.service.getSkillDetail(args[0]),
@@ -479,6 +633,10 @@ const registerCoreSettingsApplicationCommands = (
           dependencies.service.installOpencode(args[0], dependencies.emitInstallEvent)
         )
       },
+      'settings:cancel-notebook-network-setup': ({ callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:cancel-notebook-network-setup')
+        return dependencies.service.cancelNotebookNetworkSetup()
+      },
       'settings:install-notebook-network': ({ callerContext }) => {
         requireLocalCaller(callerContext, 'settings:install-notebook-network')
         return dependencies.service.installNotebookNetwork()
@@ -492,6 +650,7 @@ const registerCoreSettingsApplicationCommands = (
       'settings:list-app-icons': () => dependencies.listAppIconPreviews?.() ?? [],
       'settings:list-connectors': () => dependencies.service.listConnectors(),
       'settings:list-skills': () => dependencies.service.listSkills(),
+
       'settings:mark-onboarding-complete': () =>
         dependencies.snapshotCommits.currentSnapshotAfter(
           dependencies.service.markOnboardingComplete()
@@ -501,6 +660,30 @@ const registerCoreSettingsApplicationCommands = (
       'settings:preview-github-skill': ({ args }) =>
         dependencies.service.previewGitHubSkill(args[0]),
       'settings:preview-skill-zip': ({ args }) => dependencies.service.previewSkillZip(args[0]),
+      'settings:probe-wsl-setup': ({ callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:probe-wsl-setup')
+        return dependencies.service.probeWslSetup()
+      },
+      'settings:install-wsl-platform': ({ callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:install-wsl-platform')
+        return dependencies.service.installWslPlatform()
+      },
+      'settings:install-missing-wsl-dependencies': ({ args, callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:install-missing-wsl-dependencies')
+        return dependencies.service.installMissingWslDependencies(args[0])
+      },
+      'settings:create-wsl-support-handoff': ({ callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:create-wsl-support-handoff')
+        return dependencies.service.createWslSupportHandoff()
+      },
+      'settings:install-recommended-wsl-distro': ({ args, callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:install-recommended-wsl-distro')
+        return dependencies.service.installRecommendedWslDistro(args[0])
+      },
+      'settings:open-wsl-terminal': ({ args, callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:open-wsl-terminal')
+        return dependencies.service.openWslTerminal(args[0])
+      },
       'settings:refresh-provider-models': ({ args }) =>
         dependencies.snapshotCommits.projectAfter(
           dependencies.runtime.refreshProviderModels(args[0])
@@ -572,6 +755,18 @@ const registerCoreSettingsApplicationCommands = (
         dependencies.snapshotCommits.currentSnapshotAfter(
           dependencies.service.setReviewerModel(readReviewerModel(args[0]))
         ),
+      'settings:select-wsl-profile': ({ args, callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:select-wsl-profile')
+        return dependencies.service.selectWslProfile(args[0])
+      },
+      'settings:switch-local-shell-to-powershell': ({ callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:switch-local-shell-to-powershell')
+        return dependencies.localShell.switchToPowerShell()
+      },
+      'settings:use-wsl2-bash': ({ callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:use-wsl2-bash')
+        return dependencies.localShell.useWsl2Bash()
+      },
       'settings:set-session-details-model': ({ args }) =>
         dependencies.snapshotCommits.currentSnapshotAfter(
           dependencies.service.setSessionDetailsModel(readSessionDetailsModel(args[0]))
@@ -583,6 +778,18 @@ const registerCoreSettingsApplicationCommands = (
       'settings:set-vision-model': ({ args }) =>
         dependencies.snapshotCommits.currentSnapshotAfter(
           dependencies.service.setVisionModel(readVisionModel(args[0]))
+        ),
+      'settings:update-classification': ({ args, callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:update-classification')
+        return dependencies.service.classification.mutate(args[0])
+      },
+      'settings:test-classification': ({ args, callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:test-classification')
+        return dependencies.service.classification.probe(args[0])
+      },
+      'settings:save-validated-provider': ({ args }) =>
+        dependencies.snapshotCommits.projectAfter(
+          dependencies.runtime.saveValidatedProvider(args[0])
         ),
       'settings:validate-provider': ({ args }) =>
         dependencies.snapshotCommits.projectAfter(dependencies.service.validateProvider(args[0]))

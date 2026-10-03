@@ -24,7 +24,7 @@ const installApi = (overrides: Partial<MockStorageApi> = {}): MockStorageApi => 
   const api: MockStorageApi = {
     pickDirectory: vi.fn().mockResolvedValue(null),
     // Default: resolving the move destination (from defaultParent) yields the visible OpenScience path.
-    inspectDataRoot: vi.fn().mockResolvedValue({ kind: 'move', dataRoot: '/home/u/OpenScience' }),
+    inspectDataRoot: vi.fn().mockResolvedValue({ kind: 'move', dataRoot: '/home/u/EconoMind' }),
     dismissLegacyMovePrompt: vi.fn().mockResolvedValue(undefined),
     detectActive: vi.fn().mockResolvedValue([]),
     migrate: vi.fn().mockResolvedValue({ ok: true, cleanupPending: false }),
@@ -53,7 +53,7 @@ const renderDialog = async (onDismiss = vi.fn()): Promise<void> => {
     root.render(
       <LegacyDataMoveDialog
         currentDataRoot="/home/u/.open-science"
-        defaultParent="/home/u"
+        defaultDataRoot="/home/u/EconoMind"
         onDismiss={onDismiss}
       />
     )
@@ -83,7 +83,7 @@ describe('LegacyDataMoveDialog', () => {
         <LegacyDataMoveDialog
           active={false}
           currentDataRoot="/home/u/.open-science"
-          defaultParent="/home/u"
+          defaultDataRoot="/home/u/EconoMind"
           onDismiss={vi.fn()}
         />
       )
@@ -111,7 +111,7 @@ describe('LegacyDataMoveDialog', () => {
     expect(dialog?.className).toContain('bg-card')
     expect(dialog?.className).toContain('shadow-dialog')
     expect(dialog?.className).toContain('data-[state=open]:zoom-in-95')
-    expect(dialog?.className).toContain('overflow-hidden')
+    expect(dialog?.className).toContain('overflow-y-auto')
     expect(
       Array.from(document.body.querySelectorAll<HTMLElement>('div')).some((element) =>
         element.className.includes('border-b border-border-300/90 px-5 py-3.5')
@@ -122,7 +122,7 @@ describe('LegacyDataMoveDialog', () => {
         element.className.includes('border-t border-border-300/90 px-5 py-3.5')
       )
     ).toBe(true)
-    expect(document.body.textContent).toContain('Move to OpenScience')
+    expect(document.body.textContent).toContain('Move to EconoMind')
     expect(document.body.textContent).toContain('Choose another folder')
     expect(document.body.textContent).toContain('Keep it in the current folder')
   })
@@ -132,9 +132,9 @@ describe('LegacyDataMoveDialog', () => {
     await renderDialog()
 
     expect(document.body.textContent).toContain('/home/u/.open-science')
-    expect(document.body.textContent).toContain('/home/u/OpenScience')
+    expect(document.body.textContent).toContain('/home/u/EconoMind')
     for (const label of [
-      /Move to OpenScience/,
+      /Move to EconoMind/,
       /Choose another folder/,
       /Keep it in the current/
     ]) {
@@ -160,12 +160,12 @@ describe('LegacyDataMoveDialog', () => {
     expect(onDismiss).toHaveBeenCalledTimes(1)
   })
 
-  it('"Move to OpenScience" hands off to the migration flow (detects sessions first)', async () => {
+  it('"Move to EconoMind" hands off to the migration flow (detects sessions first)', async () => {
     const api = installApi()
     await renderDialog()
 
     await act(async () => {
-      clickButton(/Move to OpenScience/)
+      clickButton(/Move to EconoMind/)
       await Promise.resolve()
     })
 
@@ -182,14 +182,14 @@ describe('LegacyDataMoveDialog', () => {
         .mockResolvedValueOnce({
           kind: 'recover',
           recoveryStatus: 'verified',
-          dataRoot: '/home/u/OpenScience'
+          dataRoot: '/home/u/EconoMind'
         })
-        .mockResolvedValue({ kind: 'move', dataRoot: '/home/u/OpenScience' })
+        .mockResolvedValue({ kind: 'move', dataRoot: '/home/u/EconoMind' })
     })
     await renderDialog()
 
     await act(async () => {
-      clickButton(/Move to OpenScience/)
+      clickButton(/Move to EconoMind/)
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -208,11 +208,11 @@ describe('LegacyDataMoveDialog', () => {
     expect(api.inspectDataRoot).toHaveBeenCalledTimes(2)
 
     await act(async () => {
-      clickButton(/Move to OpenScience/)
+      clickButton(/Move to EconoMind/)
       await Promise.resolve()
       await Promise.resolve()
     })
-    expect(api.migrate).toHaveBeenCalledWith('/home/u')
+    expect(api.migrate).toHaveBeenCalledWith('/home/u/EconoMind', undefined)
   })
 
   it('waits for default inspection before enabling the move action', async () => {
@@ -231,7 +231,7 @@ describe('LegacyDataMoveDialog', () => {
     await renderDialog()
 
     const moveButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
-      (button) => button.textContent?.trim() === 'Move to OpenScience'
+      (button) => button.textContent?.trim() === 'Move to EconoMind'
     )
     expect(moveButton?.disabled).toBe(true)
 
@@ -239,7 +239,7 @@ describe('LegacyDataMoveDialog', () => {
       resolveInspection({
         kind: 'recover',
         recoveryStatus: 'verified',
-        dataRoot: '/home/u/OpenScience'
+        dataRoot: '/home/u/EconoMind'
       })
       await Promise.resolve()
     })
@@ -252,7 +252,7 @@ describe('LegacyDataMoveDialog', () => {
       inspectDataRoot: vi
         .fn()
         .mockRejectedValueOnce(new Error('inspection unavailable'))
-        .mockResolvedValueOnce({ kind: 'move', dataRoot: '/home/u/OpenScience' })
+        .mockResolvedValueOnce({ kind: 'move', dataRoot: '/home/u/EconoMind' })
     })
     await renderDialog()
 
@@ -270,7 +270,7 @@ describe('LegacyDataMoveDialog', () => {
     })
 
     expect(api.inspectDataRoot).toHaveBeenCalledTimes(2)
-    expect(document.body.textContent).toContain('/home/u/OpenScience')
+    expect(document.body.textContent).toContain('/home/u/EconoMind')
   })
 
   it('does not dismiss the prompt when persisting the keep-here choice fails', async () => {
@@ -301,12 +301,33 @@ describe('LegacyDataMoveDialog', () => {
     expect(onDismiss).toHaveBeenCalledTimes(1)
   })
 
+  it('can continue for this launch after repeated preference-save failures without claiming a save', async () => {
+    const api = installApi({
+      dismissLegacyMovePrompt: vi.fn().mockRejectedValue(new Error('settings write failed'))
+    })
+    const onDismiss = vi.fn()
+    await renderDialog(onDismiss)
+    expect(document.body.textContent).not.toContain('Continue for now')
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await act(async () => clickButton(/Keep it in the current/))
+    }
+    expect(onDismiss).not.toHaveBeenCalled()
+    expect(document.body.textContent).toContain('we may ask again after restarting')
+    expect(document.body.textContent).not.toContain("We won't ask again.")
+
+    await act(async () => clickButton(/^Continue for now$/))
+    expect(onDismiss).toHaveBeenCalledOnce()
+    expect(api.dismissLegacyMovePrompt).toHaveBeenCalledTimes(3)
+    expect(api.migrate).not.toHaveBeenCalled()
+  })
+
   it('offers discard-only recovery for an interrupted chosen-folder copy', async () => {
     const api = installApi({
       pickDirectory: vi.fn().mockResolvedValue('/mnt/interrupted'),
       inspectDataRoot: vi
         .fn()
-        .mockResolvedValueOnce({ kind: 'move', dataRoot: '/home/u/OpenScience' })
+        .mockResolvedValueOnce({ kind: 'move', dataRoot: '/home/u/EconoMind' })
         .mockResolvedValueOnce({
           kind: 'recover',
           recoveryStatus: 'copying',
@@ -353,7 +374,7 @@ describe('LegacyDataMoveDialog', () => {
       pickDirectory: vi.fn().mockResolvedValue('/mnt/unavailable'),
       inspectDataRoot: vi
         .fn()
-        .mockResolvedValueOnce({ kind: 'move', dataRoot: '/home/u/OpenScience' })
+        .mockResolvedValueOnce({ kind: 'move', dataRoot: '/home/u/EconoMind' })
         .mockRejectedValueOnce(new Error('inspection unavailable'))
     })
     await renderDialog()

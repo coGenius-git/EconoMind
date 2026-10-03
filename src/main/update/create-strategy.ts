@@ -1,10 +1,14 @@
+// Modified by EconoMind contributors: require an independent update feed before enabling updates.
+// Based on AIPOCH Open Science; see LICENSE and NOTICE.
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 import { app } from 'electron'
 
+import { APP } from '../../shared/app-config'
 import { createLogger } from '../logger'
+import { createMacInstallationGuard } from '../mac-installation'
 import { ElectronUpdaterStrategy } from './electron-updater-strategy'
 import { UpdateService } from './service'
 import type { InstallGate, UpdateStrategy } from './strategy'
@@ -15,7 +19,7 @@ export type CreateStrategyOptions = {
   isPackaged?: boolean
   // Running app version. Defaults to app.getVersion(); injectable for tests.
   version?: string
-  // Local distributions deliberately omit the official product's update feed.
+  // EconoMind distributions without their own feed must not contact the upstream updater.
   hasUpdateFeed?: boolean
   // Immutable pre-install backend shutdown gate for in-place strategies. The manual installer flow
   // ignores it because applying there does not quit or replace the running app.
@@ -64,13 +68,20 @@ export const createUpdateStrategy = (
   const version = opts.version ?? app?.getVersion?.() ?? '0.0.0'
   const hasUpdateFeed =
     opts.hasUpdateFeed ??
-    (!process.resourcesPath || existsSync(join(process.resourcesPath, 'app-update.yml')))
-  if (isPackaged && (platform === 'win32' || platform === 'linux') && !hasUpdateFeed) {
+    Boolean(
+      // A previous installation may leave its upstream app-update.yml behind. A feed file alone
+      // must not opt this derivative into updates; EconoMind must configure its own release service.
+      APP.update.manifestUrl.trim() &&
+      process.resourcesPath &&
+      existsSync(join(process.resourcesPath, 'app-update.yml'))
+    )
+  if (!isPackaged || !hasUpdateFeed) {
     // No feed is an intentional offline distribution, not a startup failure. In particular,
     // never fall back to the upstream manifest and replace a customized build with that product.
     const status = (): ReturnType<UpdateStrategy['getStatus']> => ({
       state: 'idle',
-      current: version
+      current: version,
+      unavailableReason: isPackaged ? 'missing-feed' : 'development-build'
     })
     const unchanged = async (): Promise<ReturnType<UpdateStrategy['getStatus']>> => status()
     return {
@@ -84,6 +95,7 @@ export const createUpdateStrategy = (
   const log = createLogger('update')
   const createInPlaceStrategy = (): ElectronUpdaterStrategy =>
     new ElectronUpdaterStrategy({
+      installationGuard: createMacInstallationGuard(),
       ...(opts.installGate ? { installGate: opts.installGate } : {}),
       ...(opts.releaseInstallHandoff ? { releaseInstallHandoff: opts.releaseInstallHandoff } : {}),
       log

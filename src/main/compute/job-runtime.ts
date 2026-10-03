@@ -18,6 +18,7 @@ type ComputeJobRuntime = { start(): void | Promise<void>; stop(): Promise<void> 
 type ComputeJobRuntimeDeps = {
   computeService: Pick<
     ComputeService,
+    | 'bindJobHarvestRetry'
     | 'handleJobUpdated'
     | 'handleJobCancellationConfirmed'
     | 'startQueueReconciliation'
@@ -82,6 +83,30 @@ export const createComputeJobRuntime = (
   const harvestScheduler = new JobHarvestScheduler(pollerDeps.harvestFn!)
   pollerDeps.harvestScheduler = harvestScheduler
 
+  const unbindHarvestRetry = deps.computeService.bindJobHarvestRetry(async (request) => {
+    if (stopRequested || harvestAbortController.signal.aborted) {
+      throw new Error('Compute recovery is paused.')
+    }
+    const signal = harvestAbortController.signal
+    const job = await deps.jobRepository.get(request.jobId)
+    if (
+      !job ||
+      job.project_id !== request.projectId ||
+      job.session_id !== request.sessionId ||
+      job.provider_id !== request.providerId
+    )
+      throw new Error('Compute Job is unavailable.')
+    signal.throwIfAborted()
+    if (!['success', 'failed', 'timeout'].includes(job.status) || job.needs_attention) {
+      throw new Error('Compute Job has no confirmed execution result to collect.')
+    }
+    if (job.harvested_at !== undefined) return
+    if (job.remote_cleanup_disposition === 'cleaned' || !job.remote_workdir) {
+      throw new Error('Remote results are unavailable.')
+    }
+    await harvestScheduler.retry(job, signal)
+  })
+
   const poller = adapters.createPoller?.(pollerDeps) ?? new JobPoller(pollerDeps)
   const cancellationReaper = deps.operationRepository
     ? (adapters.createCancellationReaper?.(deps.operationRepository) ??
@@ -93,12 +118,11 @@ export const createComputeJobRuntime = (
           onConfirmed: async (jobId) => {
             const job = await deps.jobRepository.get(jobId)
             if (!job) return
-            try {
-              await harvestScheduler.schedule(job)
-            } finally {
-              const latest = await deps.jobRepository.get(jobId)
-              if (latest) await deps.computeService.handleJobCancellationConfirmed(latest)
-            }
+            // Execution settlement must be observable independently of result collection. A slow
+            // download must neither hold the cancellation reaper nor delay releasing queue slots.
+            // The shared scheduler owns collection, deduplication, and its shutdown drain.
+            void harvestScheduler.schedule(job, harvestAbortController.signal)
+            await deps.computeService.handleJobCancellationConfirmed(job)
           }
         }
       ))
@@ -108,6 +132,7 @@ export const createComputeJobRuntime = (
     pause: async (): Promise<void> => {
       harvestAbortController.abort()
       await Promise.all([poller.pause(), cancellationReaper?.pause()])
+      await harvestScheduler.waitForIdle()
     },
     resume: (): void => {
       if (stopRequested) return
@@ -147,11 +172,13 @@ export const createComputeJobRuntime = (
             failures.push(error)
           }
         }
+        await attempt(() => unbindHarvestRetry())
         await attempt(() => unbindDeletionRuntime?.())
         await attempt(() => deps.computeService.stopQueueReconciliation())
         await attempt(() => startTask)
         harvestAbortController.abort()
         await Promise.all([attempt(() => poller.stop()), attempt(() => cancellationReaper?.stop())])
+        await attempt(() => harvestScheduler.waitForIdle())
         if (failures.length === 1) throw failures[0]
         if (failures.length) throw new AggregateError(failures, 'Compute runtime cleanup failed.')
       })()

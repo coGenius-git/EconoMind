@@ -28,13 +28,13 @@ describe('Notebook network settings', () => {
       repository.setNotebookNetwork({
         allowedDomains: ['DATA.Example.COM', 'data.example.com'],
         disabledOpenScienceDomainGroups: ['literature'],
-        disabledOpenScienceDomains: ['rest.uniprot.org']
+        disabledOpenScienceDomains: ['api.worldbank.org', 'rest.uniprot.org']
       })
     ).resolves.toMatchObject({
       notebookNetwork: {
         allowedDomains: ['data.example.com'],
         disabledOpenScienceDomainGroups: ['literature'],
-        disabledOpenScienceDomains: ['rest.uniprot.org']
+        disabledOpenScienceDomains: ['api.worldbank.org']
       }
     })
 
@@ -42,7 +42,7 @@ describe('Notebook network settings', () => {
       notebookNetwork: {
         allowedDomains: ['data.example.com'],
         disabledOpenScienceDomainGroups: ['literature'],
-        disabledOpenScienceDomains: ['rest.uniprot.org']
+        disabledOpenScienceDomains: ['api.worldbank.org']
       }
     })
   })

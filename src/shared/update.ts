@@ -21,10 +21,17 @@ export type UpdateBlocker = 'agent' | 'delegated' | 'notebook' | 'reviewer' | 's
 // Call intent stays transient and transport-neutral. Desktop callers omit these options; headless
 // callers use them to avoid native dialogs and desktop relaunches.
 export type UpdateDownloadOptions = { nonInteractive?: boolean }
-export type UpdateApplyOptions = { relaunch?: boolean }
+export type LegacyShellRecovery = { token: string; count: number }
+export type UpdateApplyOptions = {
+  relaunch?: boolean
+  force?: boolean
+  legacyShellRecoveryToken?: string
+}
 
 // The single status the main process broadcasts and the renderer store mirrors.
 export type UpdateStatus = {
+  // An unavailable check must never look like a successful latest-version result.
+  unavailableReason?: 'development-build' | 'missing-feed'
   state: UpdateState
   current: string
   latest?: string
@@ -43,6 +50,8 @@ export type UpdateStatus = {
   // Active research that prevented an in-place install. This is deliberately not a new UpdateState:
   // the operation still failed, while callers that need automation can distinguish a safe block.
   blockedBy?: UpdateBlocker[]
+  // Transient, exact-snapshot consent for backing up unidentifiable historical Shell launch records.
+  legacyShellRecovery?: LegacyShellRecovery
   // How the renderer applies a ready update: open the downloaded installer (mac manual reinstall) or
   // restart into an in-place electron-updater install (win/linux). Set by the active strategy.
   applyKind?: 'installer' | 'restart'
@@ -87,7 +96,7 @@ export const platformDownloadKey = (platform: NodeJS.Platform, arch: string): st
     if (arch === 'x64') return 'mac-x64'
   }
   if (platform === 'win32' && arch === 'x64') return 'win-x64'
-  if (platform === 'linux' && arch === 'x64') return 'linux-x64-deb'
+  if (platform === 'linux' && (arch === 'x64' || arch === 'arm64')) return `linux-${arch}-deb`
   return null
 }
 
@@ -98,8 +107,8 @@ export const selectDownload = (
 ): PlatformDownload | null => {
   const key = platformDownloadKey(platform, arch)
   if (key && manifest.downloads[key]) return manifest.downloads[key]
-  if (platform === 'linux' && arch === 'x64' && manifest.downloads['linux-x64-appimage']) {
-    return manifest.downloads['linux-x64-appimage']
+  if (platform === 'linux' && key) {
+    return manifest.downloads[`linux-${arch}-appimage`] ?? null
   }
   return null
 }
@@ -117,3 +126,7 @@ export const formatBytes = (bytes: number): string => {
   }
   return `${value.toFixed(1)} ${BYTE_UNITS[unitIndex]}`
 }
+
+// Actionable installation prerequisite, shared by both update strategies and renderer surfaces.
+export const UPDATE_INSTALLATION_REQUIRED =
+  'EconoMind is running on a read-only disk. Drag it to Applications, quit this copy, and reopen it from Applications before updating.'

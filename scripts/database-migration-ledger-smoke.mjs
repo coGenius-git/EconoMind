@@ -168,6 +168,34 @@ const EXPECTED_MIGRATION_LEDGER = [
   {
     id: '0041_project_category',
     checksum: 'aadac55d74d447aca0fb697c6c1f838e2eee2e74b9fb43c5e6b5d7281e5cfb98'
+  },
+  {
+    id: '0042_bookmarks',
+    checksum: 'eb18987b075efacb10925fe13319ae47db677060d12edfb67e39aaa7a3b9934a'
+  },
+  {
+    id: '0043_classification_usage',
+    checksum: 'e8904d8a4be436005feaed63c804ff249d819393d88d7bcf2e5b3ec1c1b7025c'
+  },
+  {
+    id: '0044_pdf_annotations',
+    checksum: 'd18cbcf6dc26baaf5fd8e148f039396064d35f1fe9ce543695b0cbff6234f6fa'
+  },
+  {
+    id: '0045_literature_smart_collections',
+    checksum: 'cf8876f5b0043ce09dc78be39570625b31c038b936b735933886323686a9ef99'
+  },
+  {
+    id: '0046_literature_smart_pause_run',
+    checksum: '0e3487f4c9a5aaa48e8ccbc31b1a6594401a88217c261fbed98763555074c3c4'
+  },
+  {
+    id: '0047_journal_attributes',
+    checksum: '9e788e5e15b4b4a4a4a698aba405e5c24b7bef05c22415a1dc2ae81607463050'
+  },
+  {
+    id: '0048_session_replay',
+    checksum: '105f6cff18a41bc21894120bab5f26eac4e89eba584ccf4d9f9185c5e32657fd'
   }
 ]
 const LEGACY_PROJECT_ID = 'package-smoke-legacy-project'

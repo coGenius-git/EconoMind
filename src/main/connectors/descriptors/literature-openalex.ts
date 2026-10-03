@@ -1,7 +1,10 @@
+// Modified by EconoMind contributors: deduplicate model-facing tool documentation.
+// Based on AIPOCH Open Science; see LICENSE and NOTICE.
 import type { ToolContext, ToolDescriptor } from '../types'
 
-// OpenAlex REST API (all disciplines, ~250M works). Dispatch requires an API key and applies it only
-// to this exact origin. Payloads are kept lean via `select=` and multi-page walks use cursor paging.
+// OpenAlex REST API (all disciplines, ~250M works). An API key is optional for basic use and is
+// applied only to this exact origin. Payloads are kept lean via `select=` and multi-page walks use
+// cursor paging.
 const BASE = 'https://api.openalex.org'
 const PER_PAGE = 200
 
@@ -9,9 +12,10 @@ const fetchOpenAlexJson = (ctx: ToolContext, rawUrl: string): Promise<unknown> =
   const url = new URL(rawUrl)
   if (url.origin !== BASE) throw new Error('OpenAlex credential target must use the OpenAlex API')
   const apiKey = ctx.credentials.openAlexApiKey
-  if (!apiKey) throw new Error('OpenAlex API key is required')
-  const separator = rawUrl.includes('?') ? '&' : '?'
-  return ctx.fetchJson(`${rawUrl}${separator}api_key=${encodeURIComponent(apiKey)}`)
+  const urlWithKey = apiKey
+    ? `${rawUrl}${rawUrl.includes('?') ? '&' : '?'}api_key=${encodeURIComponent(apiKey)}`
+    : rawUrl
+  return ctx.fetchJson(urlWithKey)
 }
 
 // Selected fields for the lean work record (see leanWork). include_abstracts adds
@@ -451,7 +455,7 @@ const OPENALEX_LITERATURE_TOOL_DEFINITIONS: ToolDescriptor[] = [
     id: 'openalex_search_works',
     connector: 'literature',
     description:
-      'Search OpenAlex scholarly works (all disciplines, ~250M records) with year/type/OA/venue filters. Args: query (free-text over title+abstract+fulltext; optional if a filter is set), year_from, year_to (inclusive years), work_type (article/review/preprint/book-chapter/dataset/dissertation), open_access_only, venue (S-id, openalex.org URL, ISSN, or a plain name resolved to the top sources hit — surfaced in venue_resolved; pass an exact ID to skip resolution), sort (relevance default / cited_by_count / publication_date), max_records (default 50, hard ceiling 500; pages of 200), include_abstracts (reconstructed from the inverted index, but ONLY for verified-open licenses — cc-by/cc-by-sa/cc0/public-domain; others get abstract=null + abstract_policy note + abstract_license; adds bulk). Returns {query, filters, sort, api_total, n_records_returned, records_truncated, records}; each record is the lean work shape (openalex_id, doi, pmid, title, publication_year/date, type, language, is_retracted, authors[...], source{...}, biblio, cited_by_count, fwci, referenced_works_count, open_access{...}, best_oa_pdf_url, primary_topic, keywords).',
+      'All-discipline search: query (title/abstract/fulltext) or year/type/OA/venue filter required; years inclusive. work_type: article/review/preprint/book-chapter/dataset/dissertation. venue: S-id/OpenAlex URL/ISSN/name (top hit in venue_resolved). max_records cap 500, pages 200. Abstracts: cc-by/cc-by-sa/cc0/public-domain only; otherwise abstract=null plus abstract_policy/abstract_license.',
     input: {
       type: 'object',
       properties: {
@@ -471,7 +475,7 @@ const OPENALEX_LITERATURE_TOOL_DEFINITIONS: ToolDescriptor[] = [
       }
     },
     returns:
-      '{query, filters (applied filter object), venue_resolved? , sort, api_total (meta.count), n_records_returned, records_truncated (api_total > returned), records[]} — each record the lean work shape.',
+      '{query, filters, venue_resolved?, sort, api_total, n_records_returned, records_truncated (api_total > returned), records:[Work]}. Work={openalex_id, doi, pmid, title, publication_year, publication_date, type, language, is_retracted, authors[], source{}, biblio, cited_by_count, fwci, referenced_works_count, open_access{}, best_oa_pdf_url, primary_topic, keywords}; optional abstract fields as above.',
     example:
       'const result = await host.mcp("literature", "openalex_search_works", {"query": "CRISPR base editing", "year_from": 2020, "open_access_only": true, "sort": "cited_by_count", "max_records": 25})',
     run: async (ctx, a) => {
@@ -536,7 +540,7 @@ const OPENALEX_LITERATURE_TOOL_DEFINITIONS: ToolDescriptor[] = [
     id: 'openalex_get_work',
     connector: 'literature',
     description:
-      'Fetch one OpenAlex work in full — metadata, abstract (reconstructed from the inverted index, license-gated as in openalex_search_works), OA locations, referenced_works (outgoing W-ids — hydrate with openalex_references) and counts_by_year. Args: work_id (W-id, openalex.org URL, bare DOI, or doi.org URL). DOI lookups resolve via the claimant filter; when several works share one DOI the most-cited is selected and doi_claimants + doi_resolution_note are included. Raises not-found for unknown IDs/DOIs.',
+      'Fetch W-id/OpenAlex URL/DOI/doi.org URL; unknown IDs fail. Multiple DOI claimants: select most-cited, report ambiguity. Abstract gate as openalex_search_works; hydrate referenced_works with openalex_references.',
     input: {
       type: 'object',
       properties: { work_id: { type: 'string' } },
@@ -544,7 +548,7 @@ const OPENALEX_LITERATURE_TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
     required: ['work_id'],
     returns:
-      'The lean work shape plus {abstract, abstract_license?, abstract_policy?, referenced_works (W-ids), counts_by_year, doi_claimants?, doi_resolution_note?}.',
+      'Work plus {abstract, abstract_license?, abstract_policy?, referenced_works:[W-id], counts_by_year, doi_claimants?, doi_resolution_note?}.',
     example:
       'const result = await host.mcp("literature", "openalex_get_work", {"work_id": "W2741809807"})',
     run: async (ctx, a) => {
@@ -585,7 +589,7 @@ const OPENALEX_LITERATURE_TOOL_DEFINITIONS: ToolDescriptor[] = [
     id: 'openalex_citations',
     connector: 'literature',
     description:
-      "List works that CITE a given work (incoming citations) via OpenAlex's citation graph. Args: work_id (W-id/URL/DOI — DOIs cost one extra resolution request), sort (cited_by_count default / publication_date / relevance), max_records (default 50, ceiling 500), include_abstracts. Returns {work_id, api_total (the true citing-work count), n_records_returned, records_truncated, records} (lean work records).",
+      'Incoming citations for W-id/URL/DOI. DOI adds one lookup; claimant rule as openalex_get_work. max_records cap 500; abstract gate as openalex_search_works.',
     input: {
       type: 'object',
       properties: {
@@ -602,7 +606,7 @@ const OPENALEX_LITERATURE_TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
     required: ['work_id'],
     returns:
-      '{work_id (resolved W-id), api_total, n_records_returned, records_truncated, records[], doi_claimants?, doi_resolution_note?}.',
+      '{work_id (resolved W-id), api_total (citing-work count), n_records_returned, records_truncated, records:[Work], doi_claimants?, doi_resolution_note?}.',
     example:
       'const result = await host.mcp("literature", "openalex_citations", {"work_id": "W2741809807", "sort": "cited_by_count", "max_records": 50})',
     run: async (ctx, a) => {
@@ -643,7 +647,7 @@ const OPENALEX_LITERATURE_TOOL_DEFINITIONS: ToolDescriptor[] = [
     id: 'openalex_references',
     connector: 'literature',
     description:
-      'List the works a given work CITES (outgoing references), hydrated to full metadata in reference-list order. Args: work_id (W-id/URL/DOI), max_records (default 100, ceiling 500; hydration batched 50/request). Returns {work_id, n_references, n_records_returned, records_truncated, references_not_hydrated (IDs OpenAlex has no record for — never silently dropped), reference_ids (ALL outgoing W-ids), records}.',
+      'Outgoing W-id/URL/DOI references in original order. max_records cap 500; hydrate 50/request. Missing records reported, never silently dropped.',
     input: {
       type: 'object',
       properties: {
@@ -654,7 +658,7 @@ const OPENALEX_LITERATURE_TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
     required: ['work_id'],
     returns:
-      '{work_id, n_references, n_records_returned, records_truncated, references_not_hydrated[], reference_ids[] (all outgoing W-ids, order preserved), records[]}.',
+      '{work_id, n_references, n_records_returned, records_truncated, references_not_hydrated:[W-id], reference_ids:[W-id] (ALL outgoing IDs), records:[Work]}.',
     example:
       'const result = await host.mcp("literature", "openalex_references", {"work_id": "W2741809807", "max_records": 100})',
     run: async (ctx, a) => {
@@ -703,7 +707,7 @@ const OPENALEX_LITERATURE_TOOL_DEFINITIONS: ToolDescriptor[] = [
     id: 'openalex_search_authors',
     connector: 'literature',
     description:
-      'Search OpenAlex author profiles by name. Args: query (matches display name + alternatives; expect homonyms — check affiliations/topics/ORCID), max_records (default 25, ceiling 500). Returns {query, api_total, n_records_returned, records_truncated, records}; each record {author_id, name, orcid, works_count, cited_by_count, h_index, i10_index, affiliations[{institution, years}], last_known_institutions, top_topics}. Use author_id with openalex_get_author.',
+      'Name/alias search; disambiguate via affiliations/topics/ORCID. max_records cap 500.',
     input: {
       type: 'object',
       properties: {
@@ -714,7 +718,7 @@ const OPENALEX_LITERATURE_TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
     required: ['query'],
     returns:
-      '{query, api_total, n_records_returned, records_truncated, records[]} — each record the lean author shape.',
+      '{query, api_total, n_records_returned, records_truncated, records:[Author]}. Author={author_id, name, orcid, works_count, cited_by_count, h_index, i10_index, affiliations:[{institution,years}], last_known_institutions, top_topics}.',
     example:
       'const result = await host.mcp("literature", "openalex_search_authors", {"query": "Jennifer Doudna", "max_records": 25})',
     run: async (ctx, a) => {
@@ -737,7 +741,7 @@ const OPENALEX_LITERATURE_TOOL_DEFINITIONS: ToolDescriptor[] = [
     id: 'openalex_get_author',
     connector: 'literature',
     description:
-      "Fetch one OpenAlex author profile plus their top-cited works. Args: author_id (A-id, openalex.org URL, or ORCID; CAVEAT: OpenAlex's ORCID pointer can resolve to a sparse duplicate — prefer the A-id from openalex_search_authors), works_sample (default 10, max 200; 0 skips the extra request). Returns the author record plus counts_by_year, top_works_total (true total works count) and top_works (lean work records by citations).",
+      'Profile/top-cited works by A-id/OpenAlex URL/ORCID. ORCID may resolve to a sparse duplicate; prefer search-derived A-id. works_sample cap 200; 0 skips request.',
     input: {
       type: 'object',
       properties: {
@@ -748,7 +752,7 @@ const OPENALEX_LITERATURE_TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
     required: ['author_id'],
     returns:
-      'The lean author shape plus {counts_by_year, top_works_total, top_works[] (lean work records by citations)}.',
+      'Author plus {counts_by_year, top_works_total (total matches; 0 if skipped), top_works:[Work] (citation order)}.',
     example:
       'const result = await host.mcp("literature", "openalex_get_author", {"author_id": "A5023888391", "works_sample": 10})',
     run: async (ctx, a) => {
@@ -782,7 +786,7 @@ const OPENALEX_LITERATURE_TOOL_DEFINITIONS: ToolDescriptor[] = [
     id: 'openalex_venue_info',
     connector: 'literature',
     description:
-      "Look up journals/repositories ('sources') in OpenAlex — OA status, DOAJ listing, APC, citation metrics. Args: venue (exact S-id, openalex.org URL, or ISSN for a single record; anything else is a name search), max_records (default 10, ceiling 500; name-search only). Returns: exact -> one source record + counts_by_year; name search -> {query, api_total, n_records_returned, records_truncated, records}. Source record: {source_id, display_name, type, issn_l, issn, host_organization, country_code, homepage_url, is_oa, is_in_doaj, is_core, apc_usd, works_count, cited_by_count, h_index, two_year_mean_citedness, first/last_publication_year, top_topics}.",
+      'Journal/repository: S-id/OpenAlex URL/ISSN gives one source; otherwise name search (max_records cap 500).',
     input: {
       type: 'object',
       properties: {
@@ -793,7 +797,7 @@ const OPENALEX_LITERATURE_TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
     required: ['venue'],
     returns:
-      'Exact id -> the lean source shape plus {counts_by_year}. Name search -> {query, api_total, n_records_returned, records_truncated, records[]}.',
+      'Exact: Source plus {counts_by_year}. Search: {query,api_total,n_records_returned,records_truncated,records:[Source]}. Source={source_id,display_name,type,issn_l,issn,host_organization,country_code,homepage_url,is_oa,is_in_doaj,is_core,apc_usd,works_count,cited_by_count,h_index,two_year_mean_citedness,first_publication_year,last_publication_year,top_topics}.',
     example:
       'const result = await host.mcp("literature", "openalex_venue_info", {"venue": "Nature", "max_records": 10})',
     run: async (ctx, a) => {
@@ -823,8 +827,5 @@ const OPENALEX_LITERATURE_TOOL_DEFINITIONS: ToolDescriptor[] = [
 ]
 
 export const OPENALEX_LITERATURE_TOOLS: ToolDescriptor[] = OPENALEX_LITERATURE_TOOL_DEFINITIONS.map(
-  (descriptor) => ({
-    ...descriptor,
-    requiredCredential: 'openalex'
-  })
+  (descriptor) => ({ ...descriptor })
 )

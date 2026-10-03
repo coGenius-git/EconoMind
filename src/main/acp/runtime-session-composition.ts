@@ -1,5 +1,6 @@
 import type { SessionPermissionProfileState } from '../../shared/permission-profiles'
 import { SESSION_PLAN_SYSTEM_PROMPT_APPEND } from '../session-plan/guidance'
+import { SESSION_PLAN_FILE_SYSTEM_PROMPT_APPEND } from '../session-plan/plan-context-guidance'
 import { createLogger } from '../logger'
 import { AcpAppContinuationOwner } from './app-continuation-owner'
 import { AcpClientInteractionOwner } from './client-interaction-owner'
@@ -15,13 +16,21 @@ import { AcpRuntimePublicationOwner } from './runtime-publication-owner'
 import type { RuntimeSnapshotProjection } from './runtime-snapshot-owner'
 import { AcpSessionEnvironmentPolicy } from './session-environment-policy'
 import { AcpSessionRegistry } from './session-registry'
-import { AcpSessionUpdateProjector } from './session-update-projector'
+import {
+  AcpSessionUpdateProjector,
+  type AcpToolFailureDiagnostic
+} from './session-update-projector'
 
 const log = createLogger('acp')
 
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 const composeAcpRuntimeSessionOwners = (options: AcpRuntimeOptions, base: AcpRuntimeBaseOwners) => {
   const callbacks = options.callbacks ?? {}
+  let toolFailureObserver: ((failure: AcpToolFailureDiagnostic) => void) | undefined
+  const bindToolFailureObserver = (observer: (failure: AcpToolFailureDiagnostic) => void): void => {
+    if (toolFailureObserver) throw new Error('ACP tool failure observer is already bound.')
+    toolFailureObserver = observer
+  }
   const activeSessionIds = (): string[] =>
     sessionRegistry.entries(true).map(({ appSessionId }) => appSessionId)
   const promptInFlightSessionIds = (): string[] => {
@@ -127,7 +136,16 @@ const composeAcpRuntimeSessionOwners = (options: AcpRuntimeOptions, base: AcpRun
     ...(options.sessionCapabilityPolicy
       ? { capabilityPolicy: options.sessionCapabilityPolicy }
       : {}),
-    ...(base.planService ? { planSystemPromptAppend: SESSION_PLAN_SYSTEM_PROMPT_APPEND } : {})
+    ...(base.planService
+      ? {
+          planSystemPromptAppend: [
+            SESSION_PLAN_SYSTEM_PROMPT_APPEND,
+            ...(options.notebook && options.artifacts?.dataRoot
+              ? [SESSION_PLAN_FILE_SYSTEM_PROMPT_APPEND]
+              : [])
+          ].join('\n\n')
+        }
+      : {})
   })
   const contextUsagePolicy = new AcpContextUsagePolicy({
     backend: () => base.backendGeneration.current,
@@ -142,7 +160,14 @@ const composeAcpRuntimeSessionOwners = (options: AcpRuntimeOptions, base: AcpRun
   )
   const permissionWaitOwner = new AcpPermissionWaitOwner(
     options.permissionWait?.sessions,
-    options.permissionWait?.onSessionUpdated
+    options.permissionWait?.onSessionUpdated,
+    options.runtimeSessions
+      ? (candidate) =>
+          options.runtimeSessions!.preparePermissionTranscript(
+            candidate.request,
+            candidate.promptMessageId!
+          )
+      : undefined
   )
   const permissionContext = new AcpPermissionContext({
     emitPermissionRequest: (request) => publication.publishPermissionRequest(request),
@@ -152,6 +177,7 @@ const composeAcpRuntimeSessionOwners = (options: AcpRuntimeOptions, base: AcpRun
         const snapshot = sessionRegistry.lookup(sessionId)?.aggregate.snapshot()
         return snapshot
           ? {
+              modelRoute: base.backendGeneration.current.modelRoute,
               ...(snapshot.cwd === undefined ? {} : { cwd: snapshot.cwd }),
               ...(snapshot.frameworkId === undefined ? {} : { frameworkId: snapshot.frameworkId }),
               ...(snapshot.permissionProfile === undefined
@@ -172,14 +198,19 @@ const composeAcpRuntimeSessionOwners = (options: AcpRuntimeOptions, base: AcpRun
         return scope?.kind === 'prompt'
           ? {
               sequence: scope.sequence,
+              permissionPrompts: scope.permissionPrompts,
               promptMessageId: scope.promptMessageId,
               isCancellationAccepted: () => base.sessionInteractions.isCancellationAccepted(scope)
             }
           : undefined
       },
+      permissionPromptsForSession: (sessionId) =>
+        base.sessionInteractions.permissionPromptsForSession(sessionId),
       currentInteractionSequence: (sessionId) =>
         base.sessionInteractions.current(sessionId)?.sequence,
       mcpServerNamesFor: (sessionId) => base.sessionCapabilities.mcpServerNamesFor(sessionId),
+      shellRuntimeBindingFor: (sessionId) =>
+        base.sessionCapabilities.shellRuntimeBindingFor(sessionId),
       reviewerContextFor: (sessionId) => reviewerSessions.contextFor(sessionId),
       resolveReviewerPermission: (request) => reviewerSessions.resolvePermission(request),
       currentFramework: () => base.backendGeneration.current.framework,
@@ -194,12 +225,22 @@ const composeAcpRuntimeSessionOwners = (options: AcpRuntimeOptions, base: AcpRun
     },
     setTimer: base.setTimer,
     clearTimer: base.clearTimer,
-    onPermissionSettled: callbacks.onPermissionSettled,
+    onPermissionSettled: (requestId, state) => {
+      try {
+        callbacks.onPermissionSettled?.(requestId, state)
+      } finally {
+        // RPC cancellation settles through the broker without a renderer response command.
+        // Incremental tool events do not publish the updated pending-permission list.
+        publication.emitState()
+      }
+    },
     onToolPermissionSettled: (request, state, context) => {
       const frameworkId = sessionRegistry
         .lookup(request.sessionId)
         ?.aggregate.snapshot().frameworkId
       if (state === 'resolved' && frameworkId !== 'codebuddy') return
+      const interaction = base.sessionInteractions.current(request.sessionId)
+      const unattended = interaction?.kind === 'prompt' && interaction.permissionPrompts === 'none'
       publication.pushEvent({
         kind: 'tool',
         level: 'info',
@@ -209,6 +250,11 @@ const composeAcpRuntimeSessionOwners = (options: AcpRuntimeOptions, base: AcpRun
         title: request.title,
         providerToolName: request.providerToolName ?? request.mcpIdentity,
         rawInput: request.rawInput,
+        ...(state === 'rejected' && unattended
+          ? {
+              text: 'Permission denied: no human approver is available for this execution. Do not retry this request.'
+            }
+          : {}),
         status:
           state === 'rejected'
             ? 'completed'
@@ -285,6 +331,10 @@ const composeAcpRuntimeSessionOwners = (options: AcpRuntimeOptions, base: AcpRun
         sessionRegistry.lookup(sessionId)?.aggregate.snapshot().frameworkId,
       reviewerFrameworkForSession: (sessionId) =>
         reviewerSessions.contextFor(sessionId)?.frameworkId,
+      permissionPromptsForSession: (sessionId) => {
+        const interaction = base.sessionInteractions.current(sessionId)
+        return interaction?.kind === 'prompt' ? interaction.permissionPrompts : undefined
+      },
       promptMessageIdForSession: (sessionId) => {
         const interaction = base.sessionInteractions.current(sessionId)
         return interaction?.kind === 'prompt' ? interaction.promptMessageId : undefined
@@ -309,13 +359,15 @@ const composeAcpRuntimeSessionOwners = (options: AcpRuntimeOptions, base: AcpRun
       permissionContext.setProviderPermissionProfile(sessionId, profile),
     emitState: () => publication.emitState(),
     pushEvent: (event) => publication.pushEvent(event),
-    reportToolFailure: (effect) =>
+    reportToolFailure: (effect) => {
       log.warn('tool call failed', {
         tool: effect.tool,
         toolCallId: effect.toolCallId,
         sessionId: effect.sessionId,
         reason: effect.reason
       })
+      toolFailureObserver?.(effect)
+    }
   })
 
   return Object.freeze({
@@ -330,7 +382,8 @@ const composeAcpRuntimeSessionOwners = (options: AcpRuntimeOptions, base: AcpRun
     permissionContext,
     clientInteractions,
     reviewerSessions,
-    sessionUpdateProjector
+    sessionUpdateProjector,
+    bindToolFailureObserver
   })
 }
 /* eslint-enable @typescript-eslint/explicit-function-return-type */

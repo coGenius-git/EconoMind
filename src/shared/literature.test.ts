@@ -15,11 +15,13 @@ import {
   parseLiteratureAttachmentVersionReference
 } from './literature'
 
-describe('Literature DOI draft lookup contract', () => {
+describe('Literature identifier draft lookup contract', () => {
   it('accepts a DOI and rejects URLs, malformed identifiers, and oversized arguments', () => {
     const { args } = literatureApplicationCommandContracts.lookupMetadata
     expect(args.parse(['10.1007/s11914-026-00956-3'])).toEqual(['10.1007/s11914-026-00956-3'])
+    expect(args.parse(['pmid:29370583'])).toEqual(['pmid:29370583'])
     for (const input of [
+      ['pmid:abc'],
       [],
       ['https://example.com'],
       ['10.1007/has space'],
@@ -286,4 +288,28 @@ describe('Literature full-text transfer contract', () => {
       result.parse({ mode: 'transfer', transfer: { ...transfer, status: 'invented' } })
     ).toThrow()
   })
+})
+
+it('bounds decision-only reads without accepting mutation fields', () => {
+  const request = { kind: 'read-smart-decisions', collectionId: 'collection', itemIds: ['paper'] }
+  expect(literatureCatalogCommandSchema.parse(request)).toEqual(request)
+  expect(literatureCatalogCommandSchema.safeParse({ ...request, itemIds: [] }).success).toBe(false)
+  expect(
+    literatureCatalogCommandSchema.safeParse({ ...request, itemIds: Array(101).fill('paper') })
+      .success
+  ).toBe(false)
+  expect(
+    literatureCatalogCommandSchema.safeParse({ ...request, decision: 'include' }).success
+  ).toBe(false)
+})
+
+it('scopes progress reads to a run and rejects mutation or unbounded paging fields', () => {
+  const request = { kind: 'read-smart-run-progress', collectionId: 'collection', runId: 'run' }
+  expect(literatureCatalogCommandSchema.parse(request)).toEqual(request)
+  for (const invalid of [
+    { ...request, runId: '' },
+    { ...request, action: 'refresh' },
+    { ...request, limit: 100000 }
+  ])
+    expect(literatureCatalogCommandSchema.safeParse(invalid).success).toBe(false)
 })

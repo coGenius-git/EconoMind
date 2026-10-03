@@ -29,7 +29,11 @@ const createMockClient = (
   project: Record<string, ReturnType<typeof vi.fn>>
   projectDeletionIntent: Record<string, ReturnType<typeof vi.fn>>
   projectPreviewState: { deleteMany: ReturnType<typeof vi.fn> }
+  sessionReplayProgress: { deleteMany: ReturnType<typeof vi.fn> }
+  sessionDiscussionSnapshot: { deleteMany: ReturnType<typeof vi.fn> }
   projectLiterature: { deleteMany: ReturnType<typeof vi.fn> }
+  pdfAnnotation: { deleteMany: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn> }
+  bookmark: { deleteMany: ReturnType<typeof vi.fn> }
   visionEvidence: { deleteMany: ReturnType<typeof vi.fn> }
   memoryEntry: { deleteMany: ReturnType<typeof vi.fn> }
   memorySettings: { update: ReturnType<typeof vi.fn> }
@@ -51,6 +55,13 @@ const createMockClient = (
   const executeRaw = vi.fn().mockResolvedValue(1)
   const projectLiterature = { deleteMany: vi.fn(() => Promise.resolve({ count: 1 })) }
   const projectPreviewState = { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) }
+  const sessionReplayProgress = { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) }
+  const sessionDiscussionSnapshot = { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) }
+  const pdfAnnotation = {
+    findMany: vi.fn().mockResolvedValue([{ id: 'annotation-1' }]),
+    deleteMany: vi.fn().mockResolvedValue({ count: 1 })
+  }
+  const bookmark = { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) }
   const visionEvidence = { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) }
   const memoryEntry = { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) }
   const memorySettings = {
@@ -63,6 +74,12 @@ const createMockClient = (
     project,
     projectDeletionIntent,
     projectPreviewState,
+    sessionReplayProgress,
+    sessionDiscussionSnapshot,
+    bookmark,
+    pdfAnnotation,
+    pdfAnnotationImport: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    tagAssignment: { deleteMany: vi.fn() },
     projectLiterature,
     visionEvidence,
     memoryEntry,
@@ -70,11 +87,15 @@ const createMockClient = (
   } as unknown as ProjectClient
 
   return {
+    sessionReplayProgress,
+    sessionDiscussionSnapshot,
     client,
     executeRaw,
     project,
     projectDeletionIntent,
     projectPreviewState,
+    bookmark,
+    pdfAnnotation,
     projectLiterature,
     visionEvidence,
     memoryEntry,
@@ -363,17 +384,41 @@ describe('project repository', () => {
   })
 
   it('soft-deletes a project while removing active-only derived children', async () => {
-    const { client, project, projectPreviewState, visionEvidence, memoryEntry, memorySettings } =
-      createMockClient({
-        findUnique: () => Promise.resolve(createRow()),
-        updateMany: () => Promise.resolve({ count: 1 })
-      })
+    const {
+      client,
+      project,
+      projectPreviewState,
+      sessionReplayProgress,
+      sessionDiscussionSnapshot,
+      bookmark,
+      pdfAnnotation,
+      visionEvidence,
+      memoryEntry,
+      memorySettings
+    } = createMockClient({
+      findUnique: () => Promise.resolve(createRow()),
+      updateMany: () => Promise.resolve({ count: 1 })
+    })
     const repository = new ProjectRepository(() => Promise.resolve(client))
 
     await expect(repository.delete('project-1')).resolves.toEqual({ memoryRevision: 7 })
 
     expect(projectPreviewState.deleteMany).toHaveBeenCalledWith({
       where: { projectId: 'project-1' }
+    })
+    expect(bookmark.deleteMany).toHaveBeenCalledWith({ where: { projectId: 'project-1' } })
+    expect(sessionReplayProgress.deleteMany).toHaveBeenCalledWith({
+      where: { projectId: 'project-1' }
+    })
+    expect(sessionDiscussionSnapshot.deleteMany).toHaveBeenCalledWith({
+      where: { sourceProjectId: 'project-1' }
+    })
+    expect(pdfAnnotation.findMany).toHaveBeenCalledWith({
+      where: { projectId: 'project-1' },
+      select: { id: true }
+    })
+    expect(pdfAnnotation.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ['annotation-1'] } }
     })
     expect(visionEvidence.deleteMany).toHaveBeenCalledWith({ where: { projectId: 'project-1' } })
     expect(memoryEntry.deleteMany).toHaveBeenCalledWith({ where: { projectId: 'project-1' } })
