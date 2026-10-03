@@ -1,6 +1,7 @@
 import { ResearchWorkbenchHeader } from '@/components/ResearchWorkbenchHeader'
 import { useSettingsStore } from '@/stores/settings-store'
 import { LiteratureScreeningWizard } from './LiteratureScreeningWizard'
+import { LiteratureDiscoveryDialog } from './discovery/LiteratureDiscoveryDialog'
 import { BibliometricsPanel } from '../research-tools/BibliometricsPanel'
 import { ConfirmActionDialog } from '@/components/ui/confirm-action-dialog'
 import { LITERATURE_JOB_MAX_ITEMS } from '../../../../shared/literature-jobs'
@@ -216,6 +217,7 @@ const LiteratureLibraryPage = (): React.JSX.Element => {
     () => window.sessionStorage.getItem(LITERATURE_REVIEW_CTA_ATTENTION_KEY) !== 'true'
   )
   const [screeningWizardOpen, setScreeningWizardOpen] = useState(false)
+  const [discoveryOpen, setDiscoveryOpen] = useState(false)
   const [bibliometricsOpen, setBibliometricsOpen] = useState(false)
   const [collectionId, setCollectionId] = useState<string>()
   const [screeningCollection, setScreeningCollection] = useState<string>()
@@ -1540,6 +1542,16 @@ const LiteratureLibraryPage = (): React.JSX.Element => {
           }}
           onSettings={() => useSettingsStore.getState().openSettings()}
         />
+        {discoveryOpen ? (
+          <LiteratureDiscoveryDialog
+            onClose={() => setDiscoveryOpen(false)}
+            collectionId={collectionId}
+            onImported={() => {
+              void loadEntries(true)
+              void loadCollections()
+            }}
+          />
+        ) : null}
         {screeningWizardOpen ? (
           <LiteratureScreeningWizard
             open
@@ -1568,6 +1580,7 @@ const LiteratureLibraryPage = (): React.JSX.Element => {
               selectLibrary,
               selectProject,
               openScreening: () => setScreeningWizardOpen(true),
+              openDiscovery: () => setDiscoveryOpen(true),
               openBibliometrics: () => setBibliometricsOpen(true),
               screeningAvailable: Boolean(reviewProjectId),
               openDuplicates: () => {

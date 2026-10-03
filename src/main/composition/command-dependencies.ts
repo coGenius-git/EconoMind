@@ -213,7 +213,8 @@ export function composeCommandDependencies({
       literatureCitationDocument: researchCatalog.literatureCitationDocument,
       literatureCatalog: researchCatalog.literatureCatalog,
       literaturePdfImporter: researchCatalog.literaturePdfImporter,
-      contentRepository: managedFiles.contentRepository
+      contentRepository: managedFiles.contentRepository,
+      literatureDiscovery: researchCatalog.literatureDiscovery
     }),
     memory: {
       snapshot: () => researchCatalog.memoryService.snapshot(),

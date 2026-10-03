@@ -1,0 +1,114 @@
+import { describe, expect, it, vi } from 'vitest'
+import { searchOpenAlex } from './openalex-provider'
+import type { DiscoveryQuery } from '../../../shared/literature-discovery'
+
+const query = (patch: Partial<DiscoveryQuery> = {}): DiscoveryQuery => ({
+  topic: 'green finance',
+  keywords: [],
+  yearFrom: null,
+  yearTo: null,
+  documentTypes: [],
+  sourceTiers: [],
+  minCitations: null,
+  limit: 50,
+  sources: ['openalex'],
+  ...patch
+})
+
+const work = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  id: 'https://openalex.org/W1',
+  doi: 'https://doi.org/10.1000/one',
+  title: 'Green finance and firm value',
+  publication_year: 2022,
+  type: 'article',
+  cited_by_count: 12,
+  abstract_inverted_index: { Green: [0], finance: [1], matters: [2] },
+  primary_location: { source: { display_name: 'Journal of Finance', is_in_doaj: false } },
+  open_access: { is_oa: false, oa_url: null },
+  authorships: [{ author: { display_name: 'Ada Lovelace' } }],
+  ...overrides
+})
+
+const jsonResponse = (payload: unknown, status = 200): Response =>
+  new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'content-type': 'application/json' }
+  })
+
+describe('searchOpenAlex', () => {
+  it('maps works into candidates, restores the abstract and reports the source status', async () => {
+    const fetcher = vi.fn(async () => jsonResponse({ meta: { count: 3 }, results: [work()] }))
+    const result = await searchOpenAlex(query({ limit: 5 }), { fetch: fetcher as typeof fetch })
+
+    expect(result.status).toMatchObject({ source: 'openalex', ok: true, matched: 3, returned: 1 })
+    expect(result.candidates[0]).toMatchObject({
+      key: 'openalex:W1',
+      source: 'openalex',
+      title: 'Green finance and firm value',
+      year: 2022,
+      doi: '10.1000/one',
+      venue: 'Journal of Finance',
+      documentType: 'article',
+      citationCount: 12,
+      authors: ['Ada Lovelace']
+    })
+    expect(result.candidates[0]?.abstract).toBe('Green finance matters')
+  })
+
+  it('translates query criteria into OpenAlex filters', async () => {
+    const fetcher = vi.fn(async () => jsonResponse({ meta: { count: 0 }, results: [] }))
+    await searchOpenAlex(
+      query({
+        yearFrom: 2018,
+        yearTo: 2024,
+        documentTypes: ['article', 'dissertation'],
+        sourceTiers: ['open-access', 'cssci'],
+        minCitations: 10
+      }),
+      { fetch: fetcher as typeof fetch }
+    )
+    const url = new URL(String(vi.mocked(fetcher).mock.calls[0]?.[0]))
+    const filter = url.searchParams.get('filter') ?? ''
+    expect(filter).toContain('from_publication_date:2018-01-01')
+    expect(filter).toContain('to_publication_date:2024-12-31')
+    expect(filter).toContain('cited_by_count:>10')
+    expect(filter).toContain('type:article|dissertation')
+    expect(filter).toContain('is_oa:true')
+    expect(filter).not.toContain('cssci')
+  })
+
+  it('reports unsupported journal tiers as unresolved instead of filtering on them', async () => {
+    const fetcher = vi.fn(async () => jsonResponse({ meta: { count: 0 }, results: [] }))
+    const result = await searchOpenAlex(query({ sourceTiers: ['cssci', 'sci', 'doaj'] }), {
+      fetch: fetcher as typeof fetch
+    })
+    expect(result.status.unresolvedTiers).toEqual(['cssci', 'sci'])
+    expect(
+      new URL(String(vi.mocked(fetcher).mock.calls[0]?.[0])).searchParams.get('filter')
+    ).toContain('primary_location.source.is_in_doaj:true')
+  })
+
+  it('classifies rate limits and unreachable hosts without throwing', async () => {
+    const limited = await searchOpenAlex(query(), {
+      fetch: vi.fn(async () => new Response('', { status: 429 })) as unknown as typeof fetch
+    })
+    expect(limited.status).toMatchObject({ ok: false, failureCode: 'rate-limited' })
+
+    const unreachable = await searchOpenAlex(query(), {
+      fetch: vi.fn(async () => {
+        throw new Error('network down')
+      }) as unknown as typeof fetch
+    })
+    expect(unreachable.status).toMatchObject({ ok: false, failureCode: 'unavailable' })
+    expect(unreachable.status.message).toContain('OpenAlex')
+  })
+
+  it('stops at the requested limit', async () => {
+    const results = Array.from({ length: 3 }, (_, index) =>
+      work({ id: `https://openalex.org/W${index}`, doi: null, title: `Paper ${index}` })
+    )
+    const fetcher = vi.fn(async () => jsonResponse({ meta: { count: 3 }, results }))
+    const result = await searchOpenAlex(query({ limit: 2 }), { fetch: fetcher as typeof fetch })
+    expect(result.candidates).toHaveLength(2)
+  })
+})
