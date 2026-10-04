@@ -8,7 +8,6 @@ import { resolveDataRoot } from '../../storage-root'
 // persistent profile keeps the resulting session between runs.
 const CNKI_HOME_URL = 'https://www.cnki.net/'
 const CNKI_SEARCH_URL = 'https://kns.cnki.net/kns8s/defaultresult/index'
-const CNKI_SIGN_IN_URL = 'https://login.cnki.net/?platform=kns'
 const NAVIGATION_TIMEOUT_MS = 45_000
 const SIGN_IN_WAIT_TIMEOUT_MS = 10 * 60_000
 const POLL_INTERVAL_MS = 1_000
@@ -21,14 +20,19 @@ let context: BrowserContext | null = null
 
 async function launchContext(headless: boolean): Promise<BrowserContext> {
   if (context) return context
-  context = await chromium.launchPersistentContext(profileDirectory(), {
+  const opened = await chromium.launchPersistentContext(profileDirectory(), {
     headless,
     // A real browser profile, not a test harness: the visible window is only for signing in.
     args: ['--disable-blink-features=AutomationControlled'],
     viewport: { width: 1280, height: 900 },
     locale: 'zh-CN'
   })
-  return context
+  // CNKI's bot check keys on automation markers, so they are cleared before any page script runs.
+  await opened.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+  })
+  context = opened
+  return opened
 }
 
 async function closeContext(): Promise<void> {
@@ -54,7 +58,10 @@ export async function openCnkiSignIn(): Promise<CnkiSignInState> {
     }
   }
   const page = opened.pages()[0] ?? (await opened.newPage())
-  await page.goto(CNKI_SIGN_IN_URL, { timeout: NAVIGATION_TIMEOUT_MS }).catch(async () => {
+  // Open the search page, not the login page: CNKI answers an untrusted session with a slider
+  // captcha there, and sliding it once is what makes later unattended searches work. Signing in,
+  // if it is needed at all, happens on the way.
+  await page.goto(PROBE_URL, { timeout: NAVIGATION_TIMEOUT_MS }).catch(async () => {
     await page.goto(CNKI_HOME_URL, { timeout: NAVIGATION_TIMEOUT_MS }).catch(() => undefined)
   })
   // The user signs in by hand; closing every tab is the signal that they are done.
@@ -117,11 +124,17 @@ export async function readCnkiSignInState(): Promise<CnkiSignInState> {
     await closeContext()
     const redirected = LOGIN_REDIRECT_PATTERN.test(probe.url)
     const detail = `url=${probe.url} title=${probe.title} text=${probe.text.slice(0, 200)}`
-    if (redirected)
+    if (redirected) {
+      // The verification page is not a failure to report but a step the user takes once: passing
+      // it in the visible browser is what lets later searches run unattended.
+      const verification = /verify|captcha|checkcode/i.test(probe.url)
       return {
         signedIn: false,
-        message: `No CNKI sign-in detected (redirected to login). ${detail}`
+        message: verification
+          ? `CNKI asked for a security check (slider captcha). Open the CNKI window, complete the check there, close the window, then search again. ${detail}`
+          : `No CNKI sign-in detected (redirected to login). ${detail}`
       }
+    }
     if (SIGNED_IN_TEXT.test(probe.text))
       return { signedIn: true, message: `A CNKI session is available. ${detail}` }
     if (SIGNED_OUT_TEXT.test(probe.text))
