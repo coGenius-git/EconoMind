@@ -14,6 +14,13 @@ const CNKI_HOME_URL = 'https://www.cnki.net/'
 const CNKI_SIGN_IN_URL = 'https://login.cnki.net/?platform=kns'
 const WINDOW_CLOSE_TIMEOUT_MS = 10 * 60_000
 
+// CNKI pages keep long-lived connections open, so "the page finished loading" is not a usable
+// readiness signal and waiting for it times out on pages that are already readable. Loading is
+// therefore best effort with its own budget, and readiness is decided by the result list itself.
+const PAGE_LOAD_BUDGET_MS = 45_000
+const RESULT_WAIT_BUDGET_MS = 90_000
+const POLL_INTERVAL_MS = 500
+
 // Cookie names observed on an authenticated CNKI session. Any match counts as signed in. The
 // sign-in flow spans several CNKI hosts (login.cnki.net / www.cnki.net / kns.cnki.net), so the
 // names are matched as substrings against the whole partition rather than one host.
@@ -55,7 +62,10 @@ function ensureWindow(options: { visible: boolean }): BrowserWindow {
       nodeIntegration: false,
       sandbox: true,
       // The site is loaded as an ordinary web page; no local code is injected into it.
-      webSecurity: true
+      webSecurity: true,
+      // Electron throttles hidden windows by default, which stalls both the page load and the
+      // script that reads the result list.
+      backgroundThrottling: false
     }
   })
   created.on('closed', () => {
@@ -65,23 +75,37 @@ function ensureWindow(options: { visible: boolean }): BrowserWindow {
   return created
 }
 
-// Tries each URL in order and returns the failure of the last attempt, if none loaded. A page
-// that fails to load must not abort the sign-in: the window is already open and the user can
-// navigate it by hand, so the reason is reported instead of thrown.
-async function loadFirstAvailable(
-  target: BrowserWindow,
-  urls: readonly string[]
-): Promise<string | undefined> {
-  let failure: string | undefined
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+// Navigation with its own budget. A page that has not finished loading is not a failure: CNKI
+// keeps connections open, and the caller decides readiness by looking for the result list.
+async function loadWithBudget(target: BrowserWindow, url: string, budgetMs: number): Promise<void> {
+  const navigation = target.loadURL(url)
+  // Keep the rejection observed even when the budget wins the race.
+  navigation.catch(() => undefined)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      navigation,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, budgetMs)
+      })
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+// Tries each URL in order, stopping at the first one the window accepts.
+async function loadFirstAvailable(target: BrowserWindow, urls: readonly string[]): Promise<void> {
   for (const url of urls) {
     try {
       await target.loadURL(url)
-      return undefined
-    } catch (error) {
-      failure = `${url} — ${error instanceof Error ? error.message : String(error)}`
+      return
+    } catch {
+      // Fall through to the next candidate.
     }
   }
-  return failure
 }
 
 export async function openCnkiSignIn(): Promise<CnkiSignInState> {
@@ -101,16 +125,15 @@ export async function openCnkiSignIn(): Promise<CnkiSignInState> {
     }
     target.once('closed', () => resolve())
   })
-  const loadFailure = await loadFirstAvailable(target, [CNKI_SIGN_IN_URL, CNKI_HOME_URL])
+  // Neither candidate loading is not fatal: the window is visible and the user can navigate it.
+  await loadFirstAvailable(target, [CNKI_SIGN_IN_URL, CNKI_HOME_URL])
   // The window stays open while the user signs in. The session only exists once they are done, so
   // the state is read after the window closes (or after the budget runs out) instead of at open.
   await Promise.race([
     closed,
     new Promise<void>((resolve) => setTimeout(resolve, WINDOW_CLOSE_TIMEOUT_MS))
   ])
-  const state = await getCnkiSignInState()
-  if (state.signedIn || !loadFailure) return state
-  return { signedIn: false, message: `${state.message} | Page load failed: ${loadFailure}` }
+  return getCnkiSignInState()
 }
 
 export async function closeCnkiWindow(): Promise<void> {
@@ -154,69 +177,23 @@ export type CnkiPageLoad = {
   html: string
 }
 
-// Loads a URL in the hidden CNKI window and returns a trimmed DOM snapshot for parsing.
-export async function loadCnkiPage(
-  url: string,
-  options: { signal?: AbortSignal; waitForSelector?: string; timeoutMs?: number } = {}
-): Promise<CnkiPageLoad> {
-  const target = ensureWindow({ visible: false })
-  const timeoutMs = options.timeoutMs ?? 30_000
-  const timeout = AbortSignal.timeout(timeoutMs)
-  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout
-  await target.loadURL(url)
-  if (options.waitForSelector) {
-    await waitForSelector(target, options.waitForSelector, signal)
-  } else {
-    await waitForLoad(target, signal)
-  }
-  const result = await target.webContents.executeJavaScript(
-    `(() => ({ title: document.title || '', url: location.href, html: document.body ? document.body.innerHTML.slice(0, 4_000_000) : '' }))()`,
-    true
-  )
-  return {
-    title: String(result?.title ?? ''),
-    url: String(result?.url ?? url),
-    html: String(result?.html ?? '')
-  }
-}
-
-async function waitForLoad(target: BrowserWindow, signal: AbortSignal): Promise<void> {
-  if (!target.webContents.isLoading()) return
-  await new Promise<void>((resolve, reject) => {
-    const onFinish = (): void => {
-      cleanup()
-      resolve()
-    }
-    const onAbort = (): void => {
-      cleanup()
-      reject(new Error('CNKI page load was interrupted.'))
-    }
-    const cleanup = (): void => {
-      target.webContents.removeListener('did-finish-load', onFinish)
-      signal.removeEventListener('abort', onAbort)
-    }
-    target.webContents.once('did-finish-load', onFinish)
-    signal.addEventListener('abort', onAbort, { once: true })
-  })
-}
-
-async function waitForSelector(
+async function pollForSelector(
   target: BrowserWindow,
   selector: string,
-  signal: AbortSignal
-): Promise<void> {
-  const deadline = Date.now() + 15_000
-  await waitForLoad(target, signal)
+  signal: AbortSignal | undefined,
+  budgetMs: number
+): Promise<boolean> {
+  const deadline = Date.now() + budgetMs
   while (Date.now() < deadline) {
-    signal.throwIfAborted()
-    const found = await target.webContents.executeJavaScript(
-      `Boolean(document.querySelector(${JSON.stringify(selector)}))`,
-      true
-    )
-    if (found) return
-    await new Promise((resolve) => setTimeout(resolve, 500))
+    if (signal?.aborted) throw new Error('The CNKI request was cancelled.')
+    if (target.isDestroyed()) throw new Error('The CNKI window was closed.')
+    const found = await target.webContents
+      .executeJavaScript(`Boolean(document.querySelector(${JSON.stringify(selector)}))`, true)
+      .catch(() => false)
+    if (found) return true
+    await sleep(POLL_INTERVAL_MS)
   }
-  throw new Error(`CNKI result list did not appear: ${selector}`)
+  return false
 }
 
 // Parsing happens in the page context where the DOM APIs are available; only plain data crosses
@@ -233,12 +210,15 @@ export async function evaluateOnCnkiPage<Value>(
   options: { signal?: AbortSignal; waitForSelector?: string; timeoutMs?: number } = {}
 ): Promise<Value> {
   const target = ensureWindow({ visible: false })
-  const timeoutMs = options.timeoutMs ?? 30_000
-  const timeout = AbortSignal.timeout(timeoutMs)
-  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout
-  await target.loadURL(url)
-  if (options.waitForSelector) await waitForSelector(target, options.waitForSelector, signal)
-  else await waitForLoad(target, signal)
+  await loadWithBudget(target, url, PAGE_LOAD_BUDGET_MS)
+  options.signal?.throwIfAborted()
+  const selector = options.waitForSelector
+  if (selector) {
+    const budgetMs = options.timeoutMs ?? RESULT_WAIT_BUDGET_MS
+    const found = await pollForSelector(target, selector, options.signal, budgetMs)
+    if (!found)
+      throw new Error(`The CNKI result list did not appear within ${Math.round(budgetMs / 1000)}s.`)
+  }
   return evaluateInCnkiWindow<Value>(script)
 }
 
@@ -260,9 +240,28 @@ export async function clickCnkiNextPage(options: { signal?: AbortSignal } = {}):
   const deadline = Date.now() + 10_000
   while (Date.now() < deadline) {
     options.signal?.throwIfAborted()
-    await new Promise((resolve) => setTimeout(resolve, 600))
+    await sleep(600)
   }
   return true
+}
+
+// A DOM snapshot of the current page, used to diagnose an unrecognised result list.
+export async function loadCnkiPage(
+  url: string,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {}
+): Promise<CnkiPageLoad> {
+  const target = ensureWindow({ visible: false })
+  await loadWithBudget(target, url, options.timeoutMs ?? PAGE_LOAD_BUDGET_MS)
+  options.signal?.throwIfAborted()
+  const result = await target.webContents.executeJavaScript(
+    `(() => ({ title: document.title || '', url: location.href, html: document.body ? document.body.innerHTML.slice(0, 4_000_000) : '' }))()`,
+    true
+  )
+  return {
+    title: String(result?.title ?? ''),
+    url: String(result?.url ?? url),
+    html: String(result?.html ?? '')
+  }
 }
 
 export function disposeCnkiSession(): void {

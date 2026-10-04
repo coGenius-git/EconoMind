@@ -185,7 +185,7 @@ export async function searchCnki(
     const first = await evaluateOnCnkiPage<{ selector: string | null; rows: ExtractedRow[] }>(
       buildSearchUrl(query),
       EXTRACT_SCRIPT,
-      { signal: options.signal, waitForSelector: WAIT_SELECTOR, timeoutMs: 45_000 }
+      { signal: options.signal, waitForSelector: WAIT_SELECTOR }
     )
     if (!first.selector) {
       const page = await loadCnkiPage(buildSearchUrl(query), { signal: options.signal })
