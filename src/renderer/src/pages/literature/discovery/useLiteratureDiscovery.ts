@@ -224,9 +224,12 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
 
   const signInCnki = useCallback(async (): Promise<void> => {
     try {
-      const result = await window.api.literature.discoverySignIn('cnki')
       setNotice(t('Sign in to CNKI before searching.'))
+      // Resolves once the sign-in window is closed, so the reported state is the session that
+      // actually exists afterwards rather than a placeholder.
+      const result = await window.api.literature.discoverySignIn('cnki')
       setCnkiSignedIn(result.signedIn)
+      setNotice(result.signedIn ? t('CNKI session ready') : result.message)
     } catch (signInError) {
       setError(signInError instanceof Error ? signInError.message : t('Unable to open CNKI.'))
     }

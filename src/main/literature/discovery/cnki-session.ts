@@ -14,12 +14,17 @@ const CNKI_HOME_URL = 'https://www.cnki.net/'
 const CNKI_SIGN_IN_URL = 'https://login.cnki.net/?platform=kns'
 const WINDOW_CLOSE_TIMEOUT_MS = 10 * 60_000
 
-// Cookie names observed on an authenticated CNKI session. Any of them counts as signed in.
+// Cookie names observed on an authenticated CNKI session. Any match counts as signed in. The
+// sign-in flow spans several CNKI hosts (login.cnki.net / www.cnki.net / kns.cnki.net), so the
+// names are matched as substrings against the whole partition rather than one host.
 const SIGN_IN_COOKIE_HINTS = [
   'ecp_loginstatus',
   'cnkiuserkey',
   'knsuid',
   'ecp_uid',
+  'sid_kns',
+  'sid_klogin',
+  'sid_knsch',
   'userid'
 ] as const
 
@@ -62,14 +67,23 @@ function ensureWindow(options: { visible: boolean }): BrowserWindow {
 
 export async function openCnkiSignIn(): Promise<CnkiSignInState> {
   const target = ensureWindow({ visible: true })
+  const closed = new Promise<void>((resolve) => {
+    if (target.isDestroyed()) {
+      resolve()
+      return
+    }
+    target.once('closed', () => resolve())
+  })
   await target.loadURL(CNKI_SIGN_IN_URL).catch(async () => {
     await target.loadURL(CNKI_HOME_URL)
   })
-  return {
-    signedIn: false,
-    message:
-      'Sign in to CNKI in the window that opened, then close it. The session stays available for later searches.'
-  }
+  // The window stays open while the user signs in. The session only exists once they are done, so
+  // the state is read after the window closes (or after the budget runs out) instead of at open.
+  await Promise.race([
+    closed,
+    new Promise<void>((resolve) => setTimeout(resolve, WINDOW_CLOSE_TIMEOUT_MS))
+  ])
+  return getCnkiSignInState()
 }
 
 export async function closeCnkiWindow(): Promise<void> {
@@ -79,14 +93,18 @@ export async function closeCnkiWindow(): Promise<void> {
 
 export async function getCnkiSignInState(): Promise<CnkiSignInState> {
   try {
-    const cookies = await getSession().cookies.get({ url: 'https://kns.cnki.net' })
-    const names = cookies.map((cookie) => cookie.name.toLowerCase())
-    const signedIn = SIGN_IN_COOKIE_HINTS.some((hint) => names.some((name) => name.includes(hint)))
+    const cookies = await getSession().cookies.get({})
+    const names = [...new Set(cookies.map((cookie) => cookie.name.toLowerCase()))]
+    const matched = SIGN_IN_COOKIE_HINTS.filter((hint) => names.some((name) => name.includes(hint)))
+    if (matched.length)
+      return { signedIn: true, message: `A CNKI session is available (${matched.join(', ')}).` }
+    // Report the cookie names that actually exist so a mis-detected sign-in can be corrected from
+    // the real session instead of guessing.
     return {
-      signedIn,
-      message: signedIn
-        ? 'A CNKI session is available.'
-        : 'No CNKI session found. Sign in before searching.'
+      signedIn: false,
+      message: names.length
+        ? `No CNKI sign-in cookie among: ${names.slice(0, 24).join(', ')}`
+        : 'The CNKI session is empty. Sign in from the CNKI window first.'
     }
   } catch (error) {
     return { signedIn: false, message: `Unable to read the CNKI session: ${String(error)}` }

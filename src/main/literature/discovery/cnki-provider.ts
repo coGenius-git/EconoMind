@@ -160,7 +160,9 @@ export async function searchCnki(
       status: status({
         failureCode: 'unauthorized',
         requiresLogin: true,
-        message: 'Sign in to CNKI before searching.'
+        // The session message names the cookies that were actually present, which is what makes a
+        // mis-detected sign-in diagnosable from the UI.
+        message: signIn.message
       })
     }
 
