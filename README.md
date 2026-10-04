@@ -38,18 +38,18 @@ npm run dev:isolated
 
 ### 常见问题
 
-| 现象                                     | 处理                                                                                                                                                  |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Repository not found` / 无法克隆        | 确认已接受邀请，Git 登录的账号具有权限                                                                                                                |
-| PowerShell 阻止 `npm.ps1`                | 使用 `npm.cmd ci`、`npm.cmd run dev:isolated`，不必关闭系统执行策略                                                                                   |
-| `node-gyp` 找不到 Python / Visual Studio | 安装上表工具与 C++ 工作负载，重开终端后重新 `npm ci`；多版本 Python 可在当前终端设置 `$env:PYTHON = '你的 python.exe 完整路径'`                       |
-| 下载超时 / `ECONNRESET`                  | 检查自己的网络或代理，再重试 `npm ci`；不要提交个人代理、`.npmrc` 或镜像凭据                                                                          |
-| `EALLOWREMOTE` 拒绝下载 `echarts`        | 更新任务分支的锁文件；已将同版本包地址统一到官方 npm 仓库，完整性校验不变，再执行 `npm ci`                                                            |
-| Prisma Client 缺失或与 schema 不一致     | 先确保 `npm ci` 完整成功再启动；安装失败需先修复安装错误。切分支只改变 schema 时可执行 `npx prisma generate`                                          |
-| Electron 按 Node 启动                    | `dev:isolated` 会移除继承的 `ELECTRON_RUN_AS_NODE` 环境变量                                                                                           |
-| peer / deprecated 警告                   | 警告与失败不同，查看退出码和最终错误；不要为消除警告自行升级整套依赖                                                                                  |
-| 文献检索提示缺少 Chromium                | 执行 `node node_modules/playwright/cli.js install chromium`（约 180 MB）；`npm ci` 不会下载浏览器，详见[文献检索与初筛](docs/literature-discovery.md) |
-| 知网检索提示需要安全验证                 | 点击「登录知网」，在弹出的窗口内完成滑块验证，然后关闭该标签页                                                                                        |
+| 现象                                     | 处理                                                                                                                                                                           |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Repository not found` / 无法克隆        | 确认已接受邀请，Git 登录的账号具有权限                                                                                                                                         |
+| PowerShell 阻止 `npm.ps1`                | 使用 `npm.cmd ci`、`npm.cmd run dev:isolated`，不必关闭系统执行策略                                                                                                            |
+| `node-gyp` 找不到 Python / Visual Studio | 安装上表工具与 C++ 工作负载，重开终端后重新 `npm ci`；多版本 Python 可在当前终端设置 `$env:PYTHON = '你的 python.exe 完整路径'`                                                |
+| 下载超时 / `ECONNRESET`                  | 检查自己的网络或代理，再重试 `npm ci`；不要提交个人代理、`.npmrc` 或镜像凭据                                                                                                   |
+| `EALLOWREMOTE` 拒绝下载 `echarts`        | 更新任务分支的锁文件；已将同版本包地址统一到官方 npm 仓库，完整性校验不变，再执行 `npm ci`                                                                                     |
+| Prisma Client 缺失或与 schema 不一致     | 先确保 `npm ci` 完整成功再启动；安装失败需先修复安装错误。切分支只改变 schema 时可执行 `npx prisma generate`                                                                   |
+| Electron 按 Node 启动                    | `dev:isolated` 会移除继承的 `ELECTRON_RUN_AS_NODE` 环境变量                                                                                                                    |
+| peer / deprecated 警告                   | 警告与失败不同，查看退出码和最终错误；不要为消除警告自行升级整套依赖                                                                                                           |
+| 文献检索提示找不到可用浏览器             | 本功能使用系统自带的 Edge 或 Chrome，通常无需处理；两者都没有时执行 `node node_modules/playwright/cli.js install chromium`，详见[文献检索与初筛](docs/literature-discovery.md) |
+| 知网检索提示需要安全验证                 | 点击「登录知网」，在弹出的窗口内完成滑块验证，然后关闭该标签页                                                                                                                 |
 
 本次检查范围为 Windows x64。macOS/Linux 的编译工具不同，先参考 [运行指南](docs/DEPLOY.md)，验证后再补充对应步骤。
 

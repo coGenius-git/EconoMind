@@ -17,29 +17,23 @@
 
 ## 2. 环境要求
 
-除 [README 第 1 节](../README.md) 所列的 Node 24、Python 3、Visual Studio Build Tools 2022（含 MSVC v143 与 Windows SDK）之外，本功能额外需要 Chromium 浏览器二进制。
+除 [README 第 1 节](../README.md) 所列的 Node 24、Python 3、Visual Studio Build Tools 2022（含 MSVC v143 与 Windows SDK）之外，本功能**不需要额外安装浏览器**：它驱动系统上已安装的 Chromium 浏览器。
 
-| 项                     | 要求                                             | 命令                                                   |
-| ---------------------- | ------------------------------------------------ | ------------------------------------------------------ |
-| Chromium（Playwright） | 约 180 MB，安装到 `%LOCALAPPDATA%\ms-playwright` | `node node_modules/playwright/cli.js install chromium` |
-| Playwright 库          | 已列入 `dependencies`，由 `npm ci` 安装          | —                                                      |
+| 项            | 要求                                                 | 说明                                                                    |
+| ------------- | ---------------------------------------------------- | ----------------------------------------------------------------------- |
+| 浏览器        | Microsoft Edge（Windows 10/11 自带）或 Google Chrome | 按 Edge → Chrome 的顺序尝试；两者都缺失时才回退到 Playwright 自带浏览器 |
+| Playwright 库 | 随 `npm ci` 安装                                     | 仅提供驱动能力，不是浏览器本体                                          |
 
-`npm ci` **不会**下载 Chromium，需要在首次安装时单独执行上表命令。
-
-缺少 Chromium 时，调用登录或检索会出现形如下列的错误：
-
-```
-Executable doesn't exist at C:\Users\<用户>\AppData\Local\ms-playwright\chromium-...
-```
+只有在系统既没有 Edge 也没有 Chrome 的机器上，才需要下载兜底浏览器：
 
 `playwright` 在 `package.json` 中属于运行时依赖而非开发依赖，因为它是本功能的组成部分；`@playwright/test` 仍为开发依赖。
 
 ## 3. 首次使用
 
-1. `npm ci`，再执行上面的 Chromium 安装命令。
+1. `npm ci`。
 2. `npm run dev:isolated`，等待 **EconoMind (DEV)** 窗口。
 3. 打开**文献库**，左侧「研究工具」中选择**检索外部数据库**。
-4. 知网首次使用：点**登录知网** → 在弹出的 Chromium 窗口内登录（如出现滑块验证，在此完成）→ **关闭该标签页**。
+4. 知网首次使用：点**登录知网** → 在弹出的浏览器窗口内登录（如出现滑块验证，在此完成）→ **关闭该标签页**。
 5. 回到面板，填写综述主题与条件，勾选数据来源，点**检索**。
 6. 在候选列表勾选需要的记录 → 选择重复条目策略 → **导入所选条目**。
 7. 填写纳入标准（每行一条）→ **初筛已导入条目**，查看纳入/排除/待定与理由。

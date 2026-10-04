@@ -2,10 +2,11 @@ import { chromium, type BrowserContext, type Page } from 'playwright'
 import { join } from 'node:path'
 import { resolveDataRoot } from '../../storage-root'
 
-// CNKI is driven by a standalone Chromium (Playwright) rather than Electron's own window. The
-// embedded WebContents could not render CNKI's sign-in: registration and third-party login came up
-// blank and the SMS step never ran. A stock Chromium is what those pages are built for, and a
-// persistent profile keeps the resulting session between runs.
+// CNKI is driven by a real browser through Playwright rather than Electron's own window. The
+// embedded WebContents could not render CNKI's sign-in - registration and third-party login came up
+// blank and the SMS step never ran - while an ordinary Chromium browser is what those pages are
+// built for. The browser comes from the system (Edge or Chrome, see launchContext) and a persistent
+// profile keeps the resulting session between runs.
 const CNKI_HOME_URL = 'https://www.cnki.net/'
 const CNKI_SEARCH_URL = 'https://kns.cnki.net/kns8s/defaultresult/index'
 const NAVIGATION_TIMEOUT_MS = 45_000
@@ -39,22 +40,42 @@ let signInWindowOpen = false
 // bot check looks for, and an off-screen window turned out to be unusable: when CNKI answered a
 // search with a security check, the prompt appeared where nobody could see or solve it, and the
 // search just failed. A visible window makes the progress and any prompt actionable.
+// The browser is taken from the system - Edge first, then Chrome - so that using this feature
+// never requires downloading a separate browser. Both are ordinary Chromium browsers, which is
+// what the sign-in flow needs; Playwright's bundled Chromium is only a last resort.
+const BROWSER_CHANNELS = ['msedge', 'chrome'] as const
+
 async function launchContext(): Promise<BrowserContext> {
   if (context) return context
   // The profile remembers the last window position, so it is stated on every launch.
   const args = ['--disable-blink-features=AutomationControlled', '--window-position=120,120']
-  const opened = await chromium.launchPersistentContext(profileDirectory(), {
-    headless: false,
-    args,
-    viewport: { width: 1280, height: 900 },
-    locale: 'zh-CN'
-  })
-  // CNKI's bot check keys on automation markers, so they are cleared before any page script runs.
-  await opened.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
-  })
-  context = opened
-  return opened
+  let failure: unknown
+  for (const channel of [...BROWSER_CHANNELS, undefined]) {
+    try {
+      const opened = await chromium.launchPersistentContext(profileDirectory(), {
+        ...(channel ? { channel } : {}),
+        headless: false,
+        args,
+        viewport: { width: 1280, height: 900 },
+        locale: 'zh-CN'
+      })
+      // CNKI's bot check keys on automation markers, so they are cleared before any page script
+      // runs.
+      await opened.addInitScript(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+      })
+      context = opened
+      return opened
+    } catch (error) {
+      failure = error
+    }
+  }
+  throw new Error(
+    'No usable browser was found. Install Microsoft Edge or Google Chrome, or run ' +
+      `"node node_modules/playwright/cli.js install chromium". Last error: ${
+        failure instanceof Error ? failure.message : String(failure)
+      }`
+  )
 }
 
 async function closeContext(): Promise<void> {
