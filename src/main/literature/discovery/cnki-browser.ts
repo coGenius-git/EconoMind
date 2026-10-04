@@ -12,6 +12,9 @@ const NAVIGATION_TIMEOUT_MS = 45_000
 const SIGN_IN_WAIT_TIMEOUT_MS = 10 * 60_000
 const POLL_INTERVAL_MS = 1_000
 const PAGE_READY_TIMEOUT_MS = 15_000
+// How long the window stays open after the verification page is left behind, so the user can see
+// the result and finish any sign-in before it closes itself.
+const SIGN_IN_GRACE_MS = 30_000
 
 const profileDirectory = (): string => join(resolveDataRoot(), 'literature', 'cnki-browser-profile')
 
@@ -26,8 +29,11 @@ async function navigateBestEffort(page: Page, url: string): Promise<void> {
 }
 
 // A persistent context owns its profile directory exclusively, so signing in and searching take
-// turns: one context is opened, used and closed before the next one starts.
+// turns: one context is opened, used and closed before the next one starts. While the sign-in
+// window is open it holds the profile, and every other entry point must stay away from it — a
+// session check that ran during sign-in used to close the window the user was working in.
 let context: BrowserContext | null = null
+let signInWindowOpen = false
 
 // The browser is always headful: headless Chromium is itself a signal CNKI's bot check looks for,
 // and a headless run was refused with a slider captcha while the visible one was not. Unattended
@@ -65,8 +71,10 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 export async function openCnkiSignIn(): Promise<CnkiSignInState> {
   let opened: BrowserContext
   try {
+    signInWindowOpen = true
     opened = await launchContext(true)
   } catch (error) {
+    signInWindowOpen = false
     return {
       signedIn: false,
       message: `Unable to start the browser: ${error instanceof Error ? error.message : String(error)}`
@@ -87,21 +95,38 @@ export async function openCnkiSignIn(): Promise<CnkiSignInState> {
   // if it is needed at all, happens on the way.
   await navigateBestEffort(target, PROBE_URL)
   if (!target.url().includes('cnki.net')) await navigateBestEffort(target, CNKI_HOME_URL)
-  // Only a window that once had pages and now has none counts as closed by the user.
-  let sawPages = false
-  const deadline = Date.now() + SIGN_IN_WAIT_TIMEOUT_MS
-  while (Date.now() < deadline) {
-    let pages: Page[] = []
-    try {
-      pages = opened.pages()
-    } catch {
-      break
+  // The browser itself is the authority on when the user is done: closing the window closes the
+  // context. Polling the page list misread a moment without pages as "user finished", which shut
+  // the window down mid-captcha.
+  let passedAt: number | null = null
+  await new Promise<void>((resolve) => {
+    const finish = (): void => {
+      clearInterval(ticker)
+      clearTimeout(deadline)
+      resolve()
     }
-    if (pages.length) sawPages = true
-    else if (sawPages) break
-    await sleep(POLL_INTERVAL_MS)
-  }
+    const ticker = setInterval(() => {
+      void (async () => {
+        if (target.isClosed()) {
+          finish()
+          return
+        }
+        if (passedAt === null) {
+          const url = target.url()
+          const onVerification = /verify|captcha|checkcode/i.test(url)
+          if (url.includes('cnki.net') && !onVerification) passedAt = Date.now()
+        } else if (Date.now() - passedAt > SIGN_IN_GRACE_MS) {
+          // The check was passed a while ago and the window is still open: the session is in place,
+          // so stop holding the profile and let the app continue.
+          finish()
+        }
+      })()
+    }, POLL_INTERVAL_MS)
+    const deadline = setTimeout(finish, SIGN_IN_WAIT_TIMEOUT_MS)
+    opened.once('close', finish)
+  })
   await closeContext()
+  signInWindowOpen = false
   return readCnkiSignInState()
 }
 
@@ -145,6 +170,8 @@ type TextProbe = { url: string; title: string; text: string }
 // Asks the site itself rather than a cookie: CNKI writes client and provider cookies before any
 // sign-in, so both cookie names and their values were present while the account was signed out.
 export async function readCnkiSignInState(): Promise<CnkiSignInState> {
+  if (signInWindowOpen)
+    return { signedIn: false, message: 'The CNKI sign-in window is still open.' }
   try {
     const opened = await launchContext(false)
     const page = await opened.newPage()
@@ -240,6 +267,13 @@ const EXTRACT_SCRIPT = `(() => {
 // each list straight out of the DOM. Paging stays inside one session: reloading per page would
 // multiply the navigation cost by the page count.
 export async function scrapeCnkiSearch(url: string, maxPages: number): Promise<CnkiScrapeResult> {
+  if (signInWindowOpen)
+    return {
+      rows: [],
+      selector: null,
+      blocked: false,
+      detail: 'the CNKI sign-in window is still open'
+    }
   try {
     const opened = await launchContext(false)
     const target = (await opened.newPage()) as Page

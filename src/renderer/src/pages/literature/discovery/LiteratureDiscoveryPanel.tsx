@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { LoaderCircle, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -49,10 +49,6 @@ export function LiteratureDiscoveryPanel({
   const discovery = useLiteratureDiscovery(collectionId)
   const [criteriaText, setCriteriaText] = useState('')
   const [duplicatePolicy, setDuplicatePolicy] = useState<'reuse' | 'separate'>('reuse')
-
-  useEffect(() => {
-    void discovery.refreshCnkiState()
-  }, [discovery.refreshCnkiState, discovery])
 
   const runImport = async (): Promise<void> => {
     await discovery.importSelected(duplicatePolicy)

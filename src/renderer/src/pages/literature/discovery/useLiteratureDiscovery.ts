@@ -169,17 +169,6 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
     )
   }, [form.topic, keywords, t])
 
-  // The CNKI session lives in a standalone browser profile. Sign-in resolves once that window is
-  // closed, so the state shown is the session that actually exists afterwards.
-  const refreshCnkiState = useCallback(async (): Promise<void> => {
-    try {
-      const state = await window.api.literature.discoveryStatus('cnki')
-      setCnkiSignedIn(state.signedIn)
-    } catch {
-      // Reading the session is best effort; the search result reports the authoritative state.
-    }
-  }, [])
-
   const signInCnki = useCallback(async (): Promise<void> => {
     try {
       setSigningIn(true)
@@ -320,7 +309,6 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
     toggleSource,
     search,
     signInCnki,
-    refreshCnkiState,
     openCnkiSearch,
     importCnkiExport,
     importSelected,
@@ -354,7 +342,6 @@ export type LiteratureDiscoveryController = Readonly<{
   toggleSource: (source: DiscoverySourceId) => void
   search: () => Promise<void>
   signInCnki: () => Promise<void>
-  refreshCnkiState: () => Promise<void>
   openCnkiSearch: () => void
   importCnkiExport: (file: File) => Promise<void>
   importSelected: (duplicatePolicy: 'reuse' | 'separate') => Promise<void>
