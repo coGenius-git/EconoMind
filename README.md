@@ -38,16 +38,18 @@ npm run dev:isolated
 
 ### 常见问题
 
-| 现象                                     | 处理                                                                                                                            |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `Repository not found` / 无法克隆        | 确认已接受邀请，Git 登录的账号具有权限                                                                                          |
-| PowerShell 阻止 `npm.ps1`                | 使用 `npm.cmd ci`、`npm.cmd run dev:isolated`，不必关闭系统执行策略                                                             |
-| `node-gyp` 找不到 Python / Visual Studio | 安装上表工具与 C++ 工作负载，重开终端后重新 `npm ci`；多版本 Python 可在当前终端设置 `$env:PYTHON = '你的 python.exe 完整路径'` |
-| 下载超时 / `ECONNRESET`                  | 检查自己的网络或代理，再重试 `npm ci`；不要提交个人代理、`.npmrc` 或镜像凭据                                                    |
-| `EALLOWREMOTE` 拒绝下载 `echarts`        | 更新任务分支的锁文件；已将同版本包地址统一到官方 npm 仓库，完整性校验不变，再执行 `npm ci`                                      |
-| Prisma Client 缺失或与 schema 不一致     | 先确保 `npm ci` 完整成功再启动；安装失败需先修复安装错误。切分支只改变 schema 时可执行 `npx prisma generate`                    |
-| Electron 按 Node 启动                    | `dev:isolated` 会移除继承的 `ELECTRON_RUN_AS_NODE` 环境变量                                                                     |
-| peer / deprecated 警告                   | 警告与失败不同，查看退出码和最终错误；不要为消除警告自行升级整套依赖                                                            |
+| 现象                                     | 处理                                                                                                                                                  |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Repository not found` / 无法克隆        | 确认已接受邀请，Git 登录的账号具有权限                                                                                                                |
+| PowerShell 阻止 `npm.ps1`                | 使用 `npm.cmd ci`、`npm.cmd run dev:isolated`，不必关闭系统执行策略                                                                                   |
+| `node-gyp` 找不到 Python / Visual Studio | 安装上表工具与 C++ 工作负载，重开终端后重新 `npm ci`；多版本 Python 可在当前终端设置 `$env:PYTHON = '你的 python.exe 完整路径'`                       |
+| 下载超时 / `ECONNRESET`                  | 检查自己的网络或代理，再重试 `npm ci`；不要提交个人代理、`.npmrc` 或镜像凭据                                                                          |
+| `EALLOWREMOTE` 拒绝下载 `echarts`        | 更新任务分支的锁文件；已将同版本包地址统一到官方 npm 仓库，完整性校验不变，再执行 `npm ci`                                                            |
+| Prisma Client 缺失或与 schema 不一致     | 先确保 `npm ci` 完整成功再启动；安装失败需先修复安装错误。切分支只改变 schema 时可执行 `npx prisma generate`                                          |
+| Electron 按 Node 启动                    | `dev:isolated` 会移除继承的 `ELECTRON_RUN_AS_NODE` 环境变量                                                                                           |
+| peer / deprecated 警告                   | 警告与失败不同，查看退出码和最终错误；不要为消除警告自行升级整套依赖                                                                                  |
+| 文献检索提示缺少 Chromium                | 执行 `node node_modules/playwright/cli.js install chromium`（约 180 MB）；`npm ci` 不会下载浏览器，详见[文献检索与初筛](docs/literature-discovery.md) |
+| 知网检索提示需要安全验证                 | 点击「登录知网」，在弹出的窗口内完成滑块验证，然后关闭该标签页                                                                                        |
 
 本次检查范围为 Windows x64。macOS/Linux 的编译工具不同，先参考 [运行指南](docs/DEPLOY.md)，验证后再补充对应步骤。
 
@@ -162,6 +164,6 @@ GitHub 只保存已提交并推送的源码，不会自动同步软件里的聊�
 最近的实际检查见 [验证与清理记录](docs/COLLABORATION_CHECK.md)。全新安装、源码启动与构建已通过，**全量测试仍有失败**。记录区分通过项目与未验证范围，不能据此保证任何电脑或模型配置都不会报错。
 
 - [开发约定](CONTRIBUTING.md) · [运行与打包](docs/DEPLOY.md) · [设计规范](docs/design.md)
-- [文档索引](docs/README.md) · [安全反馈](SECURITY.md) · [上游来源](UPSTREAM.md)
+- [文献检索与初筛](docs/literature-discovery.md) · [文档索引](docs/README.md) · [安全反馈](SECURITY.md) · [上游来源](UPSTREAM.md)
 
 源码版本以 `package.json` 为准，目前为 `0.34.1`；既有安装包标签 `3.0.0` 属于另一份版本记录。项目沿用 [Apache-2.0](LICENSE)，保留 AIPOCH / Open Science 与依赖代码的署名和许可。
