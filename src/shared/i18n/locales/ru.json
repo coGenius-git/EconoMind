@@ -7252,6 +7252,8 @@
     "No CNKI session": "Нет сессии CNKI",
     "Sign in to CNKI before searching.": "Войдите в CNKI перед поиском.",
     "Sign in to CNKI in the window that opened, then close it.": "Войдите в CNKI в открывшемся окне, затем закройте его.",
-    "Unable to open CNKI.": "Не удалось открыть CNKI."
+    "Unable to open CNKI.": "Не удалось открыть CNKI.",
+    "Open source page": "Открыть страницу источника",
+    "Imported records live in your library: open one there to look for its open-access full text.": "Импортированные записи находятся в вашей библиотеке: откройте запись там, чтобы найти полнотекстовую версию в открытом доступе."
   }
 }

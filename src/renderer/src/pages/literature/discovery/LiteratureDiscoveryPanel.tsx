@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { LoaderCircle, Search } from 'lucide-react'
+import { ExternalLink, LoaderCircle, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -285,18 +285,22 @@ export function LiteratureDiscoveryPanel({
                       />
                     </td>
                     <td className="font-medium">
-                      {candidate.url ? (
-                        <a
-                          className="underline"
-                          href={candidate.url}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {candidate.title}
-                        </a>
-                      ) : (
-                        candidate.title
-                      )}
+                      <div className="flex items-start gap-2">
+                        <span className="min-w-0 flex-1">{candidate.title}</span>
+                        {candidate.url ? (
+                          // Opens the record on the source site (CNKI detail page or the DOI target)
+                          // in the system browser, which is where the user's own access applies.
+                          <a
+                            className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground underline"
+                            href={candidate.url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <ExternalLink className="size-3" aria-hidden="true" />
+                            {t('Open source page')}
+                          </a>
+                        ) : null}
+                      </div>
                     </td>
                     <td>{candidate.authors.slice(0, 4).join(', ')}</td>
                     <td>{candidate.year === null ? '' : String(candidate.year)}</td>
@@ -371,6 +375,12 @@ export function LiteratureDiscoveryPanel({
             {discovery.screening ? <LoaderCircle className="size-4 animate-spin" /> : null}
             {discovery.screening ? t('Screening') : t('Screen imported records')}
           </Button>
+
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {t(
+              'Imported records live in your library: open one there to look for its open-access full text.'
+            )}
+          </p>
 
           {discovery.screenResult ? (
             <div className="space-y-2">

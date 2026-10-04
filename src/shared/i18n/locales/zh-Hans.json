@@ -6788,6 +6788,8 @@
     "No CNKI session": "未登录知网",
     "Sign in to CNKI before searching.": "检索前请先登录知网。",
     "Sign in to CNKI in the window that opened, then close it.": "请在刚打开的窗口中登录知网，登录完成后关闭该窗口。",
-    "Unable to open CNKI.": "无法打开知网。"
+    "Unable to open CNKI.": "无法打开知网。",
+    "Open source page": "打开来源页",
+    "Imported records live in your library: open one there to look for its open-access full text.": "导入的文献已存入库中：在文献库打开该条，即可查找其开放获取全文。"
   }
 }

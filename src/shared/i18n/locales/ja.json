@@ -6788,6 +6788,8 @@
     "No CNKI session": "CNKI セッションなし",
     "Sign in to CNKI before searching.": "検索する前に CNKI にログインしてください。",
     "Sign in to CNKI in the window that opened, then close it.": "開いたウィンドウで CNKI にログインし、その後ウィンドウを閉じてください。",
-    "Unable to open CNKI.": "CNKI を開けません。"
+    "Unable to open CNKI.": "CNKI を開けません。",
+    "Open source page": "ソースページを開く",
+    "Imported records live in your library: open one there to look for its open-access full text.": "取り込んだ文献はライブラリにあります。ライブラリで開くとオープンアクセスの全文を検索できます。"
   }
 }
