@@ -182,6 +182,9 @@ export function LiteratureDiscoveryPanel({
                 {discovery.signingIn ? <LoaderCircle className="size-4 animate-spin" /> : null}
                 {t('Sign in to CNKI')}
               </Button>
+              <span className="text-xs text-muted-foreground">
+                {t('(Close the tab when you are done.)')}
+              </span>
             </div>
           ) : null}
           {discovery.form.sources.includes('cnki') && !discovery.cnkiSignedIn ? (

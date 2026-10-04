@@ -7116,6 +7116,7 @@
     "Unable to open CNKI.": "Impossible d’ouvrir CNKI.",
     "Open source page": "Ouvrir la page source",
     "Imported records live in your library: open one there to look for its open-access full text.": "Les références importées se trouvent dans votre bibliothèque: ouvrez-en une pour rechercher son texte intégral en accès libre.",
-    "Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.": "Solution de repli: exportez les références sélectionnées depuis CNKI dans un fichier RefWorks ou EndNote, puis importez ce fichier ici."
+    "Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.": "Solution de repli: exportez les références sélectionnées depuis CNKI dans un fichier RefWorks ou EndNote, puis importez ce fichier ici.",
+    "(Close the tab when you are done.)": "(Fermez l’onglet lorsque vous avez terminé.)"
   }
 }
