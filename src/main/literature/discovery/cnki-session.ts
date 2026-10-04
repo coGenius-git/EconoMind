@@ -21,13 +21,30 @@ const PAGE_LOAD_BUDGET_MS = 45_000
 const RESULT_WAIT_BUDGET_MS = 90_000
 const POLL_INTERVAL_MS = 500
 
-// Most cookies below exist before sign-in as well (CNKI writes client and fingerprint cookies on
-// first visit), so a name alone proves nothing. Only these two carry the sign-in state itself,
-// and the value decides; CNKI spells the first one "loginstuts".
-const SIGN_IN_STATE_COOKIES: readonly string[] = ['ecp_loginstuts', 'ecp_loginstatus']
-const SIGNED_OUT_VALUES = new Set(['', '0', 'false', 'null', 'undefined', 'none'])
-// Shown with their values when no session is detected, so the real sign-in cookie can be
-// identified from an actual session instead of guessed.
+// Cookie names proved unusable for this: CNKI writes client, fingerprint and provider cookies
+// before any sign-in, so both the name and the value of "ecp_loginstuts" were present while the
+// account was still signed out. Sign-in state is therefore read from the page itself, which shows
+// "login | register" when signed out and the account name plus "sign out" when signed in.
+const SIGNED_OUT_LABELS = ['登录', '登录/注册', '请登录', '注册', '登入', '登录/註冊']
+const SIGNED_IN_LABELS = ['退出', '退出登录', '安全退出', '注销', '登出']
+
+const HOME_PROBE_SCRIPT = `(() => {
+  const labels = Array.from(document.querySelectorAll('a'))
+    .map((el) => (el.innerText || '').trim())
+    .filter(Boolean)
+  const { SIGNED_OUT_LABELS: out, SIGNED_IN_LABELS: into } = ${JSON.stringify({
+    SIGNED_OUT_LABELS,
+    SIGNED_IN_LABELS
+  })}
+  return {
+    url: location.href,
+    title: document.title || '',
+    logout: labels.filter((label) => into.includes(label)).slice(0, 3),
+    login: labels.filter((label) => out.includes(label)).slice(0, 3)
+  }
+})()`
+
+// Reported alongside the probe so a wrong verdict still carries the evidence needed to fix it.
 const DIAGNOSTIC_COOKIES: readonly string[] = [
   'ecp_loginstuts',
   'ecp_loginstatus',
@@ -50,7 +67,36 @@ function getSession(): Electron.Session {
   return electronSession.fromPartition(CNKI_PARTITION)
 }
 
+let sessionFixesInstalled = false
+
+// Chromium blocks third-party cookies by default. The QQ and WeChat sign-in popups store cookies
+// on their own domains and use them cross-site, and without them those pages come back blank.
+// The rewrite is scoped to this partition; the site still decides what a cookie contains.
+function installSessionFixes(): void {
+  if (sessionFixesInstalled) return
+  sessionFixesInstalled = true
+  getSession().webRequest.onHeadersReceived((details, callback) => {
+    const headers = details.responseHeaders ?? {}
+    const key =
+      'set-cookie' in headers ? 'set-cookie' : 'Set-Cookie' in headers ? 'Set-Cookie' : null
+    const setCookie = key ? headers[key] : undefined
+    if (!key || !Array.isArray(setCookie)) {
+      callback({ responseHeaders: headers })
+      return
+    }
+    callback({
+      responseHeaders: {
+        ...headers,
+        [key]: setCookie.map((value: string) =>
+          /;\s*samesite=/iu.test(value) ? value : `${value}; SameSite=None`
+        )
+      }
+    })
+  })
+}
+
 function ensureWindow(options: { visible: boolean }): BrowserWindow {
+  installSessionFixes()
   if (window && !window.isDestroyed()) {
     if (options.visible) {
       window.show()
@@ -175,34 +221,62 @@ export async function closeCnkiWindow(): Promise<void> {
   window = null
 }
 
-export async function getCnkiSignInState(): Promise<CnkiSignInState> {
+async function readCookieDiagnosis(): Promise<string> {
   try {
     const cookies = await getSession().cookies.get({})
-    const state = cookies
-      .filter((cookie) => SIGN_IN_STATE_COOKIES.includes(cookie.name.toLowerCase()))
-      .find((cookie) => !SIGNED_OUT_VALUES.has(cookie.value.trim().toLowerCase()))
-    if (state)
-      return {
-        signedIn: true,
-        message: `A CNKI session is available (${state.name}=${state.value.trim()}).`
-      }
+    if (!cookies.length) return 'session empty'
     const byName = new Map(
       cookies.map((cookie) => [cookie.name.toLowerCase(), cookie.value.trim()])
     )
-    // Handles only the state cookies keep their value in the message: the others hold credentials
-    // that must not travel into the UI.
-    const diagnosis = DIAGNOSTIC_COOKIES.map(
+    // Only these keep their value in the message: the others hold credentials that must not
+    // travel into the UI.
+    return DIAGNOSTIC_COOKIES.map(
       (name) => `${name}=${(byName.get(name) ?? '<absent>').slice(0, 24)}`
     ).join(', ')
+  } catch (error) {
+    return `cookies unreadable: ${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+type HomeProbe = { url: string; title: string; logout: string[]; login: string[] }
+
+// Asks the page itself instead of a cookie: a signed-out CNKI page advertises the login entry, a
+// signed-in one advertises signing out.
+async function probeSignInState(): Promise<{ signedIn: boolean; detail: string }> {
+  const target = ensureWindow({ visible: false })
+  // Reuse the page the user just signed in on when the window is still open.
+  const currentUrl = target.isDestroyed() ? '' : target.webContents.getURL()
+  if (!currentUrl.includes('cnki.net')) {
+    await loadWithBudget(target, CNKI_HOME_URL, PAGE_LOAD_BUDGET_MS)
+    const loadedUrl = target.isDestroyed() ? '' : target.webContents.getURL()
+    if (!loadedUrl.includes('cnki.net'))
+      return { signedIn: false, detail: `CNKI was not reachable (url=${loadedUrl || '<blank>'})` }
+  }
+  const probe = (await target.webContents.executeJavaScript(HOME_PROBE_SCRIPT, true)) as HomeProbe
+  const detail =
+    `url=${probe.url} title=${probe.title} ` +
+    `logout=[${probe.logout.join('|')}] login=[${probe.login.join('|')}]`
+  return { signedIn: probe.logout.length > 0 && probe.login.length === 0, detail }
+}
+
+export async function getCnkiSignInState(): Promise<CnkiSignInState> {
+  let probe: { signedIn: boolean; detail: string }
+  try {
+    probe = await probeSignInState()
+  } catch (error) {
     return {
       signedIn: false,
-      message: cookies.length
-        ? `No CNKI sign-in detected. ${diagnosis} | ${cookies.length} cookies in session`
-        : 'The CNKI session is empty. Sign in from the CNKI window first.'
+      message: `Unable to check the CNKI session: ${
+        error instanceof Error ? error.message : String(error)
+      } | ${await readCookieDiagnosis()}`
     }
-  } catch (error) {
-    return { signedIn: false, message: `Unable to read the CNKI session: ${String(error)}` }
   }
+  return probe.signedIn
+    ? { signedIn: true, message: `A CNKI session is available. ${probe.detail}` }
+    : {
+        signedIn: false,
+        message: `No CNKI sign-in detected. ${probe.detail} | ${await readCookieDiagnosis()}`
+      }
 }
 
 export async function signOutCnki(): Promise<CnkiSignInState> {
