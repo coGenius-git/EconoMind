@@ -21,19 +21,26 @@ const PAGE_LOAD_BUDGET_MS = 45_000
 const RESULT_WAIT_BUDGET_MS = 90_000
 const POLL_INTERVAL_MS = 500
 
-// Cookie names observed on an authenticated CNKI session. Any match counts as signed in. The
-// sign-in flow spans several CNKI hosts (login.cnki.net / www.cnki.net / kns.cnki.net), so the
-// names are matched as substrings against the whole partition rather than one host.
-const SIGN_IN_COOKIE_HINTS = [
+// Most cookies below exist before sign-in as well (CNKI writes client and fingerprint cookies on
+// first visit), so a name alone proves nothing. Only these two carry the sign-in state itself,
+// and the value decides; CNKI spells the first one "loginstuts".
+const SIGN_IN_STATE_COOKIES: readonly string[] = ['ecp_loginstuts', 'ecp_loginstatus']
+const SIGNED_OUT_VALUES = new Set(['', '0', 'false', 'null', 'undefined', 'none'])
+// Shown with their values when no session is detected, so the real sign-in cookie can be
+// identified from an actual session instead of guessed.
+const DIAGNOSTIC_COOKIES: readonly string[] = [
+  'ecp_loginstuts',
   'ecp_loginstatus',
-  'cnkiuserkey',
-  'knsuid',
-  'ecp_uid',
-  'sid_kns',
-  'sid_klogin',
-  'sid_knsch',
-  'userid'
-] as const
+  'ui',
+  'qlogin_uid',
+  'c_m_linid'
+]
+
+// The window identifies as Chrome. Third-party sign-in providers (QQ, WeChat) reject a client
+// whose User-Agent advertises Electron, which is what leaves their pages blank.
+const CHROME_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${
+  process.versions.chrome?.split('.')[0] ?? '141'
+}.0.0.0 Safari/537.36`
 
 export type CnkiSignInState = { signedIn: boolean; message: string }
 
@@ -51,6 +58,8 @@ function ensureWindow(options: { visible: boolean }): BrowserWindow {
     }
     return window
   }
+  // Applies to every request in the partition, including popups opened by a sign-in provider.
+  getSession().setUserAgent(CHROME_UA)
   const created = new BrowserWindow({
     show: options.visible,
     width: 1280,
@@ -79,7 +88,8 @@ function ensureWindow(options: { visible: boolean }): BrowserWindow {
         partition: CNKI_PARTITION,
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false
+        sandbox: false,
+        backgroundThrottling: false
       }
     }
   }))
@@ -168,16 +178,26 @@ export async function closeCnkiWindow(): Promise<void> {
 export async function getCnkiSignInState(): Promise<CnkiSignInState> {
   try {
     const cookies = await getSession().cookies.get({})
-    const names = [...new Set(cookies.map((cookie) => cookie.name.toLowerCase()))]
-    const matched = SIGN_IN_COOKIE_HINTS.filter((hint) => names.some((name) => name.includes(hint)))
-    if (matched.length)
-      return { signedIn: true, message: `A CNKI session is available (${matched.join(', ')}).` }
-    // Report the cookie names that actually exist so a mis-detected sign-in can be corrected from
-    // the real session instead of guessing.
+    const state = cookies
+      .filter((cookie) => SIGN_IN_STATE_COOKIES.includes(cookie.name.toLowerCase()))
+      .find((cookie) => !SIGNED_OUT_VALUES.has(cookie.value.trim().toLowerCase()))
+    if (state)
+      return {
+        signedIn: true,
+        message: `A CNKI session is available (${state.name}=${state.value.trim()}).`
+      }
+    const byName = new Map(
+      cookies.map((cookie) => [cookie.name.toLowerCase(), cookie.value.trim()])
+    )
+    // Handles only the state cookies keep their value in the message: the others hold credentials
+    // that must not travel into the UI.
+    const diagnosis = DIAGNOSTIC_COOKIES.map(
+      (name) => `${name}=${(byName.get(name) ?? '<absent>').slice(0, 24)}`
+    ).join(', ')
     return {
       signedIn: false,
-      message: names.length
-        ? `No CNKI sign-in cookie among: ${names.slice(0, 24).join(', ')}`
+      message: cookies.length
+        ? `No CNKI sign-in detected. ${diagnosis} | ${cookies.length} cookies in session`
         : 'The CNKI session is empty. Sign in from the CNKI window first.'
     }
   } catch (error) {
