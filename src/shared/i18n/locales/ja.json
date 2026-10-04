@@ -6779,7 +6779,6 @@
     "Import records before screening them.": "審査する前に文献を取り込んでください。",
     "Add at least one inclusion criterion.": "採用基準を 1 つ以上入力してください。",
     "Screening failed.": "審査に失敗しました。",
-    "Search CNKI in your browser": "ブラウザで CNKI を検索",
     "Import a CNKI export file": "CNKI のエクスポートファイルを取り込む",
     "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "CNKI で選択した文献を RefWorks または EndNote 形式で書き出し、そのファイルをここに取り込んでください。",
     "Data sources": "データソース",

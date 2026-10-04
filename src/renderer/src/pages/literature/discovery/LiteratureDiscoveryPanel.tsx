@@ -190,9 +190,6 @@ export function LiteratureDiscoveryPanel({
             </p>
           ) : null}
           <div className="flex flex-wrap items-center gap-4">
-            <Button variant="outline" size="sm" onClick={discovery.openCnkiSearch}>
-              {t('Search CNKI in your browser')}
-            </Button>
             <label className="flex items-center gap-2 text-sm">
               <span>{t('Import a CNKI export file')}</span>
               <input

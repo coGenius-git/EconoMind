@@ -15,10 +15,6 @@ import {
   type DiscoverySourceTier
 } from '../../../../../shared/literature-discovery'
 
-// CNKI is searched in the user's own browser: the app cannot sign in there, and the main window
-// already hands external links to the system browser.
-const CNKI_SEARCH_URL = 'https://kns.cnki.net/kns8s/defaultresult/index'
-
 export type DiscoveryFormState = {
   topic: string
   keywords: string
@@ -155,19 +151,6 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
       setSearching(false)
     }
   }, [form, keywords, t])
-
-  // Opens CNKI with the topic already filled in. The main window routes external links to the
-  // system browser, where the user's own CNKI session and institutional access already work.
-  const openCnkiSearch = useCallback((): void => {
-    const text = [form.topic, ...keywords()].join(' ').trim()
-    const params = new URLSearchParams({ kw: text, korder: 'SU' })
-    window.open(`${CNKI_SEARCH_URL}?${params.toString()}`, '_blank', 'noopener')
-    setNotice(
-      t(
-        'Export the selected references as RefWorks or EndNote from CNKI, then import that file here.'
-      )
-    )
-  }, [form.topic, keywords, t])
 
   const signInCnki = useCallback(async (): Promise<void> => {
     try {
@@ -309,7 +292,6 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
     toggleSource,
     search,
     signInCnki,
-    openCnkiSearch,
     importCnkiExport,
     importSelected,
     screenImported,
@@ -342,7 +324,6 @@ export type LiteratureDiscoveryController = Readonly<{
   toggleSource: (source: DiscoverySourceId) => void
   search: () => Promise<void>
   signInCnki: () => Promise<void>
-  openCnkiSearch: () => void
   importCnkiExport: (file: File) => Promise<void>
   importSelected: (duplicatePolicy: 'reuse' | 'separate') => Promise<void>
   screenImported: (criteria: {

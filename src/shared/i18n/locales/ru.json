@@ -7243,7 +7243,6 @@
     "Import records before screening them.": "Импортируйте записи перед отбором.",
     "Add at least one inclusion criterion.": "Добавьте хотя бы один критерий включения.",
     "Screening failed.": "Отбор завершился неудачно.",
-    "Search CNKI in your browser": "Искать в CNKI через браузер",
     "Import a CNKI export file": "Импортировать файл экспорта CNKI",
     "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "Экспортируйте выбранные ссылки из CNKI в формате RefWorks или EndNote, затем импортируйте этот файл здесь.",
     "Data sources": "Источники данных",
