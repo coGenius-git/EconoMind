@@ -6780,7 +6780,6 @@
     "Add at least one inclusion criterion.": "採用基準を 1 つ以上入力してください。",
     "Screening failed.": "審査に失敗しました。",
     "Import a CNKI export file": "CNKI のエクスポートファイルを取り込む",
-    "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "CNKI で選択した文献を RefWorks または EndNote 形式で書き出し、そのファイルをここに取り込んでください。",
     "Data sources": "データソース",
     "Searched online": "オンラインで検索されます",
     "Sign in to CNKI": "CNKI にログイン",
@@ -6790,6 +6789,7 @@
     "Sign in to CNKI in the window that opened, then close it.": "開いたウィンドウで CNKI にログインし、その後ウィンドウを閉じてください。",
     "Unable to open CNKI.": "CNKI を開けません。",
     "Open source page": "ソースページを開く",
-    "Imported records live in your library: open one there to look for its open-access full text.": "取り込んだ文献はライブラリにあります。ライブラリで開くとオープンアクセスの全文を検索できます。"
+    "Imported records live in your library: open one there to look for its open-access full text.": "取り込んだ文献はライブラリにあります。ライブラリで開くとオープンアクセスの全文を検索できます。",
+    "Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.": "代替手段：CNKI で選択した文献を RefWorks または EndNote ファイルとして書き出し、そのファイルをここに取り込んでください。"
   }
 }

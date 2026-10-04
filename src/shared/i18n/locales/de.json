@@ -6939,7 +6939,6 @@
     "Add at least one inclusion criterion.": "Fügen Sie mindestens ein Einschlusskriterium hinzu.",
     "Screening failed.": "Die Prüfung ist fehlgeschlagen.",
     "Import a CNKI export file": "CNKI-Exportdatei importieren",
-    "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "Exportieren Sie die ausgewählten Referenzen in CNKI als RefWorks oder EndNote und importieren Sie die Datei anschließend hier.",
     "Data sources": "Datenquellen",
     "Searched online": "Wird online durchsucht",
     "Sign in to CNKI": "Bei CNKI anmelden",
@@ -6949,6 +6948,7 @@
     "Sign in to CNKI in the window that opened, then close it.": "Melden Sie sich im geöffneten Fenster bei CNKI an und schließen Sie es anschließend.",
     "Unable to open CNKI.": "CNKI kann nicht geöffnet werden.",
     "Open source page": "Quellseite öffnen",
-    "Imported records live in your library: open one there to look for its open-access full text.": "Importierte Einträge liegen in Ihrer Bibliothek: Öffnen Sie dort einen Eintrag, um nach dem frei zugänglichen Volltext zu suchen."
+    "Imported records live in your library: open one there to look for its open-access full text.": "Importierte Einträge liegen in Ihrer Bibliothek: Öffnen Sie dort einen Eintrag, um nach dem frei zugänglichen Volltext zu suchen.",
+    "Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.": "Ersatzweg: Exportieren Sie die ausgewählten Referenzen in CNKI als RefWorks- oder EndNote-Datei und importieren Sie diese Datei anschließend hier."
   }
 }

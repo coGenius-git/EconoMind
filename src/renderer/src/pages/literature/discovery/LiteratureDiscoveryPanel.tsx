@@ -207,7 +207,7 @@ export function LiteratureDiscoveryPanel({
           </div>
           <p className="text-xs leading-relaxed text-muted-foreground">
             {t(
-              'Export the selected references as RefWorks or EndNote from CNKI, then import that file here.'
+              'Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.'
             )}
           </p>
         </fieldset>

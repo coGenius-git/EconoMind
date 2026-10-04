@@ -6780,7 +6780,6 @@
     "Add at least one inclusion criterion.": "請至少填寫一條納入標準。",
     "Screening failed.": "初篩失敗。",
     "Import a CNKI export file": "匯入知網匯出檔案",
-    "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "在知網中將勾選的文獻匯出為 RefWorks 或 EndNote 格式，再回到此處匯入該檔案。",
     "Data sources": "資料來源",
     "Searched online": "線上檢索",
     "Sign in to CNKI": "登入知網",
@@ -6790,6 +6789,7 @@
     "Sign in to CNKI in the window that opened, then close it.": "請在剛開啟的視窗中登入知網，完成後關閉該視窗。",
     "Unable to open CNKI.": "無法開啟知網。",
     "Open source page": "開啟來源頁",
-    "Imported records live in your library: open one there to look for its open-access full text.": "匯入的文獻已存入文獻庫：在文獻庫打開該筆，即可查找其開放取用全文。"
+    "Imported records live in your library: open one there to look for its open-access full text.": "匯入的文獻已存入文獻庫：在文獻庫打開該筆，即可查找其開放取用全文。",
+    "Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.": "備用方式：在知網勾選文獻後匯出為 RefWorks 或 EndNote 檔案，再回到此處匯入該檔案。（RefWorks/EndNote 是知網提供的兩種題錄格式，選任一種即可，無需安裝任何軟體。）"
   }
 }

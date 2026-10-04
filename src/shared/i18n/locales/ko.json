@@ -6778,7 +6778,6 @@
     "Add at least one inclusion criterion.": "포함 기준을 하나 이상 추가하세요.",
     "Screening failed.": "심사에 실패했습니다.",
     "Import a CNKI export file": "CNKI 내보내기 파일 가져오기",
-    "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "CNKI에서 선택한文献을 RefWorks 또는 EndNote로 내보낸 뒤 해당 파일을 이곳에서 가져오세요.",
     "Data sources": "데이터 소스",
     "Searched online": "온라인으로 검색됨",
     "Sign in to CNKI": "CNKI 로그인",
@@ -6788,6 +6787,7 @@
     "Sign in to CNKI in the window that opened, then close it.": "열린 창에서 CNKI에 로그인한 뒤 창을 닫으세요.",
     "Unable to open CNKI.": "CNKI를 열 수 없습니다.",
     "Open source page": "출처 페이지 열기",
-    "Imported records live in your library: open one there to look for its open-access full text.": "가져온 문헌은 라이브러리에 있습니다. 라이브러리에서 열면 오픈 액세스 전문을 찾을 수 있습니다."
+    "Imported records live in your library: open one there to look for its open-access full text.": "가져온 문헌은 라이브러리에 있습니다. 라이브러리에서 열면 오픈 액세스 전문을 찾을 수 있습니다.",
+    "Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.": "대체 방법: CNKI에서 선택한 문헌을 RefWorks 또는 EndNote 파일로 내보낸 뒤, 그 파일을 이곳에서 가져오세요."
   }
 }
