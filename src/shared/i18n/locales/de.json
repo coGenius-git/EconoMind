@@ -6940,6 +6940,8 @@
     "Screening failed.": "Die Prüfung ist fehlgeschlagen.",
     "Search CNKI in your browser": "In CNKI im Browser suchen",
     "Import a CNKI export file": "CNKI-Exportdatei importieren",
-    "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "Exportieren Sie die ausgewählten Referenzen in CNKI als RefWorks oder EndNote und importieren Sie die Datei anschließend hier."
+    "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "Exportieren Sie die ausgewählten Referenzen in CNKI als RefWorks oder EndNote und importieren Sie die Datei anschließend hier.",
+    "Data sources": "Datenquellen",
+    "Searched online": "Wird online durchsucht"
   }
 }

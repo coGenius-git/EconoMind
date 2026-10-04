@@ -153,7 +153,11 @@ export function LiteratureDiscoveryPanel({
         </fieldset>
 
         <fieldset className="space-y-3 md:col-span-2">
-          <legend className="text-sm font-medium">{t('CNKI')}</legend>
+          <legend className="text-sm font-medium">{t('Data sources')}</legend>
+          <div className="flex flex-wrap items-center gap-3">
+            <Badge variant="secondary">{t('OpenAlex')}</Badge>
+            <span className="text-sm text-muted-foreground">{t('Searched online')}</span>
+          </div>
           <div className="flex flex-wrap items-center gap-4">
             <Button variant="outline" size="sm" onClick={discovery.openCnkiSearch}>
               {t('Search CNKI in your browser')}

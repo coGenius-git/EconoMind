@@ -7245,6 +7245,8 @@
     "Screening failed.": "Отбор завершился неудачно.",
     "Search CNKI in your browser": "Искать в CNKI через браузер",
     "Import a CNKI export file": "Импортировать файл экспорта CNKI",
-    "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "Экспортируйте выбранные ссылки из CNKI в формате RefWorks или EndNote, затем импортируйте этот файл здесь."
+    "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "Экспортируйте выбранные ссылки из CNKI в формате RefWorks или EndNote, затем импортируйте этот файл здесь.",
+    "Data sources": "Источники данных",
+    "Searched online": "Ищется онлайн"
   }
 }

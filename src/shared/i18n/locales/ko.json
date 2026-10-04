@@ -6779,6 +6779,8 @@
     "Screening failed.": "심사에 실패했습니다.",
     "Search CNKI in your browser": "브라우저에서 CNKI 검색",
     "Import a CNKI export file": "CNKI 내보내기 파일 가져오기",
-    "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "CNKI에서 선택한文献을 RefWorks 또는 EndNote로 내보낸 뒤 해당 파일을 이곳에서 가져오세요."
+    "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "CNKI에서 선택한文献을 RefWorks 또는 EndNote로 내보낸 뒤 해당 파일을 이곳에서 가져오세요.",
+    "Data sources": "데이터 소스",
+    "Searched online": "온라인으로 검색됨"
   }
 }

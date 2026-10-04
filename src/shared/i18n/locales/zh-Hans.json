@@ -6781,6 +6781,8 @@
     "Screening failed.": "初筛失败。",
     "Search CNKI in your browser": "在浏览器中检索知网",
     "Import a CNKI export file": "导入知网导出文件",
-    "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "在知网中将勾选的文献导出为 RefWorks 或 EndNote 格式，再回到此处导入该文件。"
+    "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "在知网中将勾选的文献导出为 RefWorks 或 EndNote 格式，再回到此处导入该文件。",
+    "Data sources": "数据来源",
+    "Searched online": "在线检索"
   }
 }
