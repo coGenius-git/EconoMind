@@ -14,6 +14,16 @@ const POLL_INTERVAL_MS = 1_000
 
 const profileDirectory = (): string => join(resolveDataRoot(), 'literature', 'cnki-browser-profile')
 
+// CNKI answers an untrusted session by redirecting to /verify/home, which aborts the navigation
+// that asked for the search page. The abort is expected — Electron's and Playwright's alike report
+// it as a navigation error — and the page still ends up somewhere. The resulting URL is exactly
+// what the session check needs to read, so navigation failures are not treated as fatal.
+async function navigateBestEffort(page: Page, url: string): Promise<void> {
+  await page
+    .goto(url, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS })
+    .catch(() => undefined)
+}
+
 // A persistent context owns its profile directory exclusively, so signing in and searching take
 // turns: one context is opened, used and closed before the next one starts.
 let context: BrowserContext | null = null
@@ -61,9 +71,8 @@ export async function openCnkiSignIn(): Promise<CnkiSignInState> {
   // Open the search page, not the login page: CNKI answers an untrusted session with a slider
   // captcha there, and sliding it once is what makes later unattended searches work. Signing in,
   // if it is needed at all, happens on the way.
-  await page.goto(PROBE_URL, { timeout: NAVIGATION_TIMEOUT_MS }).catch(async () => {
-    await page.goto(CNKI_HOME_URL, { timeout: NAVIGATION_TIMEOUT_MS }).catch(() => undefined)
-  })
+  await navigateBestEffort(page, PROBE_URL)
+  if (!page.url().includes('cnki.net')) await navigateBestEffort(page, CNKI_HOME_URL)
   // The user signs in by hand; closing every tab is the signal that they are done.
   const deadline = Date.now() + SIGN_IN_WAIT_TIMEOUT_MS
   while (Date.now() < deadline) {
@@ -117,7 +126,7 @@ export async function readCnkiSignInState(): Promise<CnkiSignInState> {
   try {
     const opened = await launchContext(true)
     const page = await opened.newPage()
-    await page.goto(PROBE_URL, { timeout: NAVIGATION_TIMEOUT_MS })
+    await navigateBestEffort(page, PROBE_URL)
     await page.waitForTimeout(2_000)
     const probe = (await page.evaluate(TEXT_PROBE)) as TextProbe
     await page.close()
@@ -212,7 +221,7 @@ export async function scrapeCnkiSearch(url: string, maxPages: number): Promise<C
   try {
     const opened = await launchContext(true)
     const target = (await opened.newPage()) as Page
-    await target.goto(url, { timeout: NAVIGATION_TIMEOUT_MS })
+    await navigateBestEffort(target, url)
     const found = await target
       .waitForSelector(WAIT_SELECTOR, { timeout: RESULT_WAIT_MS })
       .then(() => true)
