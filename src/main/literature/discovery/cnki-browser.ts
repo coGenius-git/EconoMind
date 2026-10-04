@@ -11,6 +11,7 @@ const CNKI_SEARCH_URL = 'https://kns.cnki.net/kns8s/defaultresult/index'
 const NAVIGATION_TIMEOUT_MS = 45_000
 const SIGN_IN_WAIT_TIMEOUT_MS = 10 * 60_000
 const POLL_INTERVAL_MS = 1_000
+const PAGE_READY_TIMEOUT_MS = 15_000
 
 const profileDirectory = (): string => join(resolveDataRoot(), 'literature', 'cnki-browser-profile')
 
@@ -28,12 +29,16 @@ async function navigateBestEffort(page: Page, url: string): Promise<void> {
 // turns: one context is opened, used and closed before the next one starts.
 let context: BrowserContext | null = null
 
-async function launchContext(headless: boolean): Promise<BrowserContext> {
+// The browser is always headful: headless Chromium is itself a signal CNKI's bot check looks for,
+// and a headless run was refused with a slider captcha while the visible one was not. Unattended
+// runs park the window off-screen instead, so it stays out of the way.
+async function launchContext(visible: boolean): Promise<BrowserContext> {
   if (context) return context
+  const args = ['--disable-blink-features=AutomationControlled']
+  if (!visible) args.push('--window-position=-3200,-3200')
   const opened = await chromium.launchPersistentContext(profileDirectory(), {
-    headless,
-    // A real browser profile, not a test harness: the visible window is only for signing in.
-    args: ['--disable-blink-features=AutomationControlled'],
+    headless: false,
+    args,
     viewport: { width: 1280, height: 900 },
     locale: 'zh-CN'
   })
@@ -60,23 +65,40 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 export async function openCnkiSignIn(): Promise<CnkiSignInState> {
   let opened: BrowserContext
   try {
-    opened = await launchContext(false)
+    opened = await launchContext(true)
   } catch (error) {
     return {
       signedIn: false,
       message: `Unable to start the browser: ${error instanceof Error ? error.message : String(error)}`
     }
   }
-  const page = opened.pages()[0] ?? (await opened.newPage())
+  // A persistent context can report no pages for a moment after launch. Reading that as "the user
+  // closed every tab" shut the window down as soon as it opened, before the captcha could be
+  // solved, so the first page is awaited before anything else happens.
+  let page: Page | undefined
+  const pageDeadline = Date.now() + PAGE_READY_TIMEOUT_MS
+  while (!page && Date.now() < pageDeadline) {
+    page = opened.pages()[0]
+    if (!page) await sleep(200)
+  }
+  const target = page ?? (await opened.newPage())
   // Open the search page, not the login page: CNKI answers an untrusted session with a slider
   // captcha there, and sliding it once is what makes later unattended searches work. Signing in,
   // if it is needed at all, happens on the way.
-  await navigateBestEffort(page, PROBE_URL)
-  if (!page.url().includes('cnki.net')) await navigateBestEffort(page, CNKI_HOME_URL)
-  // The user signs in by hand; closing every tab is the signal that they are done.
+  await navigateBestEffort(target, PROBE_URL)
+  if (!target.url().includes('cnki.net')) await navigateBestEffort(target, CNKI_HOME_URL)
+  // Only a window that once had pages and now has none counts as closed by the user.
+  let sawPages = false
   const deadline = Date.now() + SIGN_IN_WAIT_TIMEOUT_MS
   while (Date.now() < deadline) {
-    if (opened.pages().every((entry) => entry.isClosed())) break
+    let pages: Page[] = []
+    try {
+      pages = opened.pages()
+    } catch {
+      break
+    }
+    if (pages.length) sawPages = true
+    else if (sawPages) break
     await sleep(POLL_INTERVAL_MS)
   }
   await closeContext()
@@ -124,7 +146,7 @@ type TextProbe = { url: string; title: string; text: string }
 // sign-in, so both cookie names and their values were present while the account was signed out.
 export async function readCnkiSignInState(): Promise<CnkiSignInState> {
   try {
-    const opened = await launchContext(true)
+    const opened = await launchContext(false)
     const page = await opened.newPage()
     await navigateBestEffort(page, PROBE_URL)
     await page.waitForTimeout(2_000)
@@ -219,7 +241,7 @@ const EXTRACT_SCRIPT = `(() => {
 // multiply the navigation cost by the page count.
 export async function scrapeCnkiSearch(url: string, maxPages: number): Promise<CnkiScrapeResult> {
   try {
-    const opened = await launchContext(true)
+    const opened = await launchContext(false)
     const target = (await opened.newPage()) as Page
     await navigateBestEffort(target, url)
     const found = await target
