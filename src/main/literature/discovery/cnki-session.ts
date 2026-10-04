@@ -121,24 +121,17 @@ function ensureWindow(options: { visible: boolean }): BrowserWindow {
       sandbox: false,
       // Electron throttles hidden windows by default, which stalls both the page load and the
       // script that reads the result list.
-      backgroundThrottling: false
+      backgroundThrottling: false,
+      // Registration and third-party sign-in open a classic popup and write into it. Electron's
+      // native window.open renders those pages blank, which is why every jump from the sign-in
+      // page came up empty. The compatibility path inherits this partition as well, so cookies
+      // written by the popup belong to the session this integration reads.
+      nativeWindowOpen: false
     }
   })
-  // Institutional and third-party sign-in open a popup. Keep it in the same partition so the
-  // cookies it writes belong to the session this integration reads.
-  created.webContents.setWindowOpenHandler(() => ({
-    action: 'allow',
-    overrideBrowserWindowOptions: {
-      autoHideMenuBar: true,
-      webPreferences: {
-        partition: CNKI_PARTITION,
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: false,
-        backgroundThrottling: false
-      }
-    }
-  }))
+  // Popups are allowed as they are: overriding their options breaks the pages that write into
+  // them, and with nativeWindowOpen off they already inherit this window's session.
+  created.webContents.setWindowOpenHandler(() => ({ action: 'allow' }))
   // The menu bar is hidden, so F12 is the only way to inspect a page that misbehaves.
   created.webContents.on('before-input-event', (event, input) => {
     if (input.type === 'keyDown' && input.key === 'F12') {
