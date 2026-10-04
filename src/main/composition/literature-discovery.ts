@@ -2,27 +2,14 @@ import { app } from 'electron'
 import type { ApplicationModuleBuilder } from '../application-runtime'
 import { RestrictedInferenceRunner } from '../acp/restricted-inference-runner'
 import { LiteratureDiscovery } from '../literature/discovery/discovery-service'
-import {
-  disposeCnkiSession,
-  getCnkiSignInState,
-  openCnkiSignIn,
-  signOutCnki,
-  type CnkiSignInState
-} from '../literature/discovery/cnki-session'
 import type { LiteratureCatalog } from '../literature/catalog'
 import { createScreeningModel } from '../literature/screening-model'
-import { createLogger, errorLogFields } from '../logger'
 import { tryDecryptKey } from '../settings/crypto'
 import type { SettingsService } from '../settings/service'
 import { resolveConfigRoot } from '../storage-root'
 
-export type LiteratureDiscoveryCapability = {
-  discovery: LiteratureDiscovery
-  signInCnki: () => Promise<CnkiSignInState>
-  signOutCnki: () => Promise<CnkiSignInState>
-  getCnkiState: () => Promise<CnkiSignInState>
-}
-
+// OpenAlex is searched online. CNKI is not: its records arrive as an export file that the user
+// produces on the site, so this module owns no browser window and no sign-in state.
 export async function composeLiteratureDiscovery({
   settingsService,
   literatureCatalog,
@@ -31,7 +18,7 @@ export async function composeLiteratureDiscovery({
   settingsService: SettingsService
   literatureCatalog: LiteratureCatalog
   modules: ApplicationModuleBuilder
-}): Promise<LiteratureDiscoveryCapability> {
+}): Promise<LiteratureDiscovery> {
   const inference = new RestrictedInferenceRunner({
     appVersion: app.getVersion(),
     configRoot: resolveConfigRoot(),
@@ -54,30 +41,8 @@ export async function composeLiteratureDiscovery({
     name: 'literature-discovery',
     capability: owner,
     dispose: async () => {
-      // The CNKI window is a real browser window; it must not outlive the module.
-      disposeCnkiSession()
       await runner.shutdown()
     }
   }))
-  const log = createLogger('literature:discovery')
-  return {
-    discovery,
-    signInCnki: async () => {
-      try {
-        return await openCnkiSignIn()
-      } catch (error) {
-        log.error('Unable to open the CNKI sign-in window', errorLogFields(error))
-        // Keep the reason on the message: without it the UI cannot tell a network failure from a
-        // window-creation failure.
-        return {
-          signedIn: false,
-          message: `Unable to open the CNKI sign-in window: ${
-            error instanceof Error ? error.message : String(error)
-          }`
-        }
-      }
-    },
-    signOutCnki: async () => signOutCnki(),
-    getCnkiState: async () => getCnkiSignInState()
-  }
+  return discovery
 }

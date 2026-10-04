@@ -431,9 +431,11 @@ describe('LiteratureLibraryPage', () => {
             undecidedCount: 0,
             failedCount: 0
           })),
-          discoverySignIn: vi.fn(async () => ({ signedIn: false, message: '' })),
-          discoverySignOut: vi.fn(async () => ({ signedIn: false, message: '' })),
-          discoveryStatus: vi.fn(async () => ({ signedIn: false, message: '' })),
+          discoveryParseRecords: vi.fn(async () => ({
+            format: 'ris' as const,
+            candidates: [],
+            errors: []
+          })),
           journals: vi.fn(async () => ({ datasets: [], matches: [] })),
           exportRecord: vi.fn(),
           sources: vi.fn(async () => []),

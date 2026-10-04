@@ -6748,7 +6748,6 @@
     "Maximum records": "最多检索条数",
     "Document types": "文献类型",
     "Source tiers": "来源级别",
-    "Data sources": "数据来源",
     "CNKI": "知网",
     "CSSCI": "CSSCI",
     "Peking University core": "北大核心",
@@ -6757,10 +6756,6 @@
     "EI": "EI",
     "DOAJ": "DOAJ",
     "Open access": "开放获取",
-    "Sign in to CNKI": "登录知网",
-    "CNKI session ready": "知网会话已就绪",
-    "No CNKI session": "未登录知网",
-    "Sign in to CNKI before searching.": "检索前请先登录知网。",
     "Searching": "检索中",
     "Search failed": "检索失败",
     "Warnings": "提示",
@@ -6784,7 +6779,8 @@
     "Import records before screening them.": "请先导入文献再进行初筛。",
     "Add at least one inclusion criterion.": "请至少填写一条纳入标准。",
     "Screening failed.": "初筛失败。",
-    "Unable to open CNKI.": "无法打开知网。",
-    "Sign in to CNKI in the window that opened, then close it.": "请在刚打开的窗口中登录知网，登录完成后关闭该窗口。"
+    "Search CNKI in your browser": "在浏览器中检索知网",
+    "Import a CNKI export file": "导入知网导出文件",
+    "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "在知网中将勾选的文献导出为 RefWorks 或 EndNote 格式，再回到此处导入该文件。"
   }
 }

@@ -1,19 +1,21 @@
-import { useCallback, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useState, type Dispatch, type SetStateAction } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   DISCOVERY_DEFAULT_LIMIT,
   DISCOVERY_DOCUMENT_TYPES,
   DISCOVERY_RESULT_LIMIT,
-  DISCOVERY_SOURCE_IDS,
   DISCOVERY_SOURCE_TIERS,
   type DiscoveryCandidate,
   type DiscoveryDocumentType,
   type DiscoveryImportResult,
   type DiscoveryScreenResult,
-  type DiscoverySourceId,
   type DiscoverySourceStatus,
   type DiscoverySourceTier
 } from '../../../../../shared/literature-discovery'
+
+// CNKI is searched in the user's own browser: the app cannot sign in there, and the main window
+// already hands external links to the system browser.
+const CNKI_SEARCH_URL = 'https://kns.cnki.net/kns8s/defaultresult/index'
 
 export type DiscoveryFormState = {
   topic: string
@@ -24,7 +26,6 @@ export type DiscoveryFormState = {
   sourceTiers: DiscoverySourceTier[]
   minCitations: string
   limit: number
-  sources: DiscoverySourceId[]
 }
 
 export const emptyDiscoveryForm: DiscoveryFormState = {
@@ -35,8 +36,7 @@ export const emptyDiscoveryForm: DiscoveryFormState = {
   documentTypes: [],
   sourceTiers: [],
   minCitations: '',
-  limit: DISCOVERY_DEFAULT_LIMIT,
-  sources: [...DISCOVERY_SOURCE_IDS]
+  limit: DISCOVERY_DEFAULT_LIMIT
 }
 
 function parseYear(value: string): number | null {
@@ -52,6 +52,7 @@ function parseCount(value: string): number | null {
 }
 
 export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscoveryController {
+  const { t } = useTranslation()
   const [form, setForm] = useState<DiscoveryFormState>(emptyDiscoveryForm)
   const [candidates, setCandidates] = useState<DiscoveryCandidate[]>([])
   const [statuses, setStatuses] = useState<DiscoverySourceStatus[]>([])
@@ -60,12 +61,11 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
   const [searching, setSearching] = useState(false)
   const [importing, setImporting] = useState(false)
   const [screening, setScreening] = useState(false)
+  const [parsing, setParsing] = useState(false)
   const [error, setError] = useState<string>()
   const [notice, setNotice] = useState<string>()
   const [importResult, setImportResult] = useState<DiscoveryImportResult>()
   const [screenResult, setScreenResult] = useState<DiscoveryScreenResult>()
-  const [cnkiSignedIn, setCnkiSignedIn] = useState(false)
-  const { t } = useTranslation()
 
   const update = useCallback(
     <Key extends keyof DiscoveryFormState>(key: Key, value: DiscoveryFormState[Key]): void => {
@@ -73,15 +73,6 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
     },
     []
   )
-
-  const toggleSource = useCallback((source: DiscoverySourceId): void => {
-    setForm((current) => ({
-      ...current,
-      sources: current.sources.includes(source)
-        ? current.sources.filter((entry) => entry !== source)
-        : [...current.sources, source]
-    }))
-  }, [])
 
   const toggleDocumentType = useCallback((type: DiscoveryDocumentType): void => {
     setForm((current) => ({
@@ -101,35 +92,15 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
     }))
   }, [])
 
-  const refreshCnkiState = useCallback(async (): Promise<void> => {
-    try {
-      const state = await window.api.literature.discoveryStatus('cnki')
-      setCnkiSignedIn(state.signedIn)
-    } catch {
-      // Reading the session is best effort; the search result reports the authoritative state.
-    }
-  }, [])
-
-  const buildQuery = useCallback((): Parameters<
-    typeof window.api.literature.discoverySearch
-  >[0] => {
-    const limit = Math.min(DISCOVERY_RESULT_LIMIT, Math.max(1, Math.trunc(form.limit) || 1))
-    return {
-      topic: form.topic.trim(),
-      keywords: form.keywords
+  const keywords = useCallback(
+    (): string[] =>
+      form.keywords
         .split(/[,，\n]/u)
         .map((value) => value.trim())
         .filter(Boolean)
         .slice(0, 20),
-      yearFrom: parseYear(form.yearFrom),
-      yearTo: parseYear(form.yearTo),
-      documentTypes: form.documentTypes.filter((type) => DISCOVERY_DOCUMENT_TYPES.includes(type)),
-      sourceTiers: form.sourceTiers.filter((tier) => DISCOVERY_SOURCE_TIERS.includes(tier)),
-      minCitations: parseCount(form.minCitations),
-      limit,
-      sources: form.sources.length ? form.sources : ['openalex']
-    }
-  }, [form])
+    [form.keywords]
+  )
 
   const search = useCallback(async (): Promise<void> => {
     setError(undefined)
@@ -142,14 +113,24 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
     }
     setSearching(true)
     try {
-      const result = await window.api.literature.discoverySearch(buildQuery())
+      const result = await window.api.literature.discoverySearch({
+        topic: form.topic.trim(),
+        keywords: keywords(),
+        yearFrom: parseYear(form.yearFrom),
+        yearTo: parseYear(form.yearTo),
+        documentTypes: form.documentTypes.filter((type) => DISCOVERY_DOCUMENT_TYPES.includes(type)),
+        sourceTiers: form.sourceTiers.filter((tier) => DISCOVERY_SOURCE_TIERS.includes(tier)),
+        minCitations: parseCount(form.minCitations),
+        limit: Math.min(DISCOVERY_RESULT_LIMIT, Math.max(1, Math.trunc(form.limit) || 1)),
+        sources: ['openalex']
+      })
       setCandidates(result.candidates)
       setStatuses(result.statuses)
       setWarnings(result.warnings)
       setSelected(new Set())
       if (!result.candidates.length)
         setNotice(
-          result.statuses.find((status) => status.requiresLogin)?.message ||
+          result.statuses.find((status) => status.message)?.message ??
             t('No records matched this query.')
         )
     } catch (searchError) {
@@ -158,7 +139,46 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
     } finally {
       setSearching(false)
     }
-  }, [buildQuery, form.topic, t])
+  }, [form, keywords, t])
+
+  // Opens CNKI with the topic already filled in. The main window routes external links to the
+  // system browser, where the user's own CNKI session and institutional access already work.
+  const openCnkiSearch = useCallback((): void => {
+    const text = [form.topic, ...keywords()].join(' ').trim()
+    const params = new URLSearchParams({ kw: text, korder: 'SU' })
+    window.open(`${CNKI_SEARCH_URL}?${params.toString()}`, '_blank', 'noopener')
+    setNotice(
+      t(
+        'Export the selected references as RefWorks or EndNote from CNKI, then import that file here.'
+      )
+    )
+  }, [form.topic, keywords, t])
+
+  const importCnkiExport = useCallback(
+    async (file: File): Promise<void> => {
+      setParsing(true)
+      setError(undefined)
+      try {
+        const content = await file.text()
+        const result = await window.api.literature.discoveryParseRecords({ content })
+        if (!result.candidates.length) {
+          setError(result.errors.join(' ') || t('No records matched this query.'))
+          return
+        }
+        // Exported records join whatever the online search already found.
+        setCandidates((current) => {
+          const seen = new Set(current.map((candidate) => candidate.key))
+          return [...current, ...result.candidates.filter((candidate) => !seen.has(candidate.key))]
+        })
+        setNotice(`${t('Records')}: ${result.candidates.length}`)
+      } catch (parseError) {
+        setError(parseError instanceof Error ? parseError.message : t('The import failed.'))
+      } finally {
+        setParsing(false)
+      }
+    },
+    [t]
+  )
 
   const importSelected = useCallback(
     async (duplicatePolicy: 'reuse' | 'separate'): Promise<void> => {
@@ -222,19 +242,6 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
     [importResult, t]
   )
 
-  const signInCnki = useCallback(async (): Promise<void> => {
-    try {
-      setNotice(t('Sign in to CNKI in the window that opened, then close it.'))
-      // Resolves once the sign-in window is closed, so the reported state is the session that
-      // actually exists afterwards rather than a placeholder.
-      const result = await window.api.literature.discoverySignIn('cnki')
-      setCnkiSignedIn(result.signedIn)
-      setNotice(result.signedIn ? t('CNKI session ready') : result.message)
-    } catch (signInError) {
-      setError(signInError instanceof Error ? signInError.message : t('Unable to open CNKI.'))
-    }
-  }, [t])
-
   const toggleSelection = useCallback((key: string): void => {
     setSelected((current) => {
       const next = new Set(current)
@@ -251,15 +258,9 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
     [candidates]
   )
 
-  const requiresCnkiSignIn = useMemo(
-    () => statuses.some((status) => status.source === 'cnki' && status.requiresLogin),
-    [statuses]
-  )
-
   return {
     form,
     update,
-    toggleSource,
     toggleDocumentType,
     toggleSourceTier,
     candidates,
@@ -269,17 +270,16 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
     searching,
     importing,
     screening,
+    parsing,
     error,
     notice,
     importResult,
     screenResult,
-    cnkiSignedIn,
-    requiresCnkiSignIn,
     search,
+    openCnkiSearch,
+    importCnkiExport,
     importSelected,
     screenImported,
-    signInCnki,
-    refreshCnkiState,
     toggleSelection,
     selectAll,
     setError,
@@ -290,7 +290,6 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
 export type LiteratureDiscoveryController = Readonly<{
   form: DiscoveryFormState
   update: <Key extends keyof DiscoveryFormState>(key: Key, value: DiscoveryFormState[Key]) => void
-  toggleSource: (source: DiscoverySourceId) => void
   toggleDocumentType: (type: DiscoveryDocumentType) => void
   toggleSourceTier: (tier: DiscoverySourceTier) => void
   candidates: DiscoveryCandidate[]
@@ -300,21 +299,20 @@ export type LiteratureDiscoveryController = Readonly<{
   searching: boolean
   importing: boolean
   screening: boolean
+  parsing: boolean
   error: string | undefined
   notice: string | undefined
   importResult: DiscoveryImportResult | undefined
   screenResult: DiscoveryScreenResult | undefined
-  cnkiSignedIn: boolean
-  requiresCnkiSignIn: boolean
   search: () => Promise<void>
+  openCnkiSearch: () => void
+  importCnkiExport: (file: File) => Promise<void>
   importSelected: (duplicatePolicy: 'reuse' | 'separate') => Promise<void>
   screenImported: (criteria: {
     mode: 'all' | 'any' | 'custom'
     items: string[]
     notes: string
   }) => Promise<void>
-  signInCnki: () => Promise<void>
-  refreshCnkiState: () => Promise<void>
   toggleSelection: (key: string) => void
   selectAll: (value: boolean) => void
   setError: Dispatch<SetStateAction<string | undefined>>

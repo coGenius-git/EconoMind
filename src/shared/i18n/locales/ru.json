@@ -7212,7 +7212,6 @@
     "Maximum records": "Максимальное число записей",
     "Document types": "Типы документов",
     "Source tiers": "Уровни источников",
-    "Data sources": "Источники данных",
     "CNKI": "CNKI",
     "CSSCI": "CSSCI",
     "Peking University core": "Ядро Пекинского университета",
@@ -7221,10 +7220,6 @@
     "EI": "EI",
     "DOAJ": "DOAJ",
     "Open access": "Открытый доступ",
-    "Sign in to CNKI": "Войти в CNKI",
-    "CNKI session ready": "Сессия CNKI активна",
-    "No CNKI session": "Нет сессии CNKI",
-    "Sign in to CNKI before searching.": "Войдите в CNKI перед поиском.",
     "Searching": "Идёт поиск",
     "Search failed": "Поиск не выполнен",
     "Warnings": "Предупреждения",
@@ -7248,7 +7243,8 @@
     "Import records before screening them.": "Импортируйте записи перед отбором.",
     "Add at least one inclusion criterion.": "Добавьте хотя бы один критерий включения.",
     "Screening failed.": "Отбор завершился неудачно.",
-    "Unable to open CNKI.": "Не удалось открыть CNKI.",
-    "Sign in to CNKI in the window that opened, then close it.": "Войдите в CNKI в открывшемся окне, затем закройте его."
+    "Search CNKI in your browser": "Искать в CNKI через браузер",
+    "Import a CNKI export file": "Импортировать файл экспорта CNKI",
+    "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "Экспортируйте выбранные ссылки из CNKI в формате RefWorks или EndNote, затем импортируйте этот файл здесь."
   }
 }

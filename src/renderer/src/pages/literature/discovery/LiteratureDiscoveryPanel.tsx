@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { LoaderCircle, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -9,7 +9,6 @@ import { InlineNotice } from '@/components/ui/inline-notice'
 import {
   DISCOVERY_DOCUMENT_TYPES,
   DISCOVERY_RESULT_LIMIT,
-  DISCOVERY_SOURCE_IDS,
   DISCOVERY_SOURCE_TIERS,
   type DiscoveryDocumentType,
   type DiscoverySourceId,
@@ -50,10 +49,6 @@ export function LiteratureDiscoveryPanel({
   const discovery = useLiteratureDiscovery(collectionId)
   const [criteriaText, setCriteriaText] = useState('')
   const [duplicatePolicy, setDuplicatePolicy] = useState<'reuse' | 'separate'>('reuse')
-
-  useEffect(() => {
-    void discovery.refreshCnkiState()
-  }, [discovery.refreshCnkiState, discovery])
 
   const runImport = async (): Promise<void> => {
     await discovery.importSelected(duplicatePolicy)
@@ -157,30 +152,32 @@ export function LiteratureDiscoveryPanel({
           </div>
         </fieldset>
 
-        <fieldset className="space-y-2 md:col-span-2">
-          <legend className="text-sm font-medium">{t('Data sources')}</legend>
+        <fieldset className="space-y-3 md:col-span-2">
+          <legend className="text-sm font-medium">{t('CNKI')}</legend>
           <div className="flex flex-wrap items-center gap-4">
-            {DISCOVERY_SOURCE_IDS.map((source) => (
-              <label key={source} className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={discovery.form.sources.includes(source)}
-                  onChange={() => discovery.toggleSource(source)}
-                />
-                <span>{t(SOURCE_LABELS[source])}</span>
-              </label>
-            ))}
-            {discovery.form.sources.includes('cnki') ? (
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" onClick={() => void discovery.signInCnki()}>
-                  {t('Sign in to CNKI')}
-                </Button>
-                <Badge variant="secondary">
-                  {discovery.cnkiSignedIn ? t('CNKI session ready') : t('No CNKI session')}
-                </Badge>
-              </div>
-            ) : null}
+            <Button variant="outline" size="sm" onClick={discovery.openCnkiSearch}>
+              {t('Search CNKI in your browser')}
+            </Button>
+            <label className="flex items-center gap-2 text-sm">
+              <span>{t('Import a CNKI export file')}</span>
+              <input
+                type="file"
+                accept=".txt,.ris,.enw,.nbib,.bib,text/plain"
+                disabled={discovery.parsing}
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  // Reset so the same file can be picked again after an edit.
+                  event.target.value = ''
+                  if (file) void discovery.importCnkiExport(file)
+                }}
+              />
+            </label>
           </div>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {t(
+              'Export the selected references as RefWorks or EndNote from CNKI, then import that file here.'
+            )}
+          </p>
         </fieldset>
 
         <div className="md:col-span-2">
@@ -209,9 +206,6 @@ export function LiteratureDiscoveryPanel({
           {': '}
           {discovery.warnings.join(' ')}
         </InlineNotice>
-      ) : null}
-      {discovery.requiresCnkiSignIn ? (
-        <InlineNotice tone="amber">{t('Sign in to CNKI before searching.')}</InlineNotice>
       ) : null}
 
       {discovery.candidates.length ? (

@@ -7074,7 +7074,6 @@
     "Maximum records": "Nombre maximal de références",
     "Document types": "Types de document",
     "Source tiers": "Niveaux de source",
-    "Data sources": "Sources de données",
     "CNKI": "CNKI",
     "CSSCI": "CSSCI",
     "Peking University core": "Liste centrale de l’Université de Pékin",
@@ -7083,10 +7082,6 @@
     "EI": "EI",
     "DOAJ": "DOAJ",
     "Open access": "Accès ouvert",
-    "Sign in to CNKI": "Se connecter à CNKI",
-    "CNKI session ready": "Session CNKI disponible",
-    "No CNKI session": "Aucune session CNKI",
-    "Sign in to CNKI before searching.": "Connectez-vous à CNKI avant de lancer la recherche.",
     "Searching": "Recherche en cours",
     "Search failed": "La recherche a échoué",
     "Warnings": "Avertissements",
@@ -7110,7 +7105,8 @@
     "Import records before screening them.": "Importez les références avant de les examiner.",
     "Add at least one inclusion criterion.": "Ajoutez au moins un critère d’inclusion.",
     "Screening failed.": "L’examen a échoué.",
-    "Unable to open CNKI.": "Impossible d’ouvrir CNKI.",
-    "Sign in to CNKI in the window that opened, then close it.": "Connectez-vous à CNKI dans la fenêtre qui vient de s’ouvrir, puis fermez-la."
+    "Search CNKI in your browser": "Rechercher dans CNKI avec votre navigateur",
+    "Import a CNKI export file": "Importer un fichier exporté de CNKI",
+    "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "Exportez les références sélectionnées depuis CNKI au format RefWorks ou EndNote, puis importez ce fichier ici."
   }
 }

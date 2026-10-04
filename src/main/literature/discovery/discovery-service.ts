@@ -1,6 +1,8 @@
 import type { LiteratureItemInput, LiteratureItemView } from '../../../shared/literature'
 import {
   type DiscoveryCandidate,
+  type DiscoveryParseRecordsRequest,
+  type DiscoveryParseRecordsResult,
   type DiscoveryDocumentType,
   type DiscoveryImportRequest,
   type DiscoveryImportResult,
@@ -10,7 +12,7 @@ import {
   type DiscoverySearchResponse,
   type DiscoverySourceId
 } from '../../../shared/literature-discovery'
-import { searchCnki } from './cnki-provider'
+import { parseCnkiRecords } from './cnki-records'
 import { searchOpenAlex, type DiscoveryProviderResult } from './openalex-provider'
 import { screenRecords, type RecordScreeningModel } from './record-screening'
 
@@ -101,18 +103,17 @@ export class LiteratureDiscovery {
   constructor(private readonly options: LiteratureDiscoveryOptions) {}
 
   async search(query: DiscoveryQuery, signal?: AbortSignal): Promise<DiscoverySearchResponse> {
-    const requested = query.sources
+    // OpenAlex is the only source searched online; CNKI records arrive as an export file, which
+    // parseRecords handles, so there is no second provider to run here.
     const settled = await Promise.all(
-      requested.map(async (source): Promise<DiscoveryProviderResult> => {
-        if (source === 'openalex')
-          return searchOpenAlex(query, {
-            signal,
-            fetch: this.options.fetch,
-            apiKey: this.options.openAlexKey,
-            contactEmail: this.options.contactEmail
-          })
-        return searchCnki(query, { signal })
-      })
+      query.sources.map(async (): Promise<DiscoveryProviderResult> =>
+        searchOpenAlex(query, {
+          signal,
+          fetch: this.options.fetch,
+          apiKey: this.options.openAlexKey,
+          contactEmail: this.options.contactEmail
+        })
+      )
     )
 
     const warnings: string[] = []
@@ -122,7 +123,7 @@ export class LiteratureDiscovery {
     for (const result of settled) {
       if (result.status.unresolvedTiers.length)
         warnings.push(
-          `OpenAlex cannot filter by ${result.status.unresolvedTiers.join(', ')}; those criteria were applied to CNKI only.`
+          `OpenAlex cannot filter by ${result.status.unresolvedTiers.join(', ')}; those criteria were not applied.`
         )
       if (result.status.failureCode && result.status.message) warnings.push(result.status.message)
       for (const candidate of result.candidates) {
@@ -138,10 +139,6 @@ export class LiteratureDiscovery {
     }
     if (duplicatesRemoved > 0)
       warnings.push(`${duplicatesRemoved} duplicate record(s) across sources were merged.`)
-    if (candidates.some((candidate) => candidate.source === 'cnki' && !candidate.abstract))
-      warnings.push(
-        'CNKI records do not include abstracts; screening uses titles and metadata only.'
-      )
 
     return {
       candidates,
@@ -174,6 +171,13 @@ export class LiteratureDiscovery {
       skipped,
       importedCount: imported.length
     }
+  }
+
+  // Reads a CNKI export (RefWorks/RIS or EndNote) into the same candidate shape the online search
+  // produces, so both sources continue through one review, import and screening flow.
+  parseRecords(request: DiscoveryParseRecordsRequest): DiscoveryParseRecordsResult {
+    const parsed = parseCnkiRecords(request.content)
+    return { format: parsed.format, candidates: parsed.candidates, errors: parsed.errors }
   }
 
   async screen(

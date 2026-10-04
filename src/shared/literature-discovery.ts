@@ -5,7 +5,10 @@ import { defineApplicationCommandContract, validationCodec } from './application
 // candidate list, then import the selected records into the library for title/abstract screening.
 // This module only describes the wire contract; providers live in src/main/literature/discovery.
 
+// Where a candidate came from. Only OpenAlex can be searched from inside the app; CNKI records
+// arrive from an export file, so the two lists are deliberately different.
 export const DISCOVERY_SOURCE_IDS = ['openalex', 'cnki'] as const
+export const DISCOVERY_SEARCH_SOURCE_IDS = ['openalex'] as const
 export const DISCOVERY_DOCUMENT_TYPES = [
   'article',
   'review',
@@ -171,10 +174,21 @@ export const discoveryScreenResultSchema = z
   })
   .strict()
 
-export const discoverySignInResponseSchema = z
+export const discoveryParseRecordsRequestSchema = z
   .object({
-    signedIn: z.boolean(),
-    message: boundedText(2000).default('')
+    // The file is read by the renderer and passed as text, like the existing reference import.
+    content: z
+      .string()
+      .min(1)
+      .max(32 * 1024 * 1024)
+  })
+  .strict()
+
+export const discoveryParseRecordsResultSchema = z
+  .object({
+    format: z.enum(['ris', 'endnote']),
+    candidates: z.array(discoveryCandidateSchema).max(1000),
+    errors: z.array(boundedText(2000)).max(20).default([])
   })
   .strict()
 
@@ -191,17 +205,9 @@ export const literatureDiscoveryContracts = Object.freeze({
     validationCodec(z.tuple([discoveryScreenRequestSchema])),
     validationCodec(discoveryScreenResultSchema)
   ),
-  signIn: defineApplicationCommandContract(
-    validationCodec(z.tuple([discoverySourceIdSchema])),
-    validationCodec(discoverySignInResponseSchema)
-  ),
-  signOut: defineApplicationCommandContract(
-    validationCodec(z.tuple([discoverySourceIdSchema])),
-    validationCodec(discoverySignInResponseSchema)
-  ),
-  status: defineApplicationCommandContract(
-    validationCodec(z.tuple([discoverySourceIdSchema])),
-    validationCodec(discoverySignInResponseSchema)
+  parseRecords: defineApplicationCommandContract(
+    validationCodec(z.tuple([discoveryParseRecordsRequestSchema])),
+    validationCodec(discoveryParseRecordsResultSchema)
   )
 })
 
@@ -218,5 +224,6 @@ export type DiscoveryCriteria = z.infer<typeof discoveryCriteriaSchema>
 export type DiscoveryScreenRequest = z.infer<typeof discoveryScreenRequestSchema>
 export type DiscoveryScreenResult = z.infer<typeof discoveryScreenResultSchema>
 export type DiscoveryScreenOutcome = z.infer<typeof discoveryScreenOutcomeSchema>
-export type DiscoverySignInResponse = z.infer<typeof discoverySignInResponseSchema>
+export type DiscoveryParseRecordsRequest = z.infer<typeof discoveryParseRecordsRequestSchema>
+export type DiscoveryParseRecordsResult = z.infer<typeof discoveryParseRecordsResultSchema>
 export type DiscoveryFailureCode = (typeof DISCOVERY_FAILURE_CODES)[number]
