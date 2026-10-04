@@ -7248,6 +7248,7 @@
     "Import records before screening them.": "Импортируйте записи перед отбором.",
     "Add at least one inclusion criterion.": "Добавьте хотя бы один критерий включения.",
     "Screening failed.": "Отбор завершился неудачно.",
-    "Unable to open CNKI.": "Не удалось открыть CNKI."
+    "Unable to open CNKI.": "Не удалось открыть CNKI.",
+    "Sign in to CNKI in the window that opened, then close it.": "Войдите в CNKI в открывшемся окне, затем закройте его."
   }
 }

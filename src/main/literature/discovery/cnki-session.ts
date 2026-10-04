@@ -60,12 +60,34 @@ function ensureWindow(options: { visible: boolean }): BrowserWindow {
       partition: CNKI_PARTITION,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
-      // The site is loaded as an ordinary web page; no local code is injected into it.
-      webSecurity: true,
+      // The sign-in page is an ordinary web page, but a sandboxed renderer blocks parts of the
+      // legacy flows CNKI uses for account and institutional sign-in, which makes its buttons
+      // appear inert. The window is a browser surface, so it runs unsandboxed.
+      sandbox: false,
       // Electron throttles hidden windows by default, which stalls both the page load and the
       // script that reads the result list.
       backgroundThrottling: false
+    }
+  })
+  // Institutional and third-party sign-in open a popup. Keep it in the same partition so the
+  // cookies it writes belong to the session this integration reads.
+  created.webContents.setWindowOpenHandler(() => ({
+    action: 'allow',
+    overrideBrowserWindowOptions: {
+      autoHideMenuBar: true,
+      webPreferences: {
+        partition: CNKI_PARTITION,
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false
+      }
+    }
+  }))
+  // The menu bar is hidden, so F12 is the only way to inspect a page that misbehaves.
+  created.webContents.on('before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && input.key === 'F12') {
+      created.webContents.toggleDevTools()
+      event.preventDefault()
     }
   })
   created.on('closed', () => {
@@ -77,34 +99,36 @@ function ensureWindow(options: { visible: boolean }): BrowserWindow {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
-// Navigation with its own budget. A page that has not finished loading is not a failure: CNKI
-// keeps connections open, and the caller decides readiness by looking for the result list.
-async function loadWithBudget(target: BrowserWindow, url: string, budgetMs: number): Promise<void> {
+// Navigation with its own budget. Returns false only when the window rejected the URL outright; a
+// page that is merely still loading counts as usable, because CNKI keeps connections open and an
+// unbounded wait here would leave the caller pending forever. Readiness is decided by the caller
+// looking for the result list.
+async function loadWithBudget(
+  target: BrowserWindow,
+  url: string,
+  budgetMs: number
+): Promise<boolean> {
   const navigation = target.loadURL(url)
   // Keep the rejection observed even when the budget wins the race.
   navigation.catch(() => undefined)
   let timer: ReturnType<typeof setTimeout> | undefined
-  try {
-    await Promise.race([
-      navigation,
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, budgetMs)
-      })
-    ])
-  } finally {
-    if (timer) clearTimeout(timer)
-  }
+  const outcome = await Promise.race([
+    navigation.then(
+      () => 'loaded' as const,
+      () => 'failed' as const
+    ),
+    new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), budgetMs)
+    })
+  ])
+  if (timer) clearTimeout(timer)
+  return outcome !== 'failed'
 }
 
 // Tries each URL in order, stopping at the first one the window accepts.
 async function loadFirstAvailable(target: BrowserWindow, urls: readonly string[]): Promise<void> {
   for (const url of urls) {
-    try {
-      await target.loadURL(url)
-      return
-    } catch {
-      // Fall through to the next candidate.
-    }
+    if (await loadWithBudget(target, url, PAGE_LOAD_BUDGET_MS)) return
   }
 }
 

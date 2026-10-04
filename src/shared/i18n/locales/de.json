@@ -6943,6 +6943,7 @@
     "Import records before screening them.": "Importieren Sie die Einträge, bevor Sie sie prüfen.",
     "Add at least one inclusion criterion.": "Fügen Sie mindestens ein Einschlusskriterium hinzu.",
     "Screening failed.": "Die Prüfung ist fehlgeschlagen.",
-    "Unable to open CNKI.": "CNKI kann nicht geöffnet werden."
+    "Unable to open CNKI.": "CNKI kann nicht geöffnet werden.",
+    "Sign in to CNKI in the window that opened, then close it.": "Melden Sie sich im geöffneten Fenster bei CNKI an und schließen Sie es anschließend."
   }
 }

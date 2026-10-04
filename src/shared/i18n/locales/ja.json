@@ -6784,6 +6784,7 @@
     "Import records before screening them.": "審査する前に文献を取り込んでください。",
     "Add at least one inclusion criterion.": "採用基準を 1 つ以上入力してください。",
     "Screening failed.": "審査に失敗しました。",
-    "Unable to open CNKI.": "CNKI を開けません。"
+    "Unable to open CNKI.": "CNKI を開けません。",
+    "Sign in to CNKI in the window that opened, then close it.": "開いたウィンドウで CNKI にログインし、その後ウィンドウを閉じてください。"
   }
 }

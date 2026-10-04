@@ -6782,6 +6782,7 @@
     "Import records before screening them.": "심사하기 전에 레코드를 가져오세요.",
     "Add at least one inclusion criterion.": "포함 기준을 하나 이상 추가하세요.",
     "Screening failed.": "심사에 실패했습니다.",
-    "Unable to open CNKI.": "CNKI를 열 수 없습니다."
+    "Unable to open CNKI.": "CNKI를 열 수 없습니다.",
+    "Sign in to CNKI in the window that opened, then close it.": "열린 창에서 CNKI에 로그인한 뒤 창을 닫으세요."
   }
 }

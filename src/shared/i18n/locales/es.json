@@ -7110,6 +7110,7 @@
     "Import records before screening them.": "Importe los registros antes de cribarlos.",
     "Add at least one inclusion criterion.": "Añada al menos un criterio de inclusión.",
     "Screening failed.": "El cribado falló.",
-    "Unable to open CNKI.": "No se puede abrir CNKI."
+    "Unable to open CNKI.": "No se puede abrir CNKI.",
+    "Sign in to CNKI in the window that opened, then close it.": "Inicie sesión en CNKI en la ventana que se ha abierto y luego ciérrela."
   }
 }
