@@ -28,7 +28,9 @@ import {
   type DiscoveryScreenResult,
   type DiscoverySearchResponse,
   type DiscoveryParseRecordsRequest,
-  type DiscoveryParseRecordsResult
+  type DiscoveryParseRecordsResult,
+  type DiscoverySignInResponse,
+  type DiscoverySourceId
 } from '../../shared/literature-discovery'
 import {
   literatureApplicationCommandContracts,
@@ -94,6 +96,9 @@ type LiteratureCommandOwner = Readonly<{
     signal?: AbortSignal
   ): Promise<DiscoveryScreenResult>
   discoveryParseRecords(request: DiscoveryParseRecordsRequest): DiscoveryParseRecordsResult
+  discoverySignIn(source: DiscoverySourceId): Promise<DiscoverySignInResponse>
+  discoverySignOut(source: DiscoverySourceId): Promise<DiscoverySignInResponse>
+  discoveryStatus(source: DiscoverySourceId): Promise<DiscoverySignInResponse>
 }>
 
 const literatureApplicationCommands = Object.freeze({
@@ -201,7 +206,22 @@ const literatureApplicationCommands = Object.freeze({
     'literature:discovery-parse-records',
     readonly [DiscoveryParseRecordsRequest],
     DiscoveryParseRecordsResult
-  >('literature:discovery-parse-records', literatureDiscoveryContracts.parseRecords)
+  >('literature:discovery-parse-records', literatureDiscoveryContracts.parseRecords),
+  discoverySignIn: defineApplicationCommand<
+    'literature:discovery-sign-in',
+    readonly [DiscoverySourceId],
+    DiscoverySignInResponse
+  >('literature:discovery-sign-in', literatureDiscoveryContracts.signIn),
+  discoverySignOut: defineApplicationCommand<
+    'literature:discovery-sign-out',
+    readonly [DiscoverySourceId],
+    DiscoverySignInResponse
+  >('literature:discovery-sign-out', literatureDiscoveryContracts.signOut),
+  discoveryStatus: defineApplicationCommand<
+    'literature:discovery-status',
+    readonly [DiscoverySourceId],
+    DiscoverySignInResponse
+  >('literature:discovery-status', literatureDiscoveryContracts.status)
 })
 
 const literatureApplicationCommandGroup = defineApplicationCommandGroup('literature', [
@@ -225,7 +245,10 @@ const literatureApplicationCommandGroup = defineApplicationCommandGroup('literat
   literatureApplicationCommands.discoverySearch,
   literatureApplicationCommands.discoveryImport,
   literatureApplicationCommands.discoveryScreen,
-  literatureApplicationCommands.discoveryParseRecords
+  literatureApplicationCommands.discoveryParseRecords,
+  literatureApplicationCommands.discoverySignIn,
+  literatureApplicationCommands.discoverySignOut,
+  literatureApplicationCommands.discoveryStatus
 ] as const)
 
 const registerLiteratureApplicationCommands = (
@@ -266,7 +289,10 @@ const registerLiteratureApplicationCommands = (
         withDataRootWrite(() => owner.discoveryImport(args[0])),
       'literature:discovery-screen': ({ args, callerLease }) =>
         owner.discoveryScreen(args[0], callerLease.signal),
-      'literature:discovery-parse-records': ({ args }) => owner.discoveryParseRecords(args[0])
+      'literature:discovery-parse-records': ({ args }) => owner.discoveryParseRecords(args[0]),
+      'literature:discovery-sign-in': ({ args }) => owner.discoverySignIn(args[0]),
+      'literature:discovery-sign-out': ({ args }) => owner.discoverySignOut(args[0]),
+      'literature:discovery-status': ({ args }) => owner.discoveryStatus(args[0])
     })
     return scope.complete()
   } catch (error) {

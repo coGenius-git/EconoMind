@@ -4,11 +4,13 @@ import {
   DISCOVERY_DEFAULT_LIMIT,
   DISCOVERY_DOCUMENT_TYPES,
   DISCOVERY_RESULT_LIMIT,
+  DISCOVERY_SEARCH_SOURCE_IDS,
   DISCOVERY_SOURCE_TIERS,
   type DiscoveryCandidate,
   type DiscoveryDocumentType,
   type DiscoveryImportResult,
   type DiscoveryScreenResult,
+  type DiscoverySourceId,
   type DiscoverySourceStatus,
   type DiscoverySourceTier
 } from '../../../../../shared/literature-discovery'
@@ -26,6 +28,7 @@ export type DiscoveryFormState = {
   sourceTiers: DiscoverySourceTier[]
   minCitations: string
   limit: number
+  sources: DiscoverySourceId[]
 }
 
 export const emptyDiscoveryForm: DiscoveryFormState = {
@@ -36,7 +39,8 @@ export const emptyDiscoveryForm: DiscoveryFormState = {
   documentTypes: [],
   sourceTiers: [],
   minCitations: '',
-  limit: DISCOVERY_DEFAULT_LIMIT
+  limit: DISCOVERY_DEFAULT_LIMIT,
+  sources: [...DISCOVERY_SEARCH_SOURCE_IDS]
 }
 
 function parseYear(value: string): number | null {
@@ -62,6 +66,8 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
   const [importing, setImporting] = useState(false)
   const [screening, setScreening] = useState(false)
   const [parsing, setParsing] = useState(false)
+  const [signingIn, setSigningIn] = useState(false)
+  const [cnkiSignedIn, setCnkiSignedIn] = useState(false)
   const [error, setError] = useState<string>()
   const [notice, setNotice] = useState<string>()
   const [importResult, setImportResult] = useState<DiscoveryImportResult>()
@@ -89,6 +95,15 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
       sourceTiers: current.sourceTiers.includes(tier)
         ? current.sourceTiers.filter((entry) => entry !== tier)
         : [...current.sourceTiers, tier]
+    }))
+  }, [])
+
+  const toggleSource = useCallback((source: DiscoverySourceId): void => {
+    setForm((current) => ({
+      ...current,
+      sources: current.sources.includes(source)
+        ? current.sources.filter((entry) => entry !== source)
+        : [...current.sources, source]
     }))
   }, [])
 
@@ -122,7 +137,7 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
         sourceTiers: form.sourceTiers.filter((tier) => DISCOVERY_SOURCE_TIERS.includes(tier)),
         minCitations: parseCount(form.minCitations),
         limit: Math.min(DISCOVERY_RESULT_LIMIT, Math.max(1, Math.trunc(form.limit) || 1)),
-        sources: ['openalex']
+        sources: form.sources.length ? form.sources : ['openalex']
       })
       setCandidates(result.candidates)
       setStatuses(result.statuses)
@@ -153,6 +168,31 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
       )
     )
   }, [form.topic, keywords, t])
+
+  // The CNKI session lives in a standalone browser profile. Sign-in resolves once that window is
+  // closed, so the state shown is the session that actually exists afterwards.
+  const refreshCnkiState = useCallback(async (): Promise<void> => {
+    try {
+      const state = await window.api.literature.discoveryStatus('cnki')
+      setCnkiSignedIn(state.signedIn)
+    } catch {
+      // Reading the session is best effort; the search result reports the authoritative state.
+    }
+  }, [])
+
+  const signInCnki = useCallback(async (): Promise<void> => {
+    try {
+      setSigningIn(true)
+      setNotice(t('Sign in to CNKI in the window that opened, then close it.'))
+      const state = await window.api.literature.discoverySignIn('cnki')
+      setCnkiSignedIn(state.signedIn)
+      setNotice(state.signedIn ? t('CNKI session ready') : state.message)
+    } catch (signInError) {
+      setError(signInError instanceof Error ? signInError.message : t('Unable to open CNKI.'))
+    } finally {
+      setSigningIn(false)
+    }
+  }, [t])
 
   const importCnkiExport = useCallback(
     async (file: File): Promise<void> => {
@@ -271,11 +311,16 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
     importing,
     screening,
     parsing,
+    signingIn,
+    cnkiSignedIn,
     error,
     notice,
     importResult,
     screenResult,
+    toggleSource,
     search,
+    signInCnki,
+    refreshCnkiState,
     openCnkiSearch,
     importCnkiExport,
     importSelected,
@@ -300,11 +345,16 @@ export type LiteratureDiscoveryController = Readonly<{
   importing: boolean
   screening: boolean
   parsing: boolean
+  signingIn: boolean
+  cnkiSignedIn: boolean
   error: string | undefined
   notice: string | undefined
   importResult: DiscoveryImportResult | undefined
   screenResult: DiscoveryScreenResult | undefined
+  toggleSource: (source: DiscoverySourceId) => void
   search: () => Promise<void>
+  signInCnki: () => Promise<void>
+  refreshCnkiState: () => Promise<void>
   openCnkiSearch: () => void
   importCnkiExport: (file: File) => Promise<void>
   importSelected: (duplicatePolicy: 'reuse' | 'separate') => Promise<void>

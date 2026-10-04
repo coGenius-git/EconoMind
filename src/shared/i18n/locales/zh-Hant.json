@@ -6783,6 +6783,12 @@
     "Import a CNKI export file": "匯入知網匯出檔案",
     "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "在知網中將勾選的文獻匯出為 RefWorks 或 EndNote 格式，再回到此處匯入該檔案。",
     "Data sources": "資料來源",
-    "Searched online": "線上檢索"
+    "Searched online": "線上檢索",
+    "Sign in to CNKI": "登入知網",
+    "CNKI session ready": "知網工作階段已就緒",
+    "No CNKI session": "未登入知網",
+    "Sign in to CNKI before searching.": "檢索前請先登入知網。",
+    "Sign in to CNKI in the window that opened, then close it.": "請在剛開啟的視窗中登入知網，完成後關閉該視窗。",
+    "Unable to open CNKI.": "無法開啟知網。"
   }
 }

@@ -1,5 +1,7 @@
-import { composeLiteratureDiscovery } from './literature-discovery'
-import type { LiteratureDiscovery } from '../literature/discovery/discovery-service'
+import {
+  composeLiteratureDiscovery,
+  type LiteratureDiscoveryCapability
+} from './literature-discovery'
 import { composeLiteratureScreening } from './literature-screening'
 import type { LiteratureAttachmentAuthority } from '../literature/attachment-authority'
 import type { LiteratureScreeningWorkflows } from '../literature/screening-workflows'
@@ -88,7 +90,7 @@ export async function composeResearchCatalog({
   literaturePdfImporter: LiteraturePdfImporter
   literaturePdfAcquisition: AgentPdfAcquisition
   literatureBatchJobs: LiteratureBatchJobs
-  literatureDiscovery: LiteratureDiscovery
+  literatureDiscovery: LiteratureDiscoveryCapability
   removeResourceTagsOrThrow: (
     resources: Parameters<TagService['removeResources']>[0]
   ) => Promise<void>

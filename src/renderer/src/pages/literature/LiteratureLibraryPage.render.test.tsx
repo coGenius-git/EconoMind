@@ -436,6 +436,9 @@ describe('LiteratureLibraryPage', () => {
             candidates: [],
             errors: []
           })),
+          discoverySignIn: vi.fn(async () => ({ signedIn: false, message: '' })),
+          discoverySignOut: vi.fn(async () => ({ signedIn: false, message: '' })),
+          discoveryStatus: vi.fn(async () => ({ signedIn: false, message: '' })),
           journals: vi.fn(async () => ({ datasets: [], matches: [] })),
           exportRecord: vi.fn(),
           sources: vi.fn(async () => []),

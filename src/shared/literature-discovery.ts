@@ -8,7 +8,7 @@ import { defineApplicationCommandContract, validationCodec } from './application
 // Where a candidate came from. Only OpenAlex can be searched from inside the app; CNKI records
 // arrive from an export file, so the two lists are deliberately different.
 export const DISCOVERY_SOURCE_IDS = ['openalex', 'cnki'] as const
-export const DISCOVERY_SEARCH_SOURCE_IDS = ['openalex'] as const
+export const DISCOVERY_SEARCH_SOURCE_IDS = ['openalex', 'cnki'] as const
 export const DISCOVERY_DOCUMENT_TYPES = [
   'article',
   'review',
@@ -192,6 +192,13 @@ export const discoveryParseRecordsResultSchema = z
   })
   .strict()
 
+export const discoverySignInResponseSchema = z
+  .object({
+    signedIn: z.boolean(),
+    message: boundedText(2000).default('')
+  })
+  .strict()
+
 export const literatureDiscoveryContracts = Object.freeze({
   search: defineApplicationCommandContract(
     validationCodec(z.tuple([discoveryQuerySchema])),
@@ -208,6 +215,18 @@ export const literatureDiscoveryContracts = Object.freeze({
   parseRecords: defineApplicationCommandContract(
     validationCodec(z.tuple([discoveryParseRecordsRequestSchema])),
     validationCodec(discoveryParseRecordsResultSchema)
+  ),
+  signIn: defineApplicationCommandContract(
+    validationCodec(z.tuple([discoverySourceIdSchema])),
+    validationCodec(discoverySignInResponseSchema)
+  ),
+  signOut: defineApplicationCommandContract(
+    validationCodec(z.tuple([discoverySourceIdSchema])),
+    validationCodec(discoverySignInResponseSchema)
+  ),
+  status: defineApplicationCommandContract(
+    validationCodec(z.tuple([discoverySourceIdSchema])),
+    validationCodec(discoverySignInResponseSchema)
   )
 })
 
@@ -226,4 +245,5 @@ export type DiscoveryScreenResult = z.infer<typeof discoveryScreenResultSchema>
 export type DiscoveryScreenOutcome = z.infer<typeof discoveryScreenOutcomeSchema>
 export type DiscoveryParseRecordsRequest = z.infer<typeof discoveryParseRecordsRequestSchema>
 export type DiscoveryParseRecordsResult = z.infer<typeof discoveryParseRecordsResultSchema>
+export type DiscoverySignInResponse = z.infer<typeof discoverySignInResponseSchema>
 export type DiscoveryFailureCode = (typeof DISCOVERY_FAILURE_CODES)[number]

@@ -12,6 +12,13 @@ import {
   type DiscoverySearchResponse,
   type DiscoverySourceId
 } from '../../../shared/literature-discovery'
+import {
+  readCnkiSignInState,
+  openCnkiSignIn,
+  signOutCnki,
+  type CnkiSignInState
+} from './cnki-browser'
+import { searchCnki } from './cnki-provider'
 import { parseCnkiRecords } from './cnki-records'
 import { searchOpenAlex, type DiscoveryProviderResult } from './openalex-provider'
 import { screenRecords, type RecordScreeningModel } from './record-screening'
@@ -103,16 +110,16 @@ export class LiteratureDiscovery {
   constructor(private readonly options: LiteratureDiscoveryOptions) {}
 
   async search(query: DiscoveryQuery, signal?: AbortSignal): Promise<DiscoverySearchResponse> {
-    // OpenAlex is the only source searched online; CNKI records arrive as an export file, which
-    // parseRecords handles, so there is no second provider to run here.
     const settled = await Promise.all(
-      query.sources.map(async (): Promise<DiscoveryProviderResult> =>
-        searchOpenAlex(query, {
-          signal,
-          fetch: this.options.fetch,
-          apiKey: this.options.openAlexKey,
-          contactEmail: this.options.contactEmail
-        })
+      query.sources.map(async (source): Promise<DiscoveryProviderResult> =>
+        source === 'cnki'
+          ? searchCnki(query)
+          : searchOpenAlex(query, {
+              signal,
+              fetch: this.options.fetch,
+              apiKey: this.options.openAlexKey,
+              contactEmail: this.options.contactEmail
+            })
       )
     )
 
@@ -139,6 +146,10 @@ export class LiteratureDiscovery {
     }
     if (duplicatesRemoved > 0)
       warnings.push(`${duplicatesRemoved} duplicate record(s) across sources were merged.`)
+    if (candidates.some((candidate) => candidate.source === 'cnki' && !candidate.abstract))
+      warnings.push(
+        'CNKI search results do not include abstracts; screening uses the title and metadata only.'
+      )
 
     return {
       candidates,
@@ -175,6 +186,19 @@ export class LiteratureDiscovery {
 
   // Reads a CNKI export (RefWorks/RIS or EndNote) into the same candidate shape the online search
   // produces, so both sources continue through one review, import and screening flow.
+  // The CNKI session lives in a standalone Chromium profile that the user signs in to once.
+  async signInCnki(): Promise<CnkiSignInState> {
+    return openCnkiSignIn()
+  }
+
+  async signOutCnki(): Promise<CnkiSignInState> {
+    return signOutCnki()
+  }
+
+  async getCnkiSignInState(): Promise<CnkiSignInState> {
+    return readCnkiSignInState()
+  }
+
   parseRecords(request: DiscoveryParseRecordsRequest): DiscoveryParseRecordsResult {
     const parsed = parseCnkiRecords(request.content)
     return { format: parsed.format, candidates: parsed.candidates, errors: parsed.errors }

@@ -6942,6 +6942,12 @@
     "Import a CNKI export file": "CNKI-Exportdatei importieren",
     "Export the selected references as RefWorks or EndNote from CNKI, then import that file here.": "Exportieren Sie die ausgewählten Referenzen in CNKI als RefWorks oder EndNote und importieren Sie die Datei anschließend hier.",
     "Data sources": "Datenquellen",
-    "Searched online": "Wird online durchsucht"
+    "Searched online": "Wird online durchsucht",
+    "Sign in to CNKI": "Bei CNKI anmelden",
+    "CNKI session ready": "CNKI-Sitzung verfügbar",
+    "No CNKI session": "Keine CNKI-Sitzung",
+    "Sign in to CNKI before searching.": "Melden Sie sich vor der Suche bei CNKI an.",
+    "Sign in to CNKI in the window that opened, then close it.": "Melden Sie sich im geöffneten Fenster bei CNKI an und schließen Sie es anschließend.",
+    "Unable to open CNKI.": "CNKI kann nicht geöffnet werden."
   }
 }

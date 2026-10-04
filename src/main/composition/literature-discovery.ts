@@ -2,14 +2,23 @@ import { app } from 'electron'
 import type { ApplicationModuleBuilder } from '../application-runtime'
 import { RestrictedInferenceRunner } from '../acp/restricted-inference-runner'
 import { LiteratureDiscovery } from '../literature/discovery/discovery-service'
+import type { CnkiSignInState } from '../literature/discovery/cnki-browser'
 import type { LiteratureCatalog } from '../literature/catalog'
 import { createScreeningModel } from '../literature/screening-model'
 import { tryDecryptKey } from '../settings/crypto'
 import type { SettingsService } from '../settings/service'
 import { resolveConfigRoot } from '../storage-root'
 
-// OpenAlex is searched online. CNKI is not: its records arrive as an export file that the user
-// produces on the site, so this module owns no browser window and no sign-in state.
+// OpenAlex is queried through its API. CNKI is driven by a standalone Chromium that the user
+// signs in to once; the profile lives under the data root and is reused for later searches.
+// An exported reference file remains a second way to bring CNKI records in.
+export type LiteratureDiscoveryCapability = {
+  discovery: LiteratureDiscovery
+  signInCnki: () => Promise<CnkiSignInState>
+  signOutCnki: () => Promise<CnkiSignInState>
+  getCnkiState: () => Promise<CnkiSignInState>
+}
+
 export async function composeLiteratureDiscovery({
   settingsService,
   literatureCatalog,
@@ -18,7 +27,7 @@ export async function composeLiteratureDiscovery({
   settingsService: SettingsService
   literatureCatalog: LiteratureCatalog
   modules: ApplicationModuleBuilder
-}): Promise<LiteratureDiscovery> {
+}): Promise<LiteratureDiscoveryCapability> {
   const inference = new RestrictedInferenceRunner({
     appVersion: app.getVersion(),
     configRoot: resolveConfigRoot(),
@@ -44,5 +53,10 @@ export async function composeLiteratureDiscovery({
       await runner.shutdown()
     }
   }))
-  return discovery
+  return {
+    discovery,
+    signInCnki: () => discovery.signInCnki(),
+    signOutCnki: () => discovery.signOutCnki(),
+    getCnkiState: () => discovery.getCnkiSignInState()
+  }
 }

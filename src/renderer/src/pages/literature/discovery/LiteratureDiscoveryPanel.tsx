@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { LoaderCircle, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -49,6 +49,10 @@ export function LiteratureDiscoveryPanel({
   const discovery = useLiteratureDiscovery(collectionId)
   const [criteriaText, setCriteriaText] = useState('')
   const [duplicatePolicy, setDuplicatePolicy] = useState<'reuse' | 'separate'>('reuse')
+
+  useEffect(() => {
+    void discovery.refreshCnkiState()
+  }, [discovery.refreshCnkiState, discovery])
 
   const runImport = async (): Promise<void> => {
     await discovery.importSelected(duplicatePolicy)
@@ -158,6 +162,26 @@ export function LiteratureDiscoveryPanel({
             <Badge variant="secondary">{t('OpenAlex')}</Badge>
             <span className="text-sm text-muted-foreground">{t('Searched online')}</span>
           </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <Badge variant={discovery.cnkiSignedIn ? 'default' : 'secondary'}>{t('CNKI')}</Badge>
+            <span className="text-sm text-muted-foreground">
+              {discovery.cnkiSignedIn ? t('CNKI session ready') : t('No CNKI session')}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={discovery.signingIn}
+              onClick={() => void discovery.signInCnki()}
+            >
+              {discovery.signingIn ? <LoaderCircle className="size-4 animate-spin" /> : null}
+              {t('Sign in to CNKI')}
+            </Button>
+          </div>
+          {discovery.cnkiSignedIn ? null : (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {t('Sign in to CNKI before searching.')}
+            </p>
+          )}
           <div className="flex flex-wrap items-center gap-4">
             <Button variant="outline" size="sm" onClick={discovery.openCnkiSearch}>
               {t('Search CNKI in your browser')}

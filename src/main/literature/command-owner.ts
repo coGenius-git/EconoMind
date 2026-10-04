@@ -79,6 +79,18 @@ export const createLiteratureCommandOwner = ({
   discoveryImport: (request) => literatureDiscovery.discovery.import(request),
   discoveryScreen: (request, signal) => literatureDiscovery.discovery.screen(request, signal),
   discoveryParseRecords: (request) => literatureDiscovery.discovery.parseRecords(request),
+  discoverySignIn: (source) =>
+    source === 'cnki'
+      ? literatureDiscovery.signInCnki()
+      : Promise.resolve({ signedIn: true, message: 'OpenAlex does not require a sign-in.' }),
+  discoverySignOut: (source) =>
+    source === 'cnki'
+      ? literatureDiscovery.signOutCnki()
+      : Promise.resolve({ signedIn: false, message: 'OpenAlex does not require a sign-in.' }),
+  discoveryStatus: (source) =>
+    source === 'cnki'
+      ? literatureDiscovery.getCnkiState()
+      : Promise.resolve({ signedIn: true, message: 'OpenAlex does not require a sign-in.' }),
   journals: (request) => journalAttributes.run(request),
   jobs: (request) => literatureBatchJobs.run(request),
   citationStyles: async (request) => {

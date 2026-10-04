@@ -6,7 +6,9 @@ import type {
   DiscoveryScreenResult,
   DiscoverySearchResponse,
   DiscoveryParseRecordsRequest,
-  DiscoveryParseRecordsResult
+  DiscoveryParseRecordsResult,
+  DiscoverySignInResponse,
+  DiscoverySourceId
 } from '../literature-discovery'
 
 import { callable, RUNTIME_VALIDATED, WEB } from './definition'
@@ -29,5 +31,20 @@ export const contracts = {
     undefined,
     undefined,
     RUNTIME_VALIDATED
-  ])
+  ]),
+  'literature.discoverySignIn': callable<
+    (source: DiscoverySourceId) => Promise<DiscoverySignInResponse>
+  >()('literature', ['literature:discovery-sign-in', WEB, undefined, undefined, RUNTIME_VALIDATED]),
+  'literature.discoverySignOut': callable<
+    (source: DiscoverySourceId) => Promise<DiscoverySignInResponse>
+  >()('literature', [
+    'literature:discovery-sign-out',
+    WEB,
+    undefined,
+    undefined,
+    RUNTIME_VALIDATED
+  ]),
+  'literature.discoveryStatus': callable<
+    (source: DiscoverySourceId) => Promise<DiscoverySignInResponse>
+  >()('literature', ['literature:discovery-status', WEB, undefined, undefined, RUNTIME_VALIDATED])
 } as const
