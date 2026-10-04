@@ -126,7 +126,7 @@ export async function searchCnki(query: DiscoveryQuery): Promise<DiscoveryProvid
           failureCode: scraped.blocked ? 'unauthorized' : 'parse-failed',
           requiresLogin: scraped.blocked,
           message: scraped.blocked
-            ? `CNKI redirected to a sign-in or verification page. ${scraped.detail}`
+            ? `CNKI asked for a security check or sign-in. Click "Sign in to CNKI", complete it in the window that opens, close the window, then search again. ${scraped.detail}`
             : `CNKI result markup was not recognised. ${scraped.detail}`
         })
       }

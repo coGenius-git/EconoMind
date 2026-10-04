@@ -35,13 +35,14 @@ async function navigateBestEffort(page: Page, url: string): Promise<void> {
 let context: BrowserContext | null = null
 let signInWindowOpen = false
 
-// The browser is always headful: headless Chromium is itself a signal CNKI's bot check looks for,
-// and a headless run was refused with a slider captcha while the visible one was not. Unattended
-// runs park the window off-screen instead, so it stays out of the way.
-async function launchContext(visible: boolean): Promise<BrowserContext> {
+// The browser is always on screen and always headful. Headless Chromium is itself a signal the
+// bot check looks for, and an off-screen window turned out to be unusable: when CNKI answered a
+// search with a security check, the prompt appeared where nobody could see or solve it, and the
+// search just failed. A visible window makes the progress and any prompt actionable.
+async function launchContext(): Promise<BrowserContext> {
   if (context) return context
-  const args = ['--disable-blink-features=AutomationControlled']
-  if (!visible) args.push('--window-position=-3200,-3200')
+  // The profile remembers the last window position, so it is stated on every launch.
+  const args = ['--disable-blink-features=AutomationControlled', '--window-position=120,120']
   const opened = await chromium.launchPersistentContext(profileDirectory(), {
     headless: false,
     args,
@@ -72,7 +73,7 @@ export async function openCnkiSignIn(): Promise<CnkiSignInState> {
   let opened: BrowserContext
   try {
     signInWindowOpen = true
-    opened = await launchContext(true)
+    opened = await launchContext()
   } catch (error) {
     signInWindowOpen = false
     return {
@@ -173,7 +174,7 @@ export async function readCnkiSignInState(): Promise<CnkiSignInState> {
   if (signInWindowOpen)
     return { signedIn: false, message: 'The CNKI sign-in window is still open.' }
   try {
-    const opened = await launchContext(false)
+    const opened = await launchContext()
     const page = await opened.newPage()
     await navigateBestEffort(page, PROBE_URL)
     await page.waitForTimeout(2_000)
@@ -275,7 +276,7 @@ export async function scrapeCnkiSearch(url: string, maxPages: number): Promise<C
       detail: 'the CNKI sign-in window is still open'
     }
   try {
-    const opened = await launchContext(false)
+    const opened = await launchContext()
     const target = (await opened.newPage()) as Page
     await navigateBestEffort(target, url)
     const found = await target
