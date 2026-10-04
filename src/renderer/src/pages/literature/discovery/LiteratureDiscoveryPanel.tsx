@@ -9,6 +9,7 @@ import { InlineNotice } from '@/components/ui/inline-notice'
 import {
   DISCOVERY_DOCUMENT_TYPES,
   DISCOVERY_RESULT_LIMIT,
+  DISCOVERY_SEARCH_SOURCE_IDS,
   DISCOVERY_SOURCE_TIERS,
   type DiscoveryDocumentType,
   type DiscoverySourceId,
@@ -154,30 +155,40 @@ export function LiteratureDiscoveryPanel({
 
         <fieldset className="space-y-3 md:col-span-2">
           <legend className="text-sm font-medium">{t('Data sources')}</legend>
-          <div className="flex flex-wrap items-center gap-3">
-            <Badge variant="secondary">{t('OpenAlex')}</Badge>
-            <span className="text-sm text-muted-foreground">{t('Searched online')}</span>
+          <div className="flex flex-wrap items-center gap-4">
+            {DISCOVERY_SEARCH_SOURCE_IDS.map((source) => (
+              <label key={source} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={discovery.form.sources.includes(source)}
+                  onChange={() => discovery.toggleSource(source)}
+                />
+                <span>{t(SOURCE_LABELS[source])}</span>
+              </label>
+            ))}
+            <span className="text-xs text-muted-foreground">{t('Searched online')}</span>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <Badge variant={discovery.cnkiSignedIn ? 'default' : 'secondary'}>{t('CNKI')}</Badge>
-            <span className="text-sm text-muted-foreground">
-              {discovery.cnkiSignedIn ? t('CNKI session ready') : t('No CNKI session')}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={discovery.signingIn}
-              onClick={() => void discovery.signInCnki()}
-            >
-              {discovery.signingIn ? <LoaderCircle className="size-4 animate-spin" /> : null}
-              {t('Sign in to CNKI')}
-            </Button>
-          </div>
-          {discovery.cnkiSignedIn ? null : (
+          {discovery.form.sources.includes('cnki') ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <Badge variant={discovery.cnkiSignedIn ? 'default' : 'secondary'}>
+                {discovery.cnkiSignedIn ? t('CNKI session ready') : t('No CNKI session')}
+              </Badge>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={discovery.signingIn}
+                onClick={() => void discovery.signInCnki()}
+              >
+                {discovery.signingIn ? <LoaderCircle className="size-4 animate-spin" /> : null}
+                {t('Sign in to CNKI')}
+              </Button>
+            </div>
+          ) : null}
+          {discovery.form.sources.includes('cnki') && !discovery.cnkiSignedIn ? (
             <p className="text-xs leading-relaxed text-muted-foreground">
               {t('Sign in to CNKI before searching.')}
             </p>
-          )}
+          ) : null}
           <div className="flex flex-wrap items-center gap-4">
             <Button variant="outline" size="sm" onClick={discovery.openCnkiSearch}>
               {t('Search CNKI in your browser')}
