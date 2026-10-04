@@ -67,7 +67,14 @@ export async function composeLiteratureDiscovery({
         return await openCnkiSignIn()
       } catch (error) {
         log.error('Unable to open the CNKI sign-in window', errorLogFields(error))
-        return { signedIn: false, message: 'Unable to open the CNKI sign-in window.' }
+        // Keep the reason on the message: without it the UI cannot tell a network failure from a
+        // window-creation failure.
+        return {
+          signedIn: false,
+          message: `Unable to open the CNKI sign-in window: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        }
       }
     },
     signOutCnki: async () => signOutCnki(),

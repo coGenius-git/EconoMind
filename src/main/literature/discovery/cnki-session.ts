@@ -65,8 +65,35 @@ function ensureWindow(options: { visible: boolean }): BrowserWindow {
   return created
 }
 
+// Tries each URL in order and returns the failure of the last attempt, if none loaded. A page
+// that fails to load must not abort the sign-in: the window is already open and the user can
+// navigate it by hand, so the reason is reported instead of thrown.
+async function loadFirstAvailable(
+  target: BrowserWindow,
+  urls: readonly string[]
+): Promise<string | undefined> {
+  let failure: string | undefined
+  for (const url of urls) {
+    try {
+      await target.loadURL(url)
+      return undefined
+    } catch (error) {
+      failure = `${url} — ${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+  return failure
+}
+
 export async function openCnkiSignIn(): Promise<CnkiSignInState> {
-  const target = ensureWindow({ visible: true })
+  let target: BrowserWindow
+  try {
+    target = ensureWindow({ visible: true })
+  } catch (error) {
+    return {
+      signedIn: false,
+      message: `Unable to create the CNKI window: ${error instanceof Error ? error.message : String(error)}`
+    }
+  }
   const closed = new Promise<void>((resolve) => {
     if (target.isDestroyed()) {
       resolve()
@@ -74,16 +101,16 @@ export async function openCnkiSignIn(): Promise<CnkiSignInState> {
     }
     target.once('closed', () => resolve())
   })
-  await target.loadURL(CNKI_SIGN_IN_URL).catch(async () => {
-    await target.loadURL(CNKI_HOME_URL)
-  })
+  const loadFailure = await loadFirstAvailable(target, [CNKI_SIGN_IN_URL, CNKI_HOME_URL])
   // The window stays open while the user signs in. The session only exists once they are done, so
   // the state is read after the window closes (or after the budget runs out) instead of at open.
   await Promise.race([
     closed,
     new Promise<void>((resolve) => setTimeout(resolve, WINDOW_CLOSE_TIMEOUT_MS))
   ])
-  return getCnkiSignInState()
+  const state = await getCnkiSignInState()
+  if (state.signedIn || !loadFailure) return state
+  return { signedIn: false, message: `${state.message} | Page load failed: ${loadFailure}` }
 }
 
 export async function closeCnkiWindow(): Promise<void> {
