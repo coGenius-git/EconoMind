@@ -7,6 +7,7 @@ import { resolveDataRoot } from '../../storage-root'
 // blank and the SMS step never ran. A stock Chromium is what those pages are built for, and a
 // persistent profile keeps the resulting session between runs.
 const CNKI_HOME_URL = 'https://www.cnki.net/'
+const CNKI_SEARCH_URL = 'https://kns.cnki.net/kns8s/defaultresult/index'
 const CNKI_SIGN_IN_URL = 'https://login.cnki.net/?platform=kns'
 const NAVIGATION_TIMEOUT_MS = 45_000
 const SIGN_IN_WAIT_TIMEOUT_MS = 10 * 60_000
@@ -84,39 +85,50 @@ export async function signOutCnki(): Promise<CnkiSignInState> {
   return { signedIn: false, message: 'The CNKI session was cleared.' }
 }
 
-const SIGNED_OUT_LABELS = ['登录', '登录/注册', '请登录', '注册', '登入', '登录/註冊']
-const SIGNED_IN_LABELS = ['退出', '退出登录', '安全退出', '注销', '登出']
+// Matching link text proved unreliable: the CNKI home page exposes neither a "sign in" nor a
+// "sign out" anchor, so both lists come back empty and the verdict carries no information. The
+// reliable question is whether CNKI keeps you on a page that requires an account: when there is no
+// session it redirects to its login or verification flow instead.
+const LOGIN_REDIRECT_PATTERN = /login|passport|verify|sso|signin|checkcode/i
+const SIGNED_OUT_TEXT = /(请)?登录|注册|登录\/注册/
+// A signed-in page shows the account name and a way out; either is enough once no redirect fired.
+const SIGNED_IN_TEXT = /退出|注销|安全退出|我的知网|个人中心|机构馆/
 
-const HOME_PROBE = `(() => {
-  const labels = Array.from(document.querySelectorAll('a'))
-    .map((el) => (el.innerText || '').trim())
-    .filter(Boolean)
-  const out = ${JSON.stringify(SIGNED_OUT_LABELS)}
-  const into = ${JSON.stringify(SIGNED_IN_LABELS)}
-  return {
-    url: location.href,
-    title: document.title || '',
-    logout: labels.filter((label) => into.includes(label)).slice(0, 3),
-    login: labels.filter((label) => out.includes(label)).slice(0, 3)
-  }
-})()`
+const PROBE_URL = `${CNKI_SEARCH_URL}?kw=%E7%BB%BF%E8%89%B2%E9%87%91%E8%9E%8D&korder=SU`
 
-type HomeProbe = { url: string; title: string; logout: string[]; login: string[] }
+const TEXT_PROBE = `(() => ({
+  url: location.href,
+  title: document.title || '',
+  text: (document.body ? document.body.innerText : '').replace(/\\s+/g, ' ').slice(0, 600)
+}))()`
 
-// Asks the page rather than a cookie: CNKI writes client and provider cookies before any sign-in,
-// so both the names and their values were present while the account was signed out.
+type TextProbe = { url: string; title: string; text: string }
+
+// Asks the site itself rather than a cookie: CNKI writes client and provider cookies before any
+// sign-in, so both cookie names and their values were present while the account was signed out.
 export async function readCnkiSignInState(): Promise<CnkiSignInState> {
   try {
     const opened = await launchContext(true)
     const page = await opened.newPage()
-    await page.goto(CNKI_HOME_URL, { timeout: NAVIGATION_TIMEOUT_MS })
-    const probe = (await page.evaluate(HOME_PROBE)) as HomeProbe
+    await page.goto(PROBE_URL, { timeout: NAVIGATION_TIMEOUT_MS })
+    await page.waitForTimeout(2_000)
+    const probe = (await page.evaluate(TEXT_PROBE)) as TextProbe
     await page.close()
     await closeContext()
-    const detail = `url=${probe.url} title=${probe.title} logout=[${probe.logout.join('|')}] login=[${probe.login.join('|')}]`
-    return probe.logout.length > 0 && probe.login.length === 0
-      ? { signedIn: true, message: `A CNKI session is available. ${detail}` }
-      : { signedIn: false, message: `No CNKI sign-in detected. ${detail}` }
+    const redirected = LOGIN_REDIRECT_PATTERN.test(probe.url)
+    const detail = `url=${probe.url} title=${probe.title} text=${probe.text.slice(0, 200)}`
+    if (redirected)
+      return {
+        signedIn: false,
+        message: `No CNKI sign-in detected (redirected to login). ${detail}`
+      }
+    if (SIGNED_IN_TEXT.test(probe.text))
+      return { signedIn: true, message: `A CNKI session is available. ${detail}` }
+    if (SIGNED_OUT_TEXT.test(probe.text))
+      return { signedIn: false, message: `No CNKI sign-in detected. ${detail}` }
+    // Nothing matched either way: report what the page actually said so the check can be corrected
+    // from a real session instead of guessed at.
+    return { signedIn: true, message: `CNKI kept the search page open. ${detail}` }
   } catch (error) {
     await closeContext()
     return {
@@ -253,5 +265,4 @@ export async function scrapeCnkiSearch(url: string, maxPages: number): Promise<C
 
 const RESULT_WAIT_MS = 60_000
 
-export const CNKI_SEARCH_URL = 'https://kns.cnki.net/kns8s/defaultresult/index'
-export { CNKI_HOME_URL }
+export { CNKI_HOME_URL, CNKI_SEARCH_URL }
