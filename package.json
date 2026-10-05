@@ -73,6 +73,7 @@
     "predev:headless": "node scripts/check-prisma-client.mjs",
     "test:e2e:browser": "playwright test --config playwright.browser.config.ts",
     "dev:isolated": "node scripts/dev-isolated.mjs",
+    "build:notebook-host": "npm --prefix packages/notebook-network-sandbox run build:windows-host",
     "predev:isolated": "node scripts/check-prisma-client.mjs && node scripts/dev-app-branding.cjs"
   },
   "dependencies": {

@@ -70,6 +70,7 @@ export function candidateToItemInput(candidate: DiscoveryCandidate): LiteratureI
   return {
     itemType: ITEM_TYPE_BY_DOCUMENT_TYPE[candidate.documentType],
     title: candidate.title,
+    shortTitle: '',
     abstract: candidate.abstract,
     issuedText: candidate.year === null ? '' : String(candidate.year),
     ...(candidate.year === null ? {} : { issuedYear: candidate.year }),
@@ -130,9 +131,9 @@ export class LiteratureDiscovery {
     for (const result of settled) {
       if (result.status.unresolvedTiers.length)
         warnings.push(
-          `OpenAlex cannot filter by ${result.status.unresolvedTiers.join(', ')}; those criteria were not applied.`
+          `${result.status.source === 'cnki' ? 'CNKI' : 'OpenAlex'} cannot filter by ${result.status.unresolvedTiers.join(', ')}; those criteria were not applied.`
         )
-      if (result.status.failureCode && result.status.message) warnings.push(result.status.message)
+      if (result.status.message) warnings.push(result.status.message)
       for (const candidate of result.candidates) {
         if (candidates.length >= query.limit) break
         const key = dedupeKey(candidate)
@@ -159,17 +160,18 @@ export class LiteratureDiscovery {
   }
 
   async import(request: DiscoveryImportRequest): Promise<DiscoveryImportResult> {
-    const inputs = request.candidates.map(candidateToItemInput)
-    const receipt = await this.options.importItems(
-      inputs,
-      request.collectionId,
-      request.duplicatePolicy
-    )
-    // importItems returns ids positionally: reused records keep their original id and no new row.
-    const imported = receipt.itemIds.map((itemId, index) => ({
-      key: request.candidates[index]?.key ?? `index:${index}`,
-      itemId
-    }))
+    const imported: DiscoveryImportResult['imported'] = []
+    // The catalog returns unique IDs, not one ID per input. Import each candidate through the
+    // existing duplicate policy so a reused row cannot shift later key-to-item associations.
+    for (const candidate of request.candidates) {
+      const receipt = await this.options.importItems(
+        [candidateToItemInput(candidate)],
+        request.collectionId,
+        request.duplicatePolicy
+      )
+      const itemId = receipt.itemIds[0]
+      if (itemId) imported.push({ key: candidate.key, itemId })
+    }
     const matchedKeys = new Set(imported.map((entry) => entry.key))
     const skipped = request.candidates
       .filter((candidate) => !matchedKeys.has(candidate.key))
@@ -180,7 +182,7 @@ export class LiteratureDiscovery {
     return {
       imported,
       skipped,
-      importedCount: imported.length
+      importedCount: new Set(imported.map((entry) => entry.itemId)).size
     }
   }
 
@@ -216,7 +218,7 @@ export class LiteratureDiscovery {
       venue: string
     }> = []
     const skipped: DiscoveryScreenResult['outcomes'] = []
-    for (const itemId of request.itemIds) {
+    for (const itemId of new Set(request.itemIds)) {
       const view = await this.options.get(itemId)
       if (!view) {
         skipped.push({

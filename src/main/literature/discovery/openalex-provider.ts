@@ -8,7 +8,7 @@ import {
 } from '../../../shared/literature-discovery'
 
 const OPENALEX_API = 'https://api.openalex.org/works'
-const MAX_PER_PAGE = 200
+const MAX_PER_PAGE = 100
 const REQUEST_TIMEOUT_MS = 30_000
 const MAX_PAGES = 10
 
@@ -115,11 +115,12 @@ function buildFilters(query: DiscoveryQuery): {
   if (query.yearFrom !== null) filters.push(`from_publication_date:${query.yearFrom}-01-01`)
   if (query.yearTo !== null) filters.push(`to_publication_date:${query.yearTo}-12-31`)
   if (query.minCitations !== null && query.minCitations > 0)
-    filters.push(`cited_by_count:>${query.minCitations}`)
+    filters.push(`cited_by_count:>${query.minCitations - 1}`)
   const types = query.documentTypes
     .map((type) => TYPE_FILTER[type])
     .filter((value): value is string => Boolean(value))
-  if (types.length) filters.push(`type:${types.join('|')}`)
+  if (types.length && !query.documentTypes.includes('other'))
+    filters.push(`type:${types.join('|')}`)
   for (const tier of query.sourceTiers) {
     if (!RESOLVABLE_TIERS.includes(tier)) {
       unresolved.push(tier)
@@ -202,7 +203,9 @@ export async function searchOpenAlex(
 
       const response = await doFetch(url.href, {
         headers: { accept: 'application/json' },
-        signal: options.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+        signal: options.signal
+          ? AbortSignal.any([options.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
+          : AbortSignal.timeout(REQUEST_TIMEOUT_MS)
       })
       if (!response.ok) {
         return {
@@ -222,6 +225,8 @@ export async function searchOpenAlex(
         if (candidates.length >= query.limit) break
         const title = (work.title ?? work.display_name ?? '').trim()
         if (!title) continue
+        const documentType = mapDocumentType(work.type)
+        if (query.documentTypes.length && !query.documentTypes.includes(documentType)) continue
         const isOa = work.open_access?.is_oa === true || work.best_oa_location?.is_oa === true
         const tiers: DiscoverySourceTier[] = []
         if (isOa) tiers.push('open-access')
@@ -236,7 +241,7 @@ export async function searchOpenAlex(
             .filter(Boolean),
           year: work.publication_year ?? null,
           venue: work.primary_location?.source?.display_name?.trim() ?? '',
-          documentType: mapDocumentType(work.type),
+          documentType,
           doi: normalizeDoi(work.doi),
           url: (work.doi ?? work.id ?? '').trim(),
           abstract: restoreAbstract(work.abstract_inverted_index),

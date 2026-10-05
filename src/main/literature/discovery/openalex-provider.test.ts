@@ -36,6 +36,26 @@ const jsonResponse = (payload: unknown, status = 200): Response =>
   })
 
 describe('searchOpenAlex', () => {
+  it('fetches a 200-record query in pages within the API limit', async () => {
+    const fetcher = vi.fn(async (url: RequestInfo | URL) => {
+      const parameters = new URL(String(url)).searchParams
+      expect(Number(parameters.get('per_page'))).toBeLessThanOrEqual(100)
+      const page = Number(parameters.get('page'))
+      return jsonResponse({
+        meta: { count: 200 },
+        results: Array.from({ length: 100 }, (_, index) =>
+          work({
+            id: `https://openalex.org/W${page}-${index}`,
+            title: `Paper ${page}-${index}`,
+            doi: null
+          })
+        )
+      })
+    })
+    const result = await searchOpenAlex(query({ limit: 200 }), { fetch: fetcher })
+    expect(result.candidates).toHaveLength(200)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
   it('maps works into candidates, restores the abstract and reports the source status', async () => {
     const fetcher = vi.fn(async () => jsonResponse({ meta: { count: 3 }, results: [work()] }))
     const result = await searchOpenAlex(query({ limit: 5 }), { fetch: fetcher as typeof fetch })
@@ -56,7 +76,9 @@ describe('searchOpenAlex', () => {
   })
 
   it('translates query criteria into OpenAlex filters', async () => {
-    const fetcher = vi.fn(async () => jsonResponse({ meta: { count: 0 }, results: [] }))
+    const fetcher = vi.fn<(url: RequestInfo | URL) => Promise<Response>>(async () =>
+      jsonResponse({ meta: { count: 0 }, results: [] })
+    )
     await searchOpenAlex(
       query({
         yearFrom: 2018,
@@ -71,14 +93,16 @@ describe('searchOpenAlex', () => {
     const filter = url.searchParams.get('filter') ?? ''
     expect(filter).toContain('from_publication_date:2018-01-01')
     expect(filter).toContain('to_publication_date:2024-12-31')
-    expect(filter).toContain('cited_by_count:>10')
+    expect(filter).toContain('cited_by_count:>9')
     expect(filter).toContain('type:article|dissertation')
     expect(filter).toContain('is_oa:true')
     expect(filter).not.toContain('cssci')
   })
 
   it('reports unsupported journal tiers as unresolved instead of filtering on them', async () => {
-    const fetcher = vi.fn(async () => jsonResponse({ meta: { count: 0 }, results: [] }))
+    const fetcher = vi.fn<(url: RequestInfo | URL) => Promise<Response>>(async () =>
+      jsonResponse({ meta: { count: 0 }, results: [] })
+    )
     const result = await searchOpenAlex(query({ sourceTiers: ['cssci', 'sci', 'doaj'] }), {
       fetch: fetcher as typeof fetch
     })

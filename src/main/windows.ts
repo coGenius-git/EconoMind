@@ -66,12 +66,17 @@ const RECOVERABLE_RENDERER_EXIT_REASONS = new Set([
   'launch-failed',
   'integrity-failure'
 ])
-const loadRenderer = (window: BrowserWindow): Promise<void> => {
+const loadRenderer = (window: BrowserWindow, query?: Record<string, string>): Promise<void> => {
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    if (query) {
+      const url = new URL(process.env['ELECTRON_RENDERER_URL'])
+      Object.entries(query).forEach(([key, value]) => url.searchParams.set(key, value))
+      return window.loadURL(url.href)
+    }
     return window.loadURL(process.env['ELECTRON_RENDERER_URL'])
   }
 
-  return window.loadFile(rendererEntry)
+  return query ? window.loadFile(rendererEntry, { query }) : window.loadFile(rendererEntry)
 }
 
 const createAppWindow = (options: BrowserWindowConstructorOptions): BrowserWindow => {
@@ -631,5 +636,5 @@ const createMainWindow = (
   return window
 }
 
-export { configureMainWindow, createMainWindow, isMainWindow }
+export { configureMainWindow, createMainWindow, isMainWindow, createAppWindow, loadRenderer }
 export type { MainWindowCloseOptions }

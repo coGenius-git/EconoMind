@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { LiteratureItemInput } from '../../../shared/literature'
 import {
   DISCOVERY_SOURCE_TIERS,
@@ -76,6 +76,12 @@ describe('LiteratureDiscovery.search', () => {
         itemIds: inputs.map((_, index) => `item-${index}`)
       }),
       get: async () => undefined,
+      fetch: vi.fn(
+        async () =>
+          new Response(JSON.stringify({ results: [] }), {
+            headers: { 'content-type': 'application/json' }
+          })
+      ),
       model: async () => {
         throw new Error('unused')
       }
@@ -90,4 +96,38 @@ describe('LiteratureDiscovery.search', () => {
     expect(result.statuses).toHaveLength(1)
     expect(result.warnings.join(' ')).toContain('OpenAlex cannot filter by')
   })
+})
+
+it('keeps candidate-to-item mappings when duplicate imports reuse a library row', async () => {
+  const idsByTitle = new Map<string, string>()
+  const discovery = new LiteratureDiscovery({
+    importItems: async (inputs) => {
+      const ids = inputs.map((input) => {
+        if (!idsByTitle.has(input.title)) idsByTitle.set(input.title, `item-${idsByTitle.size}`)
+        return idsByTitle.get(input.title)!
+      })
+      // Mirror the real catalog receipt: IDs are unique rather than positional.
+      return { itemIds: [...new Set(ids)] }
+    },
+    get: async () => undefined,
+    model: async () => {
+      throw new Error('unused')
+    }
+  })
+  const result = await discovery.import({
+    collectionId: null,
+    duplicatePolicy: 'reuse',
+    candidates: [
+      candidate({ key: 'first' }),
+      candidate({ key: 'duplicate' }),
+      candidate({ key: 'last', title: 'A different paper', doi: '10.1000/two' })
+    ]
+  })
+  expect(result.imported).toEqual([
+    { key: 'first', itemId: 'item-0' },
+    { key: 'duplicate', itemId: 'item-0' },
+    { key: 'last', itemId: 'item-1' }
+  ])
+  expect(result.importedCount).toBe(2)
+  expect(result.skipped).toEqual([])
 })

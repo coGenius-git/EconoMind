@@ -34,6 +34,20 @@ const input = (
 })
 
 describe('App Shell presentation owner', () => {
+  it('ignores dialogs retained in a hidden Activity for shortcuts and close commands', () => {
+    const dialog = document.createElement('div')
+    dialog.setAttribute('role', 'dialog')
+    Object.defineProperty(dialog, 'checkVisibility', { value: () => false })
+    document.body.appendChild(dialog)
+    try {
+      const base = resolveAppShellPresentation(input())
+      expect(base.allowsShortcut('settings')).toBe(true)
+      expect(base.allowsShortcut('globalSearch')).toBe(true)
+      expect(base.resolveCloseAction().kind).toBe('close-base')
+    } finally {
+      dialog.remove()
+    }
+  })
   it('selects one presentation from the fixed semantic priority', () => {
     const priority: Array<keyof AppShellPresentationState> = [
       'closeConfirmation',

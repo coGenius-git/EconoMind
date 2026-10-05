@@ -29,6 +29,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { useSettingsStore } from '@/stores/settings-store'
 import { useSpecialistStore } from '@/stores/specialist-store'
 import { useNavigationStore } from '@/stores/navigation-store'
+import { requestSettingsWindowWorkflow } from './settings-window-workflow'
 import { useProjectStore } from '@/stores/project-store'
 import { useTagStore } from '@/stores/tag-store'
 import { resolveCustomizeProjectId } from '@/lib/last-opened-project'
@@ -247,6 +248,7 @@ const SkillsPanel = ({
 
   const startChatWithAgent = (): void => {
     if (!chatProjectId) return
+    if (requestSettingsWindowWorkflow({ kind: 'customize-skill', id: chatProjectId })) return
     useSettingsStore.getState().closeSettings()
     useNavigationStore.getState().startCustomizeConversation(chatProjectId, 'skill')
   }

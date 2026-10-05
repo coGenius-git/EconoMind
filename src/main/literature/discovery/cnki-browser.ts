@@ -35,6 +35,16 @@ async function navigateBestEffort(page: Page, url: string): Promise<void> {
 // session check that ran during sign-in used to close the window the user was working in.
 let context: BrowserContext | null = null
 let signInWindowOpen = false
+let profileQueue: Promise<void> = Promise.resolve()
+
+const withProfile = <T>(operation: () => Promise<T>): Promise<T> => {
+  const pending = profileQueue.then(operation)
+  profileQueue = pending.then(
+    () => undefined,
+    () => undefined
+  )
+  return pending
+}
 
 // The browser is always on screen and always headful. Headless Chromium is itself a signal the
 // bot check looks for, and an off-screen window turned out to be unusable: when CNKI answered a
@@ -90,7 +100,7 @@ export type CnkiSignInState = { signedIn: boolean; message: string }
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 // Opens a visible Chromium window on the CNKI sign-in page and resolves once the user closes it.
-export async function openCnkiSignIn(): Promise<CnkiSignInState> {
+async function openCnkiSignInInternal(): Promise<CnkiSignInState> {
   let opened: BrowserContext
   try {
     signInWindowOpen = true
@@ -149,16 +159,13 @@ export async function openCnkiSignIn(): Promise<CnkiSignInState> {
   })
   await closeContext()
   signInWindowOpen = false
-  return readCnkiSignInState()
+  return readCnkiSignInStateInternal()
 }
 
-export async function signOutCnki(): Promise<CnkiSignInState> {
-  const opened = context
-  if (opened) await closeContext()
+async function signOutCnkiInternal(): Promise<CnkiSignInState> {
   try {
-    const fresh = await chromium.launchPersistentContext(profileDirectory(), { headless: true })
+    const fresh = await launchContext()
     await fresh.clearCookies()
-    await fresh.close()
   } catch (error) {
     return {
       signedIn: false,
@@ -166,6 +173,8 @@ export async function signOutCnki(): Promise<CnkiSignInState> {
         error instanceof Error ? error.message : String(error)
       }`
     }
+  } finally {
+    await closeContext()
   }
   return { signedIn: false, message: 'The CNKI session was cleared.' }
 }
@@ -191,7 +200,7 @@ type TextProbe = { url: string; title: string; text: string }
 
 // Asks the site itself rather than a cookie: CNKI writes client and provider cookies before any
 // sign-in, so both cookie names and their values were present while the account was signed out.
-export async function readCnkiSignInState(): Promise<CnkiSignInState> {
+async function readCnkiSignInStateInternal(): Promise<CnkiSignInState> {
   if (signInWindowOpen)
     return { signedIn: false, message: 'The CNKI sign-in window is still open.' }
   try {
@@ -256,7 +265,8 @@ const RESULT_SELECTORS = [
 ]
 const WAIT_SELECTOR =
   'table.result-table-list, .result-table-list, .result-item, .list-item, #gridTable'
-const BLOCKED_PATTERN = /login|登录|验证码|安全验证|访问受限|非法请求/u
+const BLOCKED_PATTERN =
+  /login|passport|verify|captcha|signin|checkcode|登录|验证码|安全验证|访问受限|非法请求/iu
 
 const EXTRACT_SCRIPT = `(() => {
   const selectors = ${JSON.stringify(RESULT_SELECTORS)}
@@ -288,7 +298,7 @@ const EXTRACT_SCRIPT = `(() => {
 // Loads the result page once in a hidden Chromium and walks through up to maxPages pages, reading
 // each list straight out of the DOM. Paging stays inside one session: reloading per page would
 // multiply the navigation cost by the page count.
-export async function scrapeCnkiSearch(url: string, maxPages: number): Promise<CnkiScrapeResult> {
+async function scrapeCnkiSearchInternal(url: string, maxPages: number): Promise<CnkiScrapeResult> {
   if (signInWindowOpen)
     return {
       rows: [],
@@ -324,7 +334,7 @@ export async function scrapeCnkiSearch(url: string, maxPages: number): Promise<C
     // Collect the following pages in the same session until the list runs out or the page budget
     // is spent.
     for (let step = 1; step < maxPages; step += 1) {
-      const advanced: boolean = await target
+      const advanced = await target
         .evaluate(
           `(() => {
           const next = document.querySelector('#PageNext') || document.querySelector('.page-next') ||
@@ -335,7 +345,7 @@ export async function scrapeCnkiSearch(url: string, maxPages: number): Promise<C
         })()`
         )
         .catch(() => false)
-      if (!advanced) break
+      if (advanced !== true) break
       await target.waitForTimeout(2_000)
       const next = (await target.evaluate(EXTRACT_SCRIPT).catch(() => null)) as {
         selector: string | null
@@ -364,5 +374,14 @@ export async function scrapeCnkiSearch(url: string, maxPages: number): Promise<C
 }
 
 const RESULT_WAIT_MS = 60_000
+
+// All entry points share one owner, including launch time and cookie clearing. A later request
+// cannot close a browser held by an earlier search or by the user's sign-in flow.
+export const openCnkiSignIn = (): Promise<CnkiSignInState> => withProfile(openCnkiSignInInternal)
+export const signOutCnki = (): Promise<CnkiSignInState> => withProfile(signOutCnkiInternal)
+export const readCnkiSignInState = (): Promise<CnkiSignInState> =>
+  withProfile(readCnkiSignInStateInternal)
+export const scrapeCnkiSearch = (url: string, maxPages: number): Promise<CnkiScrapeResult> =>
+  withProfile(() => scrapeCnkiSearchInternal(url, maxPages))
 
 export { CNKI_HOME_URL, CNKI_SEARCH_URL }

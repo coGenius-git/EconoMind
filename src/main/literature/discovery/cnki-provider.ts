@@ -1,9 +1,9 @@
+import { createHash } from 'node:crypto'
 import {
   type DiscoveryCandidate,
   type DiscoveryDocumentType,
   type DiscoveryQuery,
-  type DiscoverySourceStatus,
-  type DiscoverySourceTier
+  type DiscoverySourceStatus
 } from '../../../shared/literature-discovery'
 import { CNKI_SEARCH_URL, readCnkiSignInState, scrapeCnkiSearch } from './cnki-browser'
 import type { DiscoveryProviderResult } from './openalex-provider'
@@ -21,16 +21,6 @@ const TYPE_HINTS: ReadonlyArray<readonly [string, DiscoveryDocumentType]> = [
   ['期刊', 'article']
 ]
 
-const TIER_HINTS: ReadonlyArray<readonly [string, DiscoverySourceTier]> = [
-  ['cssci', 'cssci'],
-  ['中文社会科学引文', 'cssci'],
-  ['北大核心', 'pkucore'],
-  ['核心期刊', 'pkucore'],
-  ['ssci', 'ssci'],
-  ['sci', 'sci'],
-  ['ei', 'ei']
-]
-
 function buildSearchUrl(query: DiscoveryQuery): string {
   const params = new URLSearchParams()
   params.set('kw', [query.topic, ...query.keywords].join(' ').trim())
@@ -43,11 +33,6 @@ function buildSearchUrl(query: DiscoveryQuery): string {
 function detectDocumentType(text: string): DiscoveryDocumentType {
   for (const [hint, type] of TYPE_HINTS) if (text.includes(hint)) return type
   return 'article'
-}
-
-function detectTiers(text: string): DiscoverySourceTier[] {
-  const lower = text.toLowerCase()
-  return TIER_HINTS.filter(([hint]) => lower.includes(hint)).map(([, tier]) => tier)
 }
 
 function parseYear(value: string): number | null {
@@ -69,23 +54,26 @@ function toCandidate(
   index: number
 ): DiscoveryCandidate {
   return {
-    key: `cnki:${row.href || `${row.title}:${index}`}`,
+    key: `cnki:${createHash('sha256')
+      .update(row.href || `${row.title}:${index}`)
+      .digest('hex')}`,
     source: 'cnki',
-    externalId: row.href,
+    externalId: row.href.slice(0, 512),
     title: row.title.slice(0, 2000),
     authors: row.authors
       .split(/[;,，；]/u)
       .map((value) => value.trim())
       .filter(Boolean)
+      .map((value) => value.slice(0, 300))
       .slice(0, 100),
     year: parseYear(row.date),
     venue: row.venue.slice(0, 1000),
     documentType: detectDocumentType(row.text),
     doi: '',
-    url: row.href,
+    url: row.href.slice(0, 2000),
     abstract: '',
     citationCount: null,
-    sourceTiers: detectTiers(row.text),
+    sourceTiers: [],
     openAccessPdfUrl: null
   }
 }
@@ -102,7 +90,7 @@ export async function searchCnki(query: DiscoveryQuery): Promise<DiscoveryProvid
     failureCode: 'unavailable',
     message: '',
     requiresLogin: false,
-    unresolvedTiers: [],
+    unresolvedTiers: [...query.sourceTiers],
     ...patch
   })
 
@@ -135,10 +123,19 @@ export async function searchCnki(query: DiscoveryQuery): Promise<DiscoveryProvid
     const seen = new Set<string>()
     for (const [index, row] of scraped.rows.entries()) {
       if (candidates.length >= query.limit) break
+      const candidate = toCandidate(row, index)
+      // The public page's URL filters are not authoritative. Apply verifiable metadata filters
+      // before the result limit; do not infer journal rankings or missing citation counts.
+      if (query.yearFrom !== null && (candidate.year === null || candidate.year < query.yearFrom))
+        continue
+      if (query.yearTo !== null && (candidate.year === null || candidate.year > query.yearTo))
+        continue
+      if (query.documentTypes.length && !query.documentTypes.includes(candidate.documentType))
+        continue
       const dedupe = `${row.title}|${parseYear(row.date) ?? ''}`
       if (seen.has(dedupe)) continue
       seen.add(dedupe)
-      candidates.push(toCandidate(row, index))
+      candidates.push(candidate)
     }
 
     return {
@@ -148,7 +145,17 @@ export async function searchCnki(query: DiscoveryQuery): Promise<DiscoveryProvid
         matched: scraped.rows.length,
         returned: candidates.length,
         failureCode: candidates.length ? null : 'no-results',
-        message: candidates.length ? '' : `CNKI returned no records. ${scraped.detail}`
+        message: [
+          candidates.length ? '' : `CNKI returned no records. ${scraped.detail}`,
+          query.sourceTiers.length
+            ? `CNKI cannot verify the selected source tiers (${query.sourceTiers.join(', ')}); those criteria were not applied.`
+            : '',
+          query.minCitations !== null && query.minCitations > 0
+            ? 'CNKI search rows do not provide reliable citation counts; the minimum citations criterion was not applied.'
+            : ''
+        ]
+          .filter(Boolean)
+          .join(' ')
       })
     }
   } catch (error) {

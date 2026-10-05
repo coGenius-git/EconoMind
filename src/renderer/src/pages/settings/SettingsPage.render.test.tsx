@@ -49,6 +49,7 @@ if (!Element.prototype.hasPointerCapture) {
 
 let container: HTMLDivElement
 let root: Root
+let defaultSettingsRef = createRef<SettingsPageHandle>()
 const originalSettingsActions = (() => {
   const state = useSettingsStore.getState()
   return {
@@ -303,6 +304,7 @@ const installApi = (): void => {
 }
 
 beforeEach(() => {
+  defaultSettingsRef = createRef<SettingsPageHandle>()
   document.documentElement.removeAttribute('data-open-science-notebook-network-unavailable')
   installApi()
   useSettingsStore.setState(createInitialSettingsState())
@@ -442,7 +444,7 @@ const installCustomProviderSnapshot = (): ProviderView => {
 }
 
 describe('SettingsPage layout', () => {
-  it('retains model tab DOM across model routes and navigation Back', async () => {
+  it('retains model tab DOM across model tab selection', async () => {
     window.api.settings.getClassification = vi.fn().mockResolvedValue({ revision: 0, services: [] })
     window.api.localModels = {
       getSnapshot: vi.fn().mockResolvedValue({
@@ -457,20 +459,24 @@ describe('SettingsPage layout', () => {
       })
     } as unknown as typeof window.api.localModels
     useSettingsStore.getState().openSettingsToPanel('model')
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     const list = document.querySelector('[role="tablist"][aria-label="Models"]')!
     expect(list).not.toBeNull()
     const tabs = list.querySelectorAll<HTMLButtonElement>('[role="tab"]')
     await act(async () => fireEvent.keyDown(tabs[1], { key: 'Enter' }))
     expect(tabs[1].isConnected).toBe(true)
     expect(tabs[1].getAttribute('aria-selected')).toBe('true')
-    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Back"]')!.click())
+    await act(async () => fireEvent.keyDown(tabs[0], { key: 'Enter' }))
     expect(tabs[0].isConnected).toBe(true)
     expect(tabs[0].getAttribute('aria-selected')).toBe('true')
   })
 
   it('gives Memory a definite-height owner so its note list scrolls internally', async () => {
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () => navButton('Memory')?.click())
 
     const panel = document.body.querySelector<HTMLElement>('[data-slot="memory-panel"]')
@@ -510,7 +516,9 @@ describe('SettingsPage layout', () => {
       projects: []
     })
 
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () => navButton('Memory')?.click())
     await waitFor(() => expect(document.body.textContent).toContain('First server memory'))
     await act(async () => navButton('General')?.click())
@@ -601,7 +609,9 @@ describe('SettingsPage layout', () => {
       ]
     })
 
-    await act(async () => root.render(<SettingsPage open onClose={onClose} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={onClose} />)
+    )
     await act(async () => navButton('Memory')?.click())
     await waitFor(() => expect(document.body.textContent).toContain('Project A'))
     await act(async () =>
@@ -695,7 +705,9 @@ describe('SettingsPage layout', () => {
         .mockResolvedValue(kind === 'location-unavailable' ? 'locator-unsupported' : 'revealed')
       try {
         const onClose = vi.fn()
-        await act(async () => root.render(<SettingsPage open onClose={onClose} />))
+        await act(async () =>
+          root.render(<SettingsPage ref={defaultSettingsRef} open onClose={onClose} />)
+        )
         await act(async () => navButton('Tags')?.click())
         await waitFor(() =>
           expect(document.body.querySelector('[data-slot="tag-resource-row"]')).not.toBeNull()
@@ -754,7 +766,7 @@ describe('SettingsPage layout', () => {
     }
   )
 
-  it('opens a resource Tag through Settings history and returns to the catalog with Back', async () => {
+  it('opens a resource Tag and returns to the catalog through the sidebar', async () => {
     vi.mocked(window.api.tags.snapshot).mockResolvedValue({
       revision: 2,
       tags: [{ id: 'tag-favorite', systemKey: 'favorite', createdAt: 1, updatedAt: 1 }],
@@ -768,7 +780,9 @@ describe('SettingsPage layout', () => {
       ]
     })
 
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () => navButton('Skills')?.click())
 
     const tag = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
@@ -782,26 +796,24 @@ describe('SettingsPage layout', () => {
       'Tags'
     )
     expect(document.body.textContent).toContain('Alpha')
-    expect(document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.disabled).toBe(
-      false
-    )
+    expect(document.body.querySelector('[aria-label="Back"]')).toBeNull()
 
-    await act(async () =>
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.click()
-    )
+    await act(async () => navButton('Skills')?.click())
     expect(document.body.querySelector('nav [aria-current="page"]')?.textContent?.trim()).toBe(
       'Skills'
     )
   })
 
-  it('opens Tag creation as a breadcrumb-backed Settings sub-view', async () => {
+  it('opens Tag creation as a Settings sub-view with a local return link', async () => {
     vi.mocked(window.api.tags.snapshot).mockResolvedValue({
       revision: 1,
       tags: [{ id: 'tag-favorite', systemKey: 'favorite', createdAt: 1, updatedAt: 1 }],
       assignments: []
     })
 
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () => navButton('Tags')?.click())
     await waitFor(() =>
       expect(document.body.querySelector('[data-slot="tags-panel"]')).not.toBeNull()
@@ -821,9 +833,7 @@ describe('SettingsPage layout', () => {
     ).not.toBeNull()
     expect(document.body.textContent).toContain('New Tag')
 
-    await act(async () =>
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.click()
-    )
+    await act(async () => defaultSettingsRef.current!.closeActivePane())
     expect(document.body.querySelector('[data-slot="tags-panel"]')).not.toBeNull()
     expect(document.body.querySelector('[data-slot="tag-form"]')).toBeNull()
   })
@@ -868,7 +878,9 @@ describe('SettingsPage layout', () => {
       updatedAt: 1
     })
 
-    await act(async () => root.render(<SettingsPage open onClose={onClose} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={onClose} />)
+    )
     await act(async () => navButton('Tags')?.click())
     await waitFor(() =>
       expect(document.body.textContent).toContain('Corrective Retrieval Augmented Generation')
@@ -882,57 +894,6 @@ describe('SettingsPage layout', () => {
     expect(document.body.textContent).toContain('Publication metadata')
     expect(onClose).not.toHaveBeenCalled()
     expect(useNavigationStore.getState().view).toBe('home')
-  })
-
-  it('restores the Tag selected by a Settings history entry', async () => {
-    vi.mocked(window.api.tags.snapshot).mockResolvedValue({
-      revision: 2,
-      tags: [
-        { id: 'tag-favorite', systemKey: 'favorite', createdAt: 1, updatedAt: 1 },
-        {
-          id: 'tag-research',
-          name: 'Research',
-          iconKey: 'book-open',
-          colorKey: 'purple',
-          createdAt: 2,
-          updatedAt: 2
-        }
-      ],
-      assignments: [
-        {
-          tagId: 'tag-favorite',
-          resourceType: 'catalog.skill',
-          resourceId: 'alpha',
-          createdAt: 1
-        },
-        {
-          tagId: 'tag-research',
-          resourceType: 'catalog.skill',
-          resourceId: 'alpha',
-          createdAt: 2
-        }
-      ]
-    })
-
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
-    await act(async () => navButton('Skills')?.click())
-
-    const favorite = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
-      (button) => button.textContent?.trim() === 'Favorites'
-    )
-    await act(async () => favorite?.click())
-    await act(async () =>
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.click()
-    )
-    act(() => useTagStore.getState().setBrowserSelectedId('tag-research'))
-    await act(async () =>
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Forward"]')?.click()
-    )
-
-    const selectedTag = Array.from(
-      document.body.querySelectorAll<HTMLButtonElement>('aside button')
-    ).find((button) => button.getAttribute('aria-current') === 'page')
-    expect(selectedTag?.textContent).toContain('Favorites')
   })
 
   it('preserves an in-panel Tag selection when returning from a resource', async () => {
@@ -965,7 +926,9 @@ describe('SettingsPage layout', () => {
       ]
     })
 
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () => navButton('Skills')?.click())
 
     const favorite = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
@@ -982,9 +945,7 @@ describe('SettingsPage layout', () => {
       document.body.querySelectorAll<HTMLButtonElement>('aside + section button')
     ).find((button) => button.textContent?.includes('Alpha'))
     await act(async () => resource?.click())
-    await act(async () =>
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.click()
-    )
+    await act(async () => defaultSettingsRef.current!.closeActivePane())
 
     const selectedTag = Array.from(
       document.body.querySelectorAll<HTMLButtonElement>('aside button')
@@ -992,7 +953,7 @@ describe('SettingsPage layout', () => {
     expect(selectedTag?.textContent).toContain('Research')
   })
 
-  it('records the default Tag in history before navigating through a resource', async () => {
+  it('preserves the selected Tag when returning from a resource with the pane shortcut', async () => {
     vi.mocked(window.api.tags.snapshot).mockResolvedValue({
       revision: 2,
       tags: [
@@ -1022,7 +983,9 @@ describe('SettingsPage layout', () => {
       ]
     })
 
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () => navButton('Tags')?.click())
 
     const selectedDefault = Array.from(
@@ -1035,16 +998,7 @@ describe('SettingsPage layout', () => {
     ).find((button) => button.textContent?.includes('Alpha'))
     await act(async () => resource?.click())
 
-    const research = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
-      (button) => button.textContent?.trim() === 'Research'
-    )
-    await act(async () => research?.click())
-    await act(async () =>
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.click()
-    )
-    await act(async () =>
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.click()
-    )
+    await act(async () => defaultSettingsRef.current!.closeActivePane())
 
     const restoredDefault = Array.from(
       document.body.querySelectorAll<HTMLButtonElement>('aside button')
@@ -1056,7 +1010,7 @@ describe('SettingsPage layout', () => {
     await i18next.changeLanguage('ja')
     try {
       act(() => {
-        root.render(<SettingsPage open onClose={vi.fn()} />)
+        root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
       })
 
       expect(document.body.textContent).toContain(
@@ -1067,7 +1021,7 @@ describe('SettingsPage layout', () => {
     }
   })
 
-  it('uses the header breadcrumb for archived project details', async () => {
+  it('returns from archived project details through a local link', async () => {
     useProjectStore.setState({
       ...createInitialProjectState(),
       projects: [
@@ -1083,7 +1037,9 @@ describe('SettingsPage layout', () => {
       ],
       isLoaded: true
     })
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () => navButton('Archived')?.click())
 
     const manage = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
@@ -1094,7 +1050,7 @@ describe('SettingsPage layout', () => {
     const backToArchived = document.body.querySelector<HTMLButtonElement>(
       '[aria-label="Back to archived"]'
     )
-    expect(backToArchived?.textContent).toBe('Archived')
+    expect(backToArchived?.textContent).toBe('Back to archived')
     expect(document.body.textContent).toContain('Archived project')
     expect(document.body.textContent).not.toContain('Archived projects')
 
@@ -1103,7 +1059,9 @@ describe('SettingsPage layout', () => {
   })
 
   it('keeps Feedback in a fixed footer and Archived in the scrollable Workspace group', async () => {
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
 
     const archived = navButton('Archived')
     const feedback = document.body.querySelector<HTMLAnchorElement>(
@@ -1136,7 +1094,7 @@ describe('SettingsPage layout', () => {
     })
 
     act(() => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
 
     const alert = document.body.querySelector<HTMLElement>('[data-slot="settings-write-error"]')
@@ -1155,97 +1113,6 @@ describe('SettingsPage layout', () => {
 
     expect(useSettingsStore.getState().settingsWriteError).toBeUndefined()
     expect(document.body.querySelector('[data-slot="settings-write-error"]')).toBeNull()
-  })
-
-  it('jumps from settings search to in-place Skill selection after retiring Manage', async () => {
-    // jsdom has no scrolling layout; keep the real search navigation and focus behavior.
-    Element.prototype.scrollIntoView = vi.fn()
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
-    await act(async () => navButton('Skills')?.click())
-    const search = document.body.querySelector<HTMLInputElement>('[aria-label="Search settings"]')!
-    await act(async () => {
-      fireEvent.change(search, { target: { value: 'Manage skills' } })
-      search.focus()
-    })
-    await act(async () => fireEvent.keyDown(search, { key: 'Enter' }))
-    expect(document.activeElement?.getAttribute('aria-label')).toBe('Manage skills')
-    const select = document.activeElement?.querySelector<HTMLButtonElement>(
-      '[aria-label="Select multiple in Featured"]'
-    )
-    expect(select).not.toBeNull()
-    await act(async () => select!.click())
-    await act(async () =>
-      document.body.querySelector<HTMLInputElement>('[aria-label="Select Alpha"]')!.click()
-    )
-    expect(document.body.querySelector('[data-slot="resource-selection-bar"]')).not.toBeNull()
-    expect(document.body.querySelector('[aria-label="Back to skills"]')).toBeNull()
-  })
-
-  it.each([{ isComposing: true }, { keyCode: 229 }])(
-    'preserves the native composing Escape action through the Settings dialog: %j',
-    async (composition) => {
-      const onClose = vi.fn()
-      await act(async () => root.render(<SettingsPage open onClose={onClose} />))
-      const search = document.querySelector<HTMLInputElement>(
-        '[data-slot="settings-global-search"] input'
-      )!
-      await act(async () => {
-        search.focus()
-        fireEvent.change(search, { target: { value: 'proxy' } })
-      })
-      const event = new KeyboardEvent('keydown', {
-        key: 'Escape',
-        bubbles: true,
-        cancelable: true,
-        ...composition
-      })
-      await act(async () => {
-        search.dispatchEvent(event)
-      })
-      expect(event.defaultPrevented).toBe(false)
-      expect(search.value).toBe('proxy')
-      expect(document.activeElement).toBe(search)
-      expect(document.querySelector('[role="listbox"]')).not.toBeNull()
-      expect(onClose).not.toHaveBeenCalled()
-    }
-  )
-
-  it('keeps the dialog open when Escape closes the global search results', async () => {
-    const onClose = vi.fn()
-    await act(async () => root.render(<SettingsPage open onClose={onClose} />))
-
-    const search = document.body.querySelector<HTMLInputElement>(
-      '[data-slot="settings-global-search"] input'
-    )
-    expect(search).not.toBeNull()
-
-    await act(async () => {
-      search?.focus()
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(
-        search,
-        'proxy'
-      )
-      search?.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    expect(document.body.querySelector('[role="listbox"]')).not.toBeNull()
-
-    // First Escape closes only the results list; the dialog stays open.
-    await act(async () => {
-      search?.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
-      )
-    })
-    expect(document.body.querySelector('[role="listbox"]')).toBeNull()
-    expect(onClose).not.toHaveBeenCalled()
-    expect(document.body.querySelector('[data-slot="settings-surface"]')).not.toBeNull()
-
-    // Second Escape, with the list closed, falls through to the dialog's normal close path.
-    await act(async () => {
-      document.body.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
-      )
-    })
-    expect(onClose).toHaveBeenCalled()
   })
 
   it('mounts the sidebar + content with grouped nav items and a close control', () => {
@@ -1270,7 +1137,7 @@ describe('SettingsPage layout', () => {
     })
 
     act(() => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
 
     // Dialog content is portaled to the document body.
@@ -1332,14 +1199,10 @@ describe('SettingsPage layout', () => {
     // Model is the default active panel.
     expect(nav?.querySelector('[aria-current="page"]')?.textContent).toContain('Model')
 
-    // The header shows the panel title and a close control.
+    // Browser Settings keeps its close control in the sidebar footer.
     expect(document.body.querySelector('[aria-label="Close settings"]')).not.toBeNull()
-    expect(document.body.querySelector('[aria-label="Back"]')?.getAttribute('data-slot')).toBe(
-      'button'
-    )
-    expect(document.body.querySelector('[aria-label="Maximize"]')?.getAttribute('data-slot')).toBe(
-      'button'
-    )
+    expect(document.body.querySelector('[aria-label="Back"]')).toBeNull()
+    expect(document.body.querySelector('[aria-label="Maximize"]')).toBeNull()
 
     // The Model panel splits the Main model section (model + reasoning effort on one row),
     // the Scenario models accordion card (Subagent / Reviewer / Vision), and provider management;
@@ -1393,7 +1256,7 @@ describe('SettingsPage layout', () => {
     await act(async () =>
       root.render(
         <StrictMode>
-          <SettingsPage open onClose={vi.fn()} />
+          <SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />
         </StrictMode>
       )
     )
@@ -1408,10 +1271,12 @@ describe('SettingsPage layout', () => {
   })
 
   it('opens the Permissions panel from Workspace navigation', async () => {
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () => navButton('Permissions')?.click())
 
-    expect(document.body.querySelector('h2:not(.sr-only)')?.textContent).toBe('Permissions')
+    expect(navButton('Permissions')?.getAttribute('aria-current')).toBe('page')
     expect(
       document.body.querySelector<HTMLButtonElement>('[aria-label="Filter permissions by scope"]')
         ?.textContent
@@ -1449,7 +1314,14 @@ describe('SettingsPage layout', () => {
     })
 
     await act(async () =>
-      root.render(<SettingsPage open onClose={vi.fn()} onOpenSession={onOpenSession} />)
+      root.render(
+        <SettingsPage
+          ref={defaultSettingsRef}
+          open
+          onClose={vi.fn()}
+          onOpenSession={onOpenSession}
+        />
+      )
     )
     await act(async () => navButton('Permissions')?.click())
     await waitFor(() =>
@@ -1470,7 +1342,7 @@ describe('SettingsPage layout', () => {
 
   it('shows the agent framework on the Agent sub-panel', async () => {
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
 
     await openAgentPanel()
@@ -1514,7 +1386,7 @@ describe('SettingsPage layout', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
 
@@ -1574,7 +1446,7 @@ describe('SettingsPage layout', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
     await act(async () => {
@@ -1655,7 +1527,7 @@ describe('SettingsPage layout', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
 
@@ -1705,7 +1577,7 @@ describe('SettingsPage layout', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
 
@@ -1737,7 +1609,7 @@ describe('SettingsPage layout', () => {
 
   it('keeps Model and Agent as first-level tabs while navigating settings', async () => {
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
 
     expect(navButton('Model')?.parentElement?.tagName).toBe('LI')
@@ -1749,7 +1621,7 @@ describe('SettingsPage layout', () => {
 
   it('keeps Agent available when a skill mention deep-links into settings', async () => {
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
 
     await act(async () => {
@@ -1802,17 +1674,6 @@ describe('SettingsPage layout', () => {
     expect(content?.getAttribute('aria-hidden')).toBe('true')
     expect(nav?.contains(document.activeElement)).toBe(true)
 
-    const search = nav!.querySelector<HTMLInputElement>('[aria-label="Search settings"]')!
-    await act(async () => {
-      search.focus()
-      fireEvent.change(search, { target: { value: 'proxy' } })
-    })
-    expect(nav!.querySelector('[role="listbox"]')).not.toBeNull()
-    await act(async () => fireEvent.keyDown(search, { key: 'Escape' }))
-    expect(nav!.querySelector('[role="listbox"]')).toBeNull()
-    expect(nav?.getAttribute('aria-hidden')).toBeNull()
-    expect(onClose).not.toHaveBeenCalled()
-
     await act(async () => {
       document.activeElement?.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
@@ -1834,11 +1695,7 @@ describe('SettingsPage layout', () => {
     )
     await act(async () => generalTab?.click())
     expect(nav?.getAttribute('aria-hidden')).toBe('true')
-    expect(
-      Array.from(document.body.querySelectorAll('h2')).some((heading) =>
-        heading.textContent?.includes('General')
-      )
-    ).toBe(true)
+    expect(navButton('General')?.getAttribute('aria-current')).toBe('page')
 
     await act(async () => navButton('Model')?.click())
     const addProvider = Array.from(
@@ -1860,9 +1717,9 @@ describe('SettingsPage layout', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
-  it('opens Add provider as a history-driven sub-page and returns via the back arrow', () => {
+  it('opens Add provider as a sub-page and returns via its local back link', () => {
     act(() => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
 
     const clickByText = (text: string): void => {
@@ -1874,9 +1731,7 @@ describe('SettingsPage layout', () => {
 
     clickByText('Add provider')
 
-    // The sub-page shows a "Model › Add provider" breadcrumb and the provider-type dropdown, hiding
-    // the Claude section. There is no standalone in-content back arrow. With Claude Code as the
-    // active framework, the type defaults to Anthropic.
+    // The provider form has a local return link and defaults to the active framework vendor.
     const crumb = document.body.querySelector<HTMLButtonElement>('[aria-label="Back to model"]')
     expect(crumb).not.toBeNull()
     expect(document.body.textContent).toContain('Add provider')
@@ -1886,18 +1741,16 @@ describe('SettingsPage layout', () => {
     expect(typeTrigger?.textContent).toContain('Anthropic')
     expect(document.body.querySelector('section[aria-label="Claude"]')).toBeNull()
 
-    // The shared top back arrow exits the form back to the provider list.
-    const back = document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')
+    // The local return link exits the form back to the provider list.
+    const back = document.body.querySelector<HTMLButtonElement>('[aria-label="Back to model"]')
     act(() => back?.click())
     expect(document.body.querySelector('section[aria-label="Providers"]')).not.toBeNull()
     expect(document.body.querySelector('[aria-label="Provider type"]')).toBeNull()
 
-    // Forward re-enters the form as a history location.
-    const forward = document.body.querySelector<HTMLButtonElement>('[aria-label="Forward"]')
-    act(() => forward?.click())
+    clickByText('Add provider')
     expect(document.body.querySelector('[aria-label="Provider type"]')).not.toBeNull()
 
-    // The breadcrumb root crumb returns to the provider list too.
+    // The local return link returns to the provider list too.
     const rootCrumb = document.body.querySelector<HTMLButtonElement>('[aria-label="Back to model"]')
     act(() => rootCrumb?.click())
     expect(document.body.querySelector('section[aria-label="Providers"]')).not.toBeNull()
@@ -1916,7 +1769,9 @@ describe('SettingsPage layout', () => {
       needsKey: false,
       supportsImageInput: true
     }
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () => {
       useSettingsStore.setState({ providers: [provider], activeProviderId: provider.id })
     })
@@ -1955,7 +1810,9 @@ describe('SettingsPage layout', () => {
     const refreshProviderModels = vi.fn().mockRejectedValue(new Error('transport failed'))
     useSettingsStore.setState({ refreshProviderModels: refreshProviderModels as never })
 
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () => {
       useSettingsStore.setState({ providers: [provider], activeProviderId: provider.id })
     })
@@ -1973,9 +1830,9 @@ describe('SettingsPage layout', () => {
     )
   })
 
-  it('opens Usage as a standalone history-driven settings panel', async () => {
+  it('opens Usage as a settings panel through sidebar navigation', async () => {
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
 
     const usageEntry = navButton('Usage')
@@ -1991,12 +1848,9 @@ describe('SettingsPage layout', () => {
     ).toContain('Usage')
     expect(document.body.querySelector('[aria-label="Back to model"]')).toBeNull()
 
-    const back = document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')
-    act(() => back?.click())
+    await act(async () => navButton('Model')?.click())
     expect(document.body.querySelector('section[aria-label="Providers"]')).not.toBeNull()
-
-    const forward = document.body.querySelector<HTMLButtonElement>('[aria-label="Forward"]')
-    act(() => forward?.click())
+    await act(async () => navButton('Usage')?.click())
     expect(document.body.querySelector('[data-slot="token-usage-panel"]')).not.toBeNull()
   })
 
@@ -2045,9 +1899,7 @@ describe('SettingsPage layout', () => {
     })
     inlineDialog.remove()
     expect(document.body.querySelector('section[aria-label="Providers"]')).not.toBeNull()
-    expect(document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.disabled).toBe(
-      true
-    )
+    expect(document.body.querySelector('[aria-label="Back"]')).toBeNull()
     expect(onClose).not.toHaveBeenCalled()
 
     act(() => {
@@ -2093,7 +1945,7 @@ describe('SettingsPage layout', () => {
 
     for (const { framework, runtime, label } of scenarios) {
       await act(async () => {
-        root.render(<SettingsPage open onClose={vi.fn()} />)
+        root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
       })
       // Set the framework after the initial load() settles, and give the runtime a resolved path
       // so the detect-on-view effect doesn't overwrite it.
@@ -2119,7 +1971,7 @@ describe('SettingsPage layout', () => {
 
   it('defaults a custom gateway to the active framework API format', async () => {
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     useSettingsStore.setState({
       agentFrameworkId: 'opencode',
@@ -2190,7 +2042,7 @@ describe('SettingsPage layout', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await act(async () => {
       document.body.querySelector<HTMLButtonElement>('[aria-label="Edit"]')?.click()
@@ -2209,7 +2061,9 @@ describe('SettingsPage layout', () => {
     const validateProvider = vi.fn().mockResolvedValue({ ok: false, category: 'auth' })
     const saveValidatedProvider = vi.fn()
     useSettingsStore.setState({ validateProvider, saveValidatedProvider })
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () =>
       document.body.querySelector<HTMLButtonElement>('[aria-label="Edit"]')?.click()
     )
@@ -2252,7 +2106,7 @@ describe('SettingsPage layout', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await act(async () => {
       document.body.querySelector<HTMLButtonElement>('[aria-label="Edit"]')?.click()
@@ -2285,7 +2139,9 @@ describe('SettingsPage layout', () => {
       saveValidatedProvider,
       validateProvider: vi.fn().mockResolvedValue(undefined)
     })
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () =>
       document.body.querySelector<HTMLButtonElement>('[aria-label="Edit"]')?.click()
     )
@@ -2327,7 +2183,9 @@ describe('SettingsPage layout', () => {
       validateProvider: vi.fn().mockResolvedValue(undefined)
     })
 
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () =>
       document.body.querySelector<HTMLButtonElement>('[aria-label="Edit"]')?.click()
     )
@@ -2344,7 +2202,9 @@ describe('SettingsPage layout', () => {
 
   it('M04: shows preflight failure separately and retries without saving a provider again', async () => {
     installCustomProviderSnapshot()
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     const persistProvider = vi.fn()
     useSettingsStore.setState({ persistProvider })
     vi.mocked(window.api.settings.getPreflight).mockRejectedValueOnce(
@@ -2376,7 +2236,9 @@ describe('SettingsPage layout', () => {
       return { providerId: provider.id, validation: { ok: true, category: 'ok' as const } }
     })
     useSettingsStore.setState({ saveValidatedProvider })
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () =>
       document.body.querySelector<HTMLButtonElement>('[aria-label="Edit"]')?.click()
     )
@@ -2397,7 +2259,9 @@ describe('SettingsPage layout', () => {
       runtimeReconnectFailed: true
     })
     useSettingsStore.setState({ saveValidatedProvider })
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () =>
       document.body.querySelector<HTMLButtonElement>('[aria-label="Edit"]')?.click()
     )
@@ -2420,7 +2284,9 @@ describe('SettingsPage layout', () => {
       .mockResolvedValue({ validation: { ok: false, category: 'auth' } })
     const persistProvider = vi.fn()
     useSettingsStore.setState({ saveValidatedProvider, persistProvider })
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () =>
       document.body.querySelector<HTMLButtonElement>('[aria-label="Edit"]')?.click()
     )
@@ -2448,7 +2314,9 @@ describe('SettingsPage layout', () => {
     useSettingsStore.setState({
       validateProvider: vi.fn().mockResolvedValue({ ok: true, category: 'ok', applied: false })
     })
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () =>
       document.body.querySelector<HTMLButtonElement>('[aria-label="Edit"]')?.click()
     )
@@ -2473,7 +2341,9 @@ describe('SettingsPage layout', () => {
         })
     )
     useSettingsStore.setState({ validateProvider })
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () =>
       document.body.querySelector<HTMLButtonElement>('[aria-label="Edit"]')?.click()
     )
@@ -2501,7 +2371,9 @@ describe('SettingsPage layout', () => {
         })
     )
     useSettingsStore.setState({ validateProvider })
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () =>
       document.body.querySelector<HTMLButtonElement>('[aria-label="Edit"]')?.click()
     )
@@ -2518,7 +2390,7 @@ describe('SettingsPage layout', () => {
 
   it('switches to the General panel and shows the diagnostic log file', async () => {
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
 
     const generalTab = Array.from(
@@ -2582,7 +2454,7 @@ describe('SettingsPage layout', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await act(async () => navButton('General')?.click())
 
@@ -2597,7 +2469,7 @@ describe('SettingsPage layout', () => {
 
   it('switches to the Connectors panel and lists bundled connectors', async () => {
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
 
     const connectorsTab = Array.from(
@@ -2621,7 +2493,7 @@ describe('SettingsPage layout', () => {
 
   it('keeps a Connector draft when device credential creation uses Settings history', async () => {
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await act(async () => navButton('Connectors')?.click())
 
@@ -2652,10 +2524,8 @@ describe('SettingsPage layout', () => {
     selectSettingsOption('Credential for API_TOKEN', 'New credential')
 
     expect(document.body.textContent).toContain('Stored on this device')
-    expect(document.body.textContent).toContain('Add connector')
-    await act(async () =>
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.click()
-    )
+    expect(document.body.querySelector('[aria-label="Back to connectors"]')).not.toBeNull()
+    await act(async () => defaultSettingsRef.current!.closeActivePane())
 
     expect(
       document.body.querySelector<HTMLInputElement>('[aria-label="Display name"]')?.value
@@ -2679,7 +2549,9 @@ describe('SettingsPage layout', () => {
       ncbi: { hasApiKey: false }
     })
 
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () => navButton('Connectors')?.click())
     await openCustomServerEditor('Notion2')
     expect(document.body.querySelector('[aria-label="Manage Tags"]')).not.toBeNull()
@@ -2701,16 +2573,10 @@ describe('SettingsPage layout', () => {
 
     expect(navButton('Connectors')?.getAttribute('aria-current')).toBe('page')
     expect(document.body.querySelector('[aria-label="Manage Tags"]')).toBeNull()
-    expect(
-      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).some(
-        (button) => button.textContent?.trim() === 'Edit notion2'
-      )
-    ).toBe(true)
+    expect(document.body.querySelector('[aria-label="Back to connectors"]')).not.toBeNull()
     expect(document.body.textContent).toContain('New credential')
 
-    await act(async () =>
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.click()
-    )
+    await act(async () => defaultSettingsRef.current!.closeActivePane())
     expect(document.body.querySelector('[aria-label="Manage Tags"]')).not.toBeNull()
     expect(
       document.body.querySelector<HTMLInputElement>('[aria-label="Variable name"]')?.value
@@ -2738,7 +2604,7 @@ describe('SettingsPage layout', () => {
     useSettingsStore.setState({ updateCustomServer, addCustomServer })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await act(async () => navButton('Connectors')?.click())
     await openCustomServerEditor('My MCP')
@@ -2782,7 +2648,7 @@ describe('SettingsPage layout', () => {
     useSettingsStore.setState({ updateCustomServer })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await act(async () => navButton('Connectors')?.click())
     await openCustomServerEditor('My MCP')
@@ -2812,7 +2678,7 @@ describe('SettingsPage layout', () => {
 
   it('switches to the Network panel, configures a mirror, and saves it', async () => {
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
 
     const networkTab = Array.from(
@@ -2871,7 +2737,7 @@ describe('SettingsPage layout', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
 
     await act(async () => {
@@ -2892,7 +2758,7 @@ describe('SettingsPage layout', () => {
     })
 
     expect(document.body.querySelector('[aria-label="Back to network"]')).not.toBeNull()
-    expect(document.body.textContent).toContain('Notebook network access')
+    expect(document.body.textContent).toContain('Notebook network protection')
     expect(document.body.querySelector('[aria-label="Allowed domains"]')).not.toBeNull()
   })
 
@@ -2905,7 +2771,7 @@ describe('SettingsPage layout', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await act(async () => {
       navButton('Runtimes')?.click()
@@ -2931,7 +2797,7 @@ describe('SettingsPage layout', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await act(async () => {
       navButton('Runtimes')?.click()
@@ -2953,7 +2819,7 @@ describe('SettingsPage layout', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
       await Promise.resolve()
     })
 
@@ -2964,9 +2830,9 @@ describe('SettingsPage layout', () => {
     expect(document.body.querySelector('[aria-label="Network status"]')).not.toBeNull()
   })
 
-  it('shows a breadcrumb in the header when a skill detail is open, and returns on breadcrumb click', async () => {
+  it('returns from Skill details through the local return link', async () => {
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
 
     // Navigate to the Skills panel.
@@ -2988,7 +2854,7 @@ describe('SettingsPage layout', () => {
       alphaRow?.click()
     })
 
-    // The header now shows a "Skills › Alpha" breadcrumb with a clickable "Skills" crumb.
+    // Skill details provide a local return link.
     const crumb = document.body.querySelector<HTMLButtonElement>('[aria-label="Back to skills"]')
     expect(crumb).not.toBeNull()
     expect(document.body.textContent).toContain('Alpha')
@@ -3001,7 +2867,9 @@ describe('SettingsPage layout', () => {
   })
 
   it('selects Connectors in their category without leaving the catalog', async () => {
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () => navButton('Connectors')?.click())
     await act(async () =>
       document.body
@@ -3034,7 +2902,9 @@ describe('SettingsPage layout', () => {
       }
     ])
     const onClose = vi.fn()
-    await act(async () => root.render(<SettingsPage open onClose={onClose} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={onClose} />)
+    )
     await act(async () => navButton('Skills')?.click())
     await act(async () =>
       document.body
@@ -3062,7 +2932,9 @@ describe('SettingsPage layout', () => {
   })
 
   it('selects Featured Skills in place while keeping deletion unavailable', async () => {
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () => navButton('Skills')?.click())
     await act(async () =>
       document.body
@@ -3111,16 +2983,14 @@ describe('SettingsPage layout', () => {
       expect(settingsRef.current?.closeActivePane()).toBe(true)
     })
     expect(document.body.querySelector('[aria-label="Back to skills"]')).toBeNull()
-    expect(document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.disabled).toBe(
-      true
-    )
+    expect(document.body.querySelector('[aria-label="Back"]')).toBeNull()
   })
 
   it('honors a repeated external intent for the same skill while Settings stays open', async () => {
     useSettingsStore.getState().openSettingsToSkill('alpha')
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
       await Promise.resolve()
     })
     await waitFor(() =>
@@ -3140,12 +3010,12 @@ describe('SettingsPage layout', () => {
     useSettingsStore.getState().openSettingsToSkill('alpha')
 
     await act(async () => {
-      root.render(<SettingsPage open={false} onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open={false} onClose={vi.fn()} />)
       await Promise.resolve()
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
       await Promise.resolve()
     })
     await waitFor(() =>
@@ -3157,7 +3027,7 @@ describe('SettingsPage layout', () => {
     useSettingsStore.getState().openSettingsToPanel('storage')
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await act(async () => {
       await Promise.resolve()
@@ -3192,7 +3062,7 @@ describe('SettingsPage layout', () => {
     useSettingsStore.getState().openSettingsToSpecialist(researcher.id)
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     // Flush the seeding effect, the specialists-list load, and the editor mount.
     await act(async () => {
@@ -3234,7 +3104,7 @@ describe('SettingsPage layout', () => {
     useSettingsStore.getState().openSettingsToSpecialist(researcher.id)
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await act(async () => {
       await Promise.resolve()
@@ -3259,7 +3129,7 @@ describe('SettingsPage layout', () => {
 
     // Back returns to the specialist editor.
     await act(async () => {
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.click()
+      defaultSettingsRef.current!.closeActivePane()
     })
     expect(document.body.querySelector<HTMLInputElement>('#sp-name')?.value).toBe('Researcher')
   })
@@ -3289,7 +3159,7 @@ describe('SettingsPage layout', () => {
       useSettingsStore.getState().openSettingsToSkill('alpha')
 
       await act(async () => {
-        root.render(<SettingsPage open onClose={vi.fn()} />)
+        root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
         await Promise.resolve()
       })
       await act(async () => {
@@ -3319,7 +3189,7 @@ describe('SettingsPage layout', () => {
       expect(document.body.querySelector<HTMLInputElement>('#sp-name')?.value).toBe('Researcher')
 
       await act(async () => {
-        document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.click()
+        defaultSettingsRef.current!.closeActivePane()
       })
       expect(navButton('Skills')?.getAttribute('aria-current')).toBe('page')
       expect(document.body.textContent).toContain('Test Author')
@@ -3362,7 +3232,7 @@ describe('SettingsPage layout', () => {
       useSettingsStore.getState().openSettingsToPanel('connectors')
 
       await act(async () => {
-        root.render(<SettingsPage open onClose={vi.fn()} />)
+        root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
         await Promise.resolve()
       })
       await act(async () => {
@@ -3399,7 +3269,7 @@ describe('SettingsPage layout', () => {
       expect(document.body.querySelector<HTMLInputElement>('#sp-name')?.value).toBe('Researcher')
 
       await act(async () => {
-        document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.click()
+        defaultSettingsRef.current!.closeActivePane()
       })
       expect(navButton('Connectors')?.getAttribute('aria-current')).toBe('page')
       expect(document.body.textContent).toContain('Chemistry')
@@ -3469,7 +3339,7 @@ describe('SettingsPage layout', () => {
     useSettingsStore.getState().openSettingsToSpecialist(researcher.id)
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await act(async () => {
       await Promise.resolve()
@@ -3487,10 +3357,6 @@ describe('SettingsPage layout', () => {
       )
     })
 
-    const crumb = (): string =>
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.closest('div')
-        ?.textContent ?? ''
-
     // A bundled connector lands on its detail page.
     await act(async () => {
       fireEvent.click(
@@ -3498,7 +3364,8 @@ describe('SettingsPage layout', () => {
       )
     })
     expect(navButton('Connectors')?.getAttribute('aria-current')).toBe('page')
-    expect(crumb()).toContain('Connectors›Chemistry')
+    expect(document.body.querySelector('[aria-label="Back to connectors"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('Chemistry')
     await act(async () => {
       await Promise.resolve()
     })
@@ -3514,7 +3381,7 @@ describe('SettingsPage layout', () => {
     // Back to the editor (capability tabs reset to Skills on remount), then a
     // custom server lands on its edit page.
     await act(async () => {
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.click()
+      defaultSettingsRef.current!.closeActivePane()
     })
     await act(async () => {
       fireEvent.click(
@@ -3529,7 +3396,10 @@ describe('SettingsPage layout', () => {
       )
     })
     expect(navButton('Connectors')?.getAttribute('aria-current')).toBe('page')
-    expect(crumb()).toContain('Connectors›Edit route')
+    expect(document.body.querySelector('[aria-label="Back to connectors"]')).not.toBeNull()
+    expect(document.body.querySelector<HTMLInputElement>('#connector-name')?.value).toBe(
+      'Public Route'
+    )
   })
 
   it('keeps unsaved specialist edits across a capability detail round trip', async () => {
@@ -3555,7 +3425,7 @@ describe('SettingsPage layout', () => {
     useSettingsStore.getState().openSettingsToSpecialist(researcher.id)
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await act(async () => {
       await Promise.resolve()
@@ -3579,7 +3449,7 @@ describe('SettingsPage layout', () => {
     })
     expect(document.body.textContent).toContain('Test Author')
     await act(async () => {
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.click()
+      defaultSettingsRef.current!.closeActivePane()
     })
 
     // Back on the editor, the unsaved edit survived the trip.
@@ -3588,7 +3458,7 @@ describe('SettingsPage layout', () => {
     )
   })
 
-  it('labels Specialist export in shared navigation and preserves Back/Forward history', async () => {
+  it('opens Specialist export and returns through the pane-close shortcut', async () => {
     window.api.specialist.previewExport = vi.fn().mockResolvedValue({
       specialistId: 'export-fixture',
       name: 'Export fixture',
@@ -3619,7 +3489,9 @@ describe('SettingsPage layout', () => {
       integrity: { status: 'ok' }
     })
     useSettingsStore.getState().openSettingsToPanel('specialists')
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     openRadixMenu(
       document.body.querySelector<HTMLButtonElement>('[aria-label="Actions for Export fixture"]')
     )
@@ -3632,25 +3504,16 @@ describe('SettingsPage layout', () => {
     )
     expect(document.body.textContent).toContain('Choose Skills to include')
     expect(document.body.textContent).not.toContain('Edit specialist')
-    expect(
-      document.body.querySelector('[aria-label="Back to specialists"]')?.parentElement?.textContent
-    ).toContain('Export ZIP')
-    await act(async () =>
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')?.click()
-    )
+    expect(document.body.querySelector('[aria-label="Back to specialists"]')).not.toBeNull()
+    await act(async () => defaultSettingsRef.current!.closeActivePane())
     expect(document.body.textContent).not.toContain('Choose Skills to include')
-    await act(async () =>
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Forward"]')?.click()
-    )
-    expect(document.body.textContent).toContain('Choose Skills to include')
-    expect(document.body.textContent).not.toContain('Edit specialist')
   })
 
   it('labels the Specialist ZIP import breadcrumb with the active workflow', async () => {
     window.api.specialist.selectPackage = vi.fn().mockResolvedValue({ cancelled: true })
     useSettingsStore.getState().openSettingsToPanel('specialists')
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     openRadixMenu(
       Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
@@ -3672,7 +3535,7 @@ describe('SettingsPage layout', () => {
     useSettingsStore.getState().openSettingsToPanel('specialists')
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await act(async () => {
       await Promise.resolve()
@@ -3695,7 +3558,7 @@ describe('SettingsPage layout', () => {
     expect(document.body.querySelector<HTMLInputElement>('#sp-name')).not.toBeNull()
   })
 
-  it('pushes Agent after storage recovery so Back returns to Storage', async () => {
+  it('opens Agent after storage recovery and allows returning through the sidebar', async () => {
     const failedStorage = {
       checkedAt: 1,
       platform: 'darwin',
@@ -3741,7 +3604,9 @@ describe('SettingsPage layout', () => {
       checkEnvironment
     })
 
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await act(async () => {
       await Promise.resolve()
     })
@@ -3755,9 +3620,7 @@ describe('SettingsPage layout', () => {
     await act(async () => continueToAgent?.click())
 
     expect(navButton('Agent')?.getAttribute('aria-current')).toBe('page')
-    const back = document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')
-    expect(back?.disabled).toBe(false)
-    await act(async () => back?.click())
+    await act(async () => navButton('Storage')?.click())
     expect(navButton('Storage')?.getAttribute('aria-current')).toBe('page')
   })
 
@@ -3770,7 +3633,7 @@ describe('SettingsPage layout', () => {
     ).api.settings.isEncryptionAvailable.mockResolvedValue(false)
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await act(async () => {
       await Promise.resolve()
@@ -3793,7 +3656,7 @@ describe('SettingsPage layout', () => {
 
   it('does not render when closed', () => {
     act(() => {
-      root.render(<SettingsPage open={false} onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open={false} onClose={vi.fn()} />)
     })
 
     expect(document.body.querySelector('[role="dialog"]')).toBeNull()
@@ -3804,7 +3667,7 @@ describe('SettingsPage layout', () => {
     act(() => {
       root.render(
         <Profiler id="settings" onRender={() => (commits += 1)}>
-          <SettingsPage open={false} onClose={vi.fn()} />
+          <SettingsPage ref={defaultSettingsRef} open={false} onClose={vi.fn()} />
         </Profiler>
       )
     })
@@ -3830,59 +3693,28 @@ describe('SettingsPage layout', () => {
     expect(commits).toBe(commitsBeforeSessionUpdate)
   })
 
-  it('navigates settings history with the back/forward controls', async () => {
-    await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+  it('removes the duplicate toolbar and close control from the native Settings surface', async () => {
+    const onClose = vi.fn()
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} standalone open onClose={onClose} />)
+    )
+    expect(document.querySelector('[aria-label="Back"]')).toBeNull()
+    expect(document.querySelector('[aria-label="Forward"]')).toBeNull()
+    expect(document.querySelector('[aria-label="Search settings"]')).toBeNull()
+    expect(document.querySelector('[aria-label="Maximize"]')).toBeNull()
+    expect(document.querySelector('[aria-label="Close settings"]')).toBeNull()
+    const event = new KeyboardEvent('keydown', {
+      key: 'k',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true
     })
-
-    const back = (): HTMLButtonElement | null =>
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Back"]')
-    const forward = (): HTMLButtonElement | null =>
-      document.body.querySelector<HTMLButtonElement>('[aria-label="Forward"]')
-
-    // Start on Model: back and forward are both disabled.
-    expect(back()?.disabled).toBe(true)
-    expect(forward()?.disabled).toBe(true)
-
-    // Navigate Model -> General enables Back.
-    const generalTab = Array.from(
-      document.body.querySelectorAll('nav[aria-label="Settings"] button')
-    ).find((button) => /general/i.test(button.textContent ?? '')) as HTMLButtonElement | undefined
-    await act(async () => {
-      generalTab?.click()
-    })
-    expect(back()?.disabled).toBe(false)
-
-    // Back returns to Model (its nav item is the current page) and enables Forward.
-    await act(async () => {
-      back()?.click()
-    })
-    const modelNav = Array.from(
-      document.body.querySelectorAll('nav[aria-label="Settings"] button')
-    ).find((button) => /model/i.test(button.textContent ?? '')) as HTMLButtonElement | undefined
-    expect(modelNav?.getAttribute('aria-current')).toBe('page')
-    expect(forward()?.disabled).toBe(false)
-  })
-
-  it('toggles the dialog size with the maximize control', async () => {
-    await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
-    })
-
-    const maximize = document.body.querySelector<HTMLButtonElement>('[aria-label="Maximize"]')
-    expect(maximize).not.toBeNull()
-
-    await act(async () => {
-      maximize?.click()
-    })
-
-    // After maximizing, the control flips to Restore.
-    expect(document.body.querySelector('[aria-label="Restore"]')).not.toBeNull()
-    expect(document.body.querySelector('[aria-label="Maximize"]')).toBeNull()
-    const dialog = document.body.querySelector<HTMLElement>('[data-slot="settings-surface"]')
-    expect(dialog?.className).toContain('inset-4')
-    expect(dialog?.className).not.toContain('h-[80vh]')
-    expect(dialog?.className).not.toContain('w-[80vw]')
+    act(() => window.dispatchEvent(event))
+    expect(event.defaultPrevented).toBe(false)
+    expect(navButton('Model')?.getAttribute('aria-current')).toBe('page')
+    expect(document.querySelector('section[aria-label="Providers"]')).not.toBeNull()
+    act(() => defaultSettingsRef.current!.requestLeave(onClose))
+    expect(onClose).toHaveBeenCalledOnce()
   })
 })
 
@@ -3917,7 +3749,7 @@ describe('SettingsPage uninstall confirmation', () => {
     api.settings.uninstallClaude = uninstallClaude
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
 
@@ -3958,7 +3790,7 @@ describe('SettingsPage uninstall confirmation', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
 
@@ -3996,7 +3828,7 @@ describe('SettingsPage uninstall confirmation', () => {
     api.settings.setAgentFramework = setAgentFramework
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
 
@@ -4044,7 +3876,9 @@ describe('SettingsPage uninstall confirmation', () => {
     const checkEnvironment = vi.fn().mockResolvedValue(undefined)
     useSettingsStore.setState({ checkEnvironment })
 
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await openAgentPanel()
     const opencodeRadio = document.body.querySelector<HTMLElement>('[aria-label="Use OpenCode"]')
     await act(async () => opencodeRadio?.click())
@@ -4102,7 +3936,7 @@ describe('SettingsPage uninstall confirmation', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
 
@@ -4154,7 +3988,7 @@ describe('SettingsPage uninstall confirmation', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
 
@@ -4206,7 +4040,9 @@ describe('SettingsPage Codex framework', () => {
       agentFrameworkId: 'codex',
       activeProviderReady: false
     })
-    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () =>
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+    )
     await openAgentPanel()
     expect(document.body.textContent).not.toContain('Codex CLI Unknown')
   })
@@ -4245,7 +4081,9 @@ describe('SettingsPage Codex framework', () => {
         agentFrameworkId: 'codex',
         activeProviderReady: false
       })
-      await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+      await act(async () =>
+        root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
+      )
       await openAgentPanel()
       const update = document.body.querySelector<HTMLButtonElement>('[aria-label="Update Codex"]')
       expect(Boolean(update)).toBe(expected)
@@ -4298,7 +4136,7 @@ describe('SettingsPage Codex framework', () => {
     useSettingsStore.setState({ checkEnvironment })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
 
@@ -4354,7 +4192,7 @@ describe('SettingsPage Codex framework', () => {
     useSettingsStore.setState({ checkEnvironment })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
 
@@ -4402,7 +4240,7 @@ describe('SettingsPage Codex framework', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
 
@@ -4442,7 +4280,7 @@ describe('SettingsPage Codex framework', () => {
     useSettingsStore.setState({ checkEnvironment })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
 
@@ -4501,7 +4339,7 @@ describe('SettingsPage Codex framework', () => {
     useSettingsStore.setState({ checkEnvironment })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
 
@@ -4555,7 +4393,7 @@ describe('SettingsPage Codex framework', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
 
@@ -4603,7 +4441,7 @@ describe('SettingsPage Codex framework', () => {
     api.settings.detectCodeBuddy = detectCodeBuddy
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
 
@@ -4653,17 +4491,17 @@ describe('SettingsPage Codex framework', () => {
     api.settings.detectCodeBuddy = detectCodeBuddy
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
     await waitFor(() => expect(detectCodeBuddy).toHaveBeenCalledOnce())
     expect(document.body.querySelector('[aria-label="Install CodeBuddy"]')).not.toBeNull()
 
     await act(async () => {
-      root.render(<SettingsPage open={false} onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open={false} onClose={vi.fn()} />)
     })
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
 
     await waitFor(() => expect(detectCodeBuddy).toHaveBeenCalledTimes(2))
@@ -4700,7 +4538,7 @@ describe('SettingsPage Codex framework', () => {
     })
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     await openAgentPanel()
 
@@ -4753,7 +4591,7 @@ describe('SettingsPage Codex framework', () => {
     api.settings.logoutIsolatedCodex = logoutIsolatedCodex
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     const signOut = document.body.querySelector<HTMLButtonElement>('[aria-label="Sign out"]')
     await act(async () => signOut?.click())
@@ -4803,7 +4641,7 @@ describe('SettingsPage Codex framework', () => {
     api.settings.logoutIsolatedCodex = logoutIsolatedCodex
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     const signOut = document.body.querySelector<HTMLButtonElement>('[aria-label="Sign out"]')
     await act(async () => signOut?.click())
@@ -4848,7 +4686,7 @@ describe('SettingsPage Codex framework', () => {
       .mockRejectedValue(new Error('The Codex adapter does not support authentication status.'))
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     const testLogin = document.body.querySelector<HTMLButtonElement>(
       '[aria-label="Check Codex login"]'
@@ -4893,14 +4731,14 @@ describe('SettingsPage Codex framework', () => {
     api.settings.cancelCodexLogin = vi.fn().mockResolvedValue(undefined)
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     const signIn = document.body.querySelector<HTMLButtonElement>('[aria-label="Sign in"]')
     await act(async () => signIn?.click())
     expect(document.body.querySelector('[aria-label="Cancel sign-in"]')).not.toBeNull()
 
     await act(async () => {
-      root.render(<SettingsPage open={false} onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open={false} onClose={vi.fn()} />)
     })
 
     expect(api.settings.cancelCodexLogin).toHaveBeenCalledOnce()
@@ -4934,7 +4772,7 @@ describe('SettingsPage Codex framework', () => {
       .mockRejectedValue(new Error('The Codex adapter failed to spawn.'))
 
     await act(async () => {
-      root.render(<SettingsPage open onClose={vi.fn()} />)
+      root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
     })
     const signIn = document.body.querySelector<HTMLButtonElement>('[aria-label="Sign in"]')
     await act(async () => signIn?.click())
@@ -4984,11 +4822,8 @@ describe('Skill editor leave protection', () => {
   }
 
   it.each([
-    'Back',
-    'Forward',
-    'breadcrumb',
+    'local return',
     'panel',
-    'search',
     'Cancel',
     'Close settings',
     'close pane',
@@ -4996,34 +4831,23 @@ describe('Skill editor leave protection', () => {
     'host navigation'
   ])('preserves a draft until discard is confirmed through %s', async (route) => {
     const { onClose, handle } = await mountEditor()
-    if (route === 'Forward') {
-      await act(async () => navButton('General')!.click())
-      await act(async () => field('Back').click())
-    }
     await edit()
     const leave = async (): Promise<void> => {
       await act(async () => {
-        if (route === 'breadcrumb') field('Back to skills').click()
+        if (route === 'local return') field('Back to skills').click()
         else if (route === 'panel') navButton('General')!.click()
-        else if (route === 'search') {
-          const search = field('Search settings')
-          search.focus()
-          fireEvent.change(search, { target: { value: 'language' } })
-        } else if (route === 'close pane') handle.current!.closeActivePane()
+        else if (route === 'close pane') handle.current!.closeActivePane()
         else if (route === 'host navigation') handle.current!.requestLeave(onClose)
         else if (route === 'external intent')
           useSettingsStore.getState().openSettingsToPanel('general')
         else if (route !== 'Cancel') field(route).click()
       })
       if (route === 'Cancel') await clickLabel('Cancel')
-      if (route === 'search')
-        await act(async () => fireEvent.keyDown(field('Search settings'), { key: 'Enter' }))
     }
     await leave()
     expect(confirmation()).not.toBeNull()
     expect(field('Skill body').value).toBe('Research instructions')
     expect(onClose).not.toHaveBeenCalled()
-    if (route === 'search') expect(field('Search settings').value).toBe('language')
     await clickLabel('Keep editing')
     expect(confirmation()).toBeNull()
     expect(field('Skill body').value).toBe('Research instructions')
@@ -5131,11 +4955,8 @@ describe('Provider editor leave protection', () => {
   }
 
   it.each([
-    'Back',
-    'Forward',
-    'breadcrumb',
+    'local return',
     'panel',
-    'search',
     'Cancel',
     'Close settings',
     'Escape',
@@ -5144,20 +4965,12 @@ describe('Provider editor leave protection', () => {
     'host navigation'
   ])('preserves provider edits until discard is confirmed through %s', async (route) => {
     const { onClose, handle } = await mountEditor()
-    if (route === 'Forward') {
-      await act(async () => navButton('General')!.click())
-      await act(async () => field('Back').click())
-    }
     act(edit)
     const leave = async (): Promise<void> => {
       await act(async () => {
-        if (route === 'breadcrumb') field('Back to model').click()
+        if (route === 'local return') field('Back to model').click()
         else if (route === 'panel') navButton('General')!.click()
-        else if (route === 'search') {
-          const search = field('Search settings')
-          search.focus()
-          fireEvent.change(search, { target: { value: 'language' } })
-        } else if (route === 'close pane') handle.current!.closeActivePane()
+        else if (route === 'close pane') handle.current!.closeActivePane()
         else if (route === 'host navigation') handle.current!.requestLeave(onClose)
         else if (route === 'external intent')
           useSettingsStore.getState().openSettingsToPanel('general')
@@ -5167,14 +4980,11 @@ describe('Provider editor leave protection', () => {
         } else if (route !== 'Cancel') field(route).click()
       })
       if (route === 'Cancel') await clickLabel('Cancel')
-      if (route === 'search')
-        await act(async () => fireEvent.keyDown(field('Search settings'), { key: 'Enter' }))
     }
     await leave()
     expect(confirmation()?.textContent).toContain('Your provider edits have not been saved.')
     expect(field('Provider name').value).toBe('Research endpoint draft')
     expect(onClose).not.toHaveBeenCalled()
-    if (route === 'search') expect(field('Search settings').value).toBe('language')
     await clickLabel('Keep editing')
     expect(confirmation()).toBeNull()
     expect(field('Provider name').value).toBe('Research endpoint draft')
@@ -5189,7 +4999,7 @@ describe('Provider editor leave protection', () => {
   it('protects a new provider draft and restores the requesting control focus', async () => {
     await mountEditor(true)
     act(edit)
-    const back = field('Back')
+    const back = field('Back to model')
     await act(async () => {
       back.focus()
       back.click()
@@ -5199,7 +5009,7 @@ describe('Provider editor leave protection', () => {
     expect(field('Provider name').value).toBe('Research endpoint draft')
     await act(async () => back.click())
     await clickLabel('Discard changes')
-    await act(async () => field('Forward').click())
+    await clickLabel('Add provider')
     expect(field('Provider name').value).toBe('Anthropic')
   })
 
@@ -5295,7 +5105,8 @@ describe('Provider editor leave protection', () => {
       expect(confirmation()).toBeNull()
       expect(field('Provider name')).toBeNull()
       expect(onClose).not.toHaveBeenCalled()
-      await act(async () => field('Back').click())
+      if (create) await clickLabel('Add provider')
+      else await act(async () => field('Edit').click())
       expect(field('Provider name').value).toBe(create ? 'Anthropic' : 'Messages gateway')
       expect(field('API key').value).toBe('')
     }
@@ -5385,7 +5196,7 @@ describe('Provider editor leave protection', () => {
         providers: [{ ...useSettingsStore.getState().providers[0], configRevision: 1 }]
       })
     )
-    await act(async () => field('Back').click())
+    await act(async () => field('Back to model').click())
     expect(confirmation()).not.toBeNull()
     await clickLabel('Keep editing')
     expect(field('Provider name').value).toBe('Research endpoint draft')
@@ -5432,7 +5243,7 @@ describe('Settings Compute completion navigation', () => {
       })
       const onClose = vi.fn()
       const render = (open: boolean): void =>
-        root.render(<SettingsPage open={open} onClose={onClose} />)
+        root.render(<SettingsPage ref={defaultSettingsRef} open={open} onClose={onClose} />)
       const click = async (label: string): Promise<void> => {
         const button = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
           (item) => item.textContent?.trim() === label
@@ -5461,9 +5272,8 @@ describe('Settings Compute completion navigation', () => {
         } else {
           await act(async () => navButton('General')!.click())
           if (location === 'returned') {
-            await act(async () =>
-              document.querySelector<HTMLButtonElement>('[aria-label="Back"]')!.click()
-            )
+            await act(async () => navButton('Compute')?.click())
+            await click('Add SSH host')
             act(() =>
               fireEvent.change(document.querySelector('#compute-alias')!, {
                 target: { value: 'new-draft' }

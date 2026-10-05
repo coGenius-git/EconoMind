@@ -224,7 +224,7 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
       items: string[]
       notes: string
     }): Promise<void> => {
-      const itemIds = (importResult?.imported ?? []).map((entry) => entry.itemId)
+      const itemIds = [...new Set((importResult?.imported ?? []).map((entry) => entry.itemId))]
       if (!itemIds.length) {
         setError(t('Import records before screening them.'))
         return
@@ -258,14 +258,18 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
     setSelected((current) => {
       const next = new Set(current)
       if (next.has(key)) next.delete(key)
-      else next.add(key)
+      else if (next.size < DISCOVERY_RESULT_LIMIT) next.add(key)
       return next
     })
   }, [])
 
   const selectAll = useCallback(
     (value: boolean): void => {
-      setSelected(value ? new Set(candidates.map((candidate) => candidate.key)) : new Set())
+      setSelected(
+        value
+          ? new Set(candidates.slice(0, DISCOVERY_RESULT_LIMIT).map((candidate) => candidate.key))
+          : new Set()
+      )
     },
     [candidates]
   )

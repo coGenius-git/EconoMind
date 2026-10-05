@@ -435,3 +435,24 @@ it('does not classify an unreadable protection receipt as standard mode', async 
     isWindowsProtectionConfigured('host.exe', 'installation', 'owner-root')
   ).rejects.toThrow('pending owned operation')
 })
+
+it('explains how to restore a missing Windows host without falling back to standard mode', async () => {
+  host.spawn.mockImplementationOnce(() => {
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough()
+    })
+    queueMicrotask(() =>
+      child.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }))
+    )
+    return child
+  })
+  await expect(
+    isWindowsProtectionConfigured(
+      'C:\\source\\notebook-appcontainer-host.exe',
+      'installation',
+      'owner-root'
+    )
+  ).rejects.toThrow('npm run build:notebook-host')
+  expect(host.spawn).toHaveBeenCalledOnce()
+})

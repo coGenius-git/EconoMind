@@ -156,13 +156,22 @@ const runCapture = (
     }
     child.stdout.setEncoding('utf8').on('data', (chunk: string) => (stdout += capture(chunk)))
     child.stderr.setEncoding('utf8').on('data', (chunk: string) => (stderr += capture(chunk)))
-    child.once('error', reject)
+    child.once('error', (error: NodeJS.ErrnoException) => {
+      reject(
+        error.code === 'ENOENT' && /notebook-appcontainer-host\.exe$/i.test(program)
+          ? new Error(windowsHostMissingMessage(program), { cause: error })
+          : error
+      )
+    })
     // Keep draining until the native host closes so it can finish its process-tree cleanup proof.
     child.once('close', (code) => {
       if (overflow) reject(new Error('Windows AppContainer output exceeded its buffer limit.'))
       else resolve({ code, stdout, stderr })
     })
   })
+
+const windowsHostMissingMessage = (hostPath: string): string =>
+  `Notebook Windows host is missing at ${hostPath}. In a source checkout, install Rust (MSVC) and Visual Studio C++ Build Tools, run "npm run build:notebook-host" from the repository root, then restart EconoMind. For an installed app, repair or reinstall EconoMind. See docs/DEPLOY.md. Notebook execution remains unavailable until the host is restored.`
 
 const readAppContainerStatus = async (
   hostPath: string,
@@ -297,7 +306,7 @@ const probeWindowsAppContainer = async (
   try {
     await access(hostPath, constants.X_OK)
   } catch {
-    return { warnings: [], errors: [`Notebook AppContainer host not executable at ${hostPath}`] }
+    return { warnings: [], errors: [windowsHostMissingMessage(hostPath)] }
   }
   try {
     const status = await readAppContainerStatus(hostPath, installationId, ownershipRoot)

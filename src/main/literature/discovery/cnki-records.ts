@@ -44,10 +44,11 @@ const RIS_TAGS: Readonly<
   UR: 'url',
   RT: 'type',
   LA: 'language',
-  PB: 'publisher'
+  PB: 'publisher',
+  TY: 'type'
 }
 
-const ENDNOTE_TAGS: Readonly<Record<string, keyof (typeof RIS_TAGS)[keyof typeof RIS_TAGS]>> = {
+const ENDNOTE_TAGS: Readonly<Record<string, (typeof RIS_TAGS)[keyof typeof RIS_TAGS]>> = {
   '%T': 'title',
   '%A': 'authors',
   '%J': 'venue',
@@ -116,8 +117,13 @@ function splitRecords(text: string, format: CnkiRecordFormat): string[][] {
   const records: string[][] = []
   let current: string[] = []
   const isStart = (line: string): boolean =>
-    format === 'endnote' ? /^%0\s+\S/u.test(line.trim()) : /^RT\s+\S/u.test(line.trim())
+    format === 'endnote' ? /^%0\s+\S/u.test(line.trim()) : /^(?:RT|TY)\s+\S/u.test(line.trim())
   for (const line of lines) {
+    if (format === 'ris' && /^ER\s+-/u.test(line.trim())) {
+      if (current.length) records.push(current)
+      current = []
+      continue
+    }
     if (isStart(line)) {
       if (current.length) records.push(current)
       current = [line]
@@ -145,7 +151,7 @@ function buildCandidate(
   for (const line of record) {
     // Both formats continue a tag on lines that start with whitespace.
     const continuation = /^\s+/u.test(line) && !/^\s*[A-Z%]/u.test(line)
-    const match = /^\s*([A-Z][0-9A-Z]|%[0-9A-Z])\s+([\s\S]*)$/u.exec(line)
+    const match = /^\s*([A-Z][0-9A-Z]|%[0-9A-Z])\s+(?:-\s+)?([\s\S]*)$/u.exec(line)
     if (!match) {
       if (continuation) {
         const keys = Object.keys(raw)
@@ -160,24 +166,30 @@ function buildCandidate(
     raw[field] = [...(raw[field] ?? []), value.trim()]
   }
   const join = (field: string): string => (raw[field] ?? []).join(' ').trim()
-  const title = join('title')
+  const title = join('title').slice(0, 2000)
   if (!title) return undefined
   const authors = (raw.authors ?? [])
-    .map((value) => value.replace(/\s*;\s*$/u, '').trim())
+    .map((value) =>
+      value
+        .replace(/\s*;\s*$/u, '')
+        .trim()
+        .slice(0, 300)
+    )
     .filter(Boolean)
+    .slice(0, 100)
   const typeValue = join('type')
-  const abstract = join('abstract')
-  const doi = normalizeDoi(join('doi'))
-  const url = join('url')
+  const abstract = join('abstract').slice(0, 20_000)
+  const doi = normalizeDoi(join('doi')).slice(0, 300)
+  const url = join('url').slice(0, 2000)
   const year = parseYear(join('year'))
   return {
     key: keyFor([title, String(year ?? ''), authors[0] ?? '']),
     source: 'cnki',
-    externalId: doi || url || title,
+    externalId: (doi || url || title).slice(0, 512),
     title,
     authors,
     year,
-    venue: join('venue'),
+    venue: join('venue').slice(0, 1000),
     documentType: mapType(typeValue, join('publisher')),
     doi,
     url: url || (doi ? `https://doi.org/${doi}` : ''),
@@ -204,6 +216,10 @@ export function parseCnkiRecords(text: string): CnkiParseResult {
   const seen = new Set<string>()
   let skipped = 0
   for (const record of splitRecords(text, format)) {
+    if (candidates.length >= 1000) {
+      errors.push('Only the first 1000 records were parsed.')
+      break
+    }
     const candidate = buildCandidate(record, format)
     if (!candidate) {
       skipped += 1

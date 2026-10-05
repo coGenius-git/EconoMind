@@ -284,6 +284,10 @@ export function LiteratureDiscoveryPanel({
                         type="checkbox"
                         aria-label={candidate.title}
                         checked={discovery.selected.has(candidate.key)}
+                        disabled={
+                          !discovery.selected.has(candidate.key) &&
+                          discovery.selected.size >= DISCOVERY_RESULT_LIMIT
+                        }
                         onChange={() => discovery.toggleSelection(candidate.key)}
                       />
                     </td>

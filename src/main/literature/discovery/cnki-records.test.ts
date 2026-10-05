@@ -34,6 +34,16 @@ const ENDNOTE_EXPORT = [
 ].join('\n')
 
 describe('parseCnkiRecords', () => {
+  it('reads standard RIS separators and record boundaries without merging papers', () => {
+    const result = parseCnkiRecords(
+      'TY  - JOUR\nTI  - First paper\nAU  - Ada Lovelace\nPY  - 2023\nER  -\nTY  - JOUR\nTI  - Second paper\nER  -'
+    )
+    expect(result.candidates.map((candidate) => candidate.title)).toEqual([
+      'First paper',
+      'Second paper'
+    ])
+    expect(result.candidates[0].authors).toEqual(['Ada Lovelace'])
+  })
   it('reads a RefWorks/RIS export into candidates with CNKI metadata', () => {
     const result = parseCnkiRecords(RIS_EXPORT)
     expect(result.format).toBe('ris')

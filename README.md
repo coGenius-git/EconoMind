@@ -16,6 +16,7 @@
 | Node.js                        | **24.x**，与 `.nvmrc` 一致；本次验证使用 npm **11.x**      | `node --version`、`npm --version` |
 | Python                         | 本机模块编译需要 Python 3，建议 3.12                       | `py -3 --version`                 |
 | Visual Studio Build Tools 2022 | 勾选“使用 C++ 的桌面开发”，包括 MSVC v143 与 Windows SDK   | 安装后重新打开终端                |
+| Rust（Windows MSVC 工具链）    | 编译 Notebook 的 Windows 沙箱宿主；从 Rust 官方安装器安装  | `cargo --version`、`rustup show`  |
 
 依赖安装会下载 Electron、生成 Prisma Client、应用仓库补丁并编译本机模块。需要能访问 npm、GitHub 和相关依赖下载服务，首次安装可能需要几分钟。
 
@@ -27,10 +28,13 @@
 git clone https://github.com/coGenius-git/EconoMind.git
 cd EconoMind
 npm ci
+npm run build:notebook-host
 npm run dev:isolated
 ```
 
 `npm ci` 使用锁文件中的依赖版本，不要用 `--ignore-scripts` 跳过安装步骤。出现 **EconoMind (DEV)** 开发窗口后，按向导设置模型。打开界面无需先把 API Key 写入代码；实际模型任务需要在软件设置中配置有效凭据。
+
+Windows 全新克隆后须额外执行 `npm run build:notebook-host`：`npm ci` 不会编译 Rust 宿主，生成的 `packages/notebook-network-sandbox/vendor/windows/x64/notebook-appcontainer-host.exe`（ARM64 对应 `arm64/`）已被 Git 忽略。缺少该文件时仍可浏览文献和使用聊天，但 Notebook/命令行执行不可用；软件会提示构建方法。Rust 宿主源码更新后需要重新构建。详见 [Windows Notebook 开发准备](docs/DEPLOY.md#windows-notebook-开发准备)。
 
 `dev:isolated` 自动把开发配置、数据库、文献与会话保存到已忽略的 `.dev-isolate/`，并允许与安装版并行运行。关闭窗口后用 `Ctrl+C` 结束开发进程。下次启动继续使用相同数据；**不要删除 `.dev-isolate/` 来更新源码**。
 
