@@ -1143,6 +1143,17 @@ class ElectronAppHarness implements ElectronApp {
     await expect.poll(() => this.mainWindowState()).toMatchObject({ visible: true })
   }
 
+  async focusMainWindow(): Promise<void> {
+    await this.runningApplication.evaluate(({ BrowserWindow }) => {
+      const mainWindow = BrowserWindow.getAllWindows().find(
+        (window) => !window.webContents.getURL().includes('window=settings')
+      )
+      if (!mainWindow) throw new Error('EconoMind main window was not found.')
+      mainWindow.show()
+      mainWindow.focus()
+    })
+  }
+
   async setMainWindowSize(width: number, height: number): Promise<void> {
     await this.runningApplication.evaluate(
       ({ BrowserWindow }, { width, height }) => {

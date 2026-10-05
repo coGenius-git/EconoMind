@@ -11,6 +11,7 @@ type SettingsWindowController = {
   takeRoute: (event: IpcMainInvokeEvent) => string | undefined
   navigateMain: (event: IpcMainInvokeEvent, request: SettingsWindowNavigation) => void
   confirmClose: (event: IpcMainInvokeEvent) => void
+  isFocused: (event: IpcMainInvokeEvent) => boolean
 }
 
 export const createSettingsWindowController = (
@@ -21,6 +22,13 @@ export const createSettingsWindowController = (
   let owner: BrowserWindow | undefined
   let pendingRoute: string | undefined
   const confirmedCloses = new WeakSet<BrowserWindow>()
+  let settingsFocused = false
+  const notifyFocus = (focused: boolean): void => {
+    if (settingsFocused === focused) return
+    settingsFocused = focused
+    if (owner && !owner.isDestroyed())
+      owner.webContents.send('window:settings-focus-changed', focused)
+  }
 
   return {
     open: async (event: IpcMainInvokeEvent, route?: string): Promise<void> => {
@@ -28,13 +36,21 @@ export const createSettingsWindowController = (
       if (!source || source.isDestroyed()) return
       if (route !== undefined && !parseSettingsWindowRoute(route))
         throw new Error('Invalid Settings route')
-      if (source !== settingsWindow) owner = source
+      if (source !== settingsWindow && source !== owner) {
+        notifyFocus(false)
+        owner = source
+      }
       if (route !== undefined) pendingRoute = route
       if (!settingsWindow || settingsWindow.isDestroyed()) {
         opening ??= deps
           .createWindow()
           .then((window) => {
             settingsWindow = window
+            window.on('focus', () => notifyFocus(true))
+            window.on('blur', () => notifyFocus(false))
+            window.on('hide', () => notifyFocus(false))
+            window.on('minimize', () => notifyFocus(false))
+            window.webContents.on('render-process-gone', () => notifyFocus(false))
             window.on('close', (closeEvent) => {
               if (confirmedCloses.has(window)) return
               closeEvent.preventDefault()
@@ -42,6 +58,7 @@ export const createSettingsWindowController = (
             })
             window.on('closed', () => {
               if (settingsWindow !== window) return
+              notifyFocus(false)
               settingsWindow = undefined
               pendingRoute = undefined
             })
@@ -57,8 +74,10 @@ export const createSettingsWindowController = (
       if (window.isMinimized()) window.restore()
       window.show()
       window.focus()
+      notifyFocus(true)
       if (pendingRoute) window.webContents.send('window:settings-route', pendingRoute)
     },
+    isFocused: (event) => event.sender === owner?.webContents && settingsFocused,
     takeRoute: (event: IpcMainInvokeEvent): string | undefined => {
       if (event.sender !== settingsWindow?.webContents) return undefined
       const route = pendingRoute
@@ -121,6 +140,7 @@ export const registerSettingsWindowIpcHandlers = (): void => {
   })
   ipcMainHandle('window:open-settings', (event, route?: string) => controller.open(event, route))
   ipcMainHandle('window:take-settings-route', (event) => controller.takeRoute(event))
+  ipcMainHandle('window:is-settings-focused', (event) => controller.isFocused(event))
   ipcMainHandle('window:confirm-settings-close', (event) => controller.confirmClose(event))
   ipcMainHandle('window:navigate-main', (event, request: SettingsWindowNavigation) =>
     controller.navigateMain(event, request)

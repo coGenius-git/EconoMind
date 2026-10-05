@@ -35,6 +35,12 @@
 }
 
 @layer components {
+  .research-settings-focus-backdrop {
+    background: rgb(71 93 112 / 0.16);
+    -webkit-backdrop-filter: blur(14px) saturate(0.78);
+    backdrop-filter: blur(14px) saturate(0.78);
+  }
+
   .research-page {
     background-color: #c4d0da;
     background-image: var(--research-atmosphere);
