@@ -60,12 +60,6 @@
     }
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .research-logo-flow {
-      display: none;
-    }
-  }
-
   .research-settings-focus-backdrop {
     background: rgb(71 93 112 / 0.16);
     -webkit-backdrop-filter: blur(14px) saturate(0.78);
