@@ -211,7 +211,11 @@ const EmptyConversationBanner = ({
       data-testid="empty-conversation-banner"
       className="pointer-events-none absolute inset-x-0 top-[42%] flex -translate-y-1/2 flex-col items-center gap-4 px-6 text-center"
     >
-      <AppLogo className="size-28 rounded-2xl object-contain md:size-32" aria-hidden="true" />
+      <AppLogo
+        transparent
+        className="research-starter-logo size-28 object-contain md:size-32"
+        aria-hidden="true"
+      />
       <div className="flex flex-col gap-2">
         <h2 className="text-balance text-lg font-normal text-text-000 md:text-xl">
           {researchTitle

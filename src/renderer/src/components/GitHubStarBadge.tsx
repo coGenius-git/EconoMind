@@ -68,13 +68,13 @@ const GitHubStarBadge = ({
   const badge = (
     <Button
       asChild
-      variant={variant === 'compact' ? 'ghost' : 'outline'}
+      variant={variant === 'home' ? 'outline' : 'ghost'}
       size="default"
       className={cn(
         variant === 'compact' && 'px-2 text-muted-foreground hover:bg-bg-300 hover:text-text-000',
         variant === 'home' && 'rounded-md px-2.5 [@media(pointer:coarse)]:h-11',
         variant === 'workspace' &&
-          'rounded-md border-border-200 bg-bg-000 px-2 text-text-100 hover:bg-bg-300 hover:text-text-000 [@media(pointer:coarse)]:h-11',
+          'rounded-md border-transparent bg-transparent px-2 text-text-100 hover:bg-bg-300 hover:text-text-000 [@media(pointer:coarse)]:h-11',
         className
       )}
     >

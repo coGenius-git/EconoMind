@@ -24,7 +24,7 @@ describe('EmptyConversationBanner', () => {
     expect(html).toContain('<img')
     expect(html).not.toContain('Analyze data')
     expect(html).not.toContain('Compare papers')
-    expect(html).toContain('class="size-28 rounded-2xl object-contain md:size-32"')
+    expect(html).toContain('class="research-starter-logo size-28 object-contain md:size-32"')
     expect(html).toContain('class="text-balance text-lg font-normal text-text-000 md:text-xl"')
     expect(html).toContain('class="text-xs text-text-100"')
   })

@@ -299,6 +299,7 @@
   }
 
   .research-settings-shell,
+  .research-discovery-dialog,
   .research-tool-shell {
     border-radius: 26px;
     overflow: hidden;
@@ -327,6 +328,16 @@
 
   .research-settings-toolbar {
     background: transparent;
+  }
+
+  .research-discovery-section {
+    border: 1px solid var(--research-glass-edge);
+    border-radius: 18px;
+    background: var(--research-panel-tint);
+  }
+
+  .research-discovery-results {
+    background: var(--research-paper);
   }
 
   /* Menus stay opaque; no extra filters are stacked over the active sheet. */

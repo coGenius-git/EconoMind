@@ -50,12 +50,13 @@ describe('settings navigation slice', () => {
     expect(takeSettingsReturnFocusTarget()).toBeNull()
   })
 
-  it('opens native Settings without locking the main renderer and forwards deep links', () => {
+  it('opens Settings in the main renderer and preserves its deep link', () => {
     const openSettings = vi.fn<(route?: string) => Promise<void>>(async () => undefined)
     vi.stubGlobal('window', { api: { window: { openSettings } }, location: { search: '' } })
     store.getState().openSettingsToSpecialist('expert-1')
-    expect(store.getState().isSettingsOpen).toBe(false)
-    expect(JSON.parse(openSettings.mock.calls[0][0]!)).toEqual({
+    expect(store.getState().isSettingsOpen).toBe(true)
+    expect(openSettings).not.toHaveBeenCalled()
+    expect(store.getState().pendingSettingsIntent?.route).toEqual({
       panel: 'specialists',
       view: { kind: 'edit', id: 'expert-1' }
     })
