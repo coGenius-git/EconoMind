@@ -109,7 +109,12 @@ export function SettingsWindow(): React.JSX.Element {
     )
   return (
     <>
-      <div aria-hidden="true" className="research-page pointer-events-none fixed inset-0" />
+      <div aria-hidden="true" className="research-page pointer-events-none fixed inset-0">
+        <div
+          data-slot="settings-window-glass"
+          className="research-glass absolute inset-0 border-0 shadow-none"
+        />
+      </div>
       {undoPortal.background}
       <SettingsPage
         ref={pageRef}

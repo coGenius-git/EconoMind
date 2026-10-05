@@ -349,6 +349,12 @@
   }
 
   /* Independent Settings uses the same atmosphere and glass as the main workspace. */
+  .research-settings-native {
+    background: transparent;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
   .research-settings-native .research-settings-content {
     background: var(--research-panel-tint);
     border: 1px solid var(--research-glass-edge);
