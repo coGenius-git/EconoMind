@@ -79,6 +79,9 @@ const loadRenderer = (window: BrowserWindow, query?: Record<string, string>): Pr
   return query ? window.loadFile(rendererEntry, { query }) : window.loadFile(rendererEntry)
 }
 
+const titleBarWindows = new WeakSet<BrowserWindow>()
+const isTitleBarWindow = (window: BrowserWindow): boolean => titleBarWindows.has(window)
+
 const createAppWindow = (options: BrowserWindowConstructorOptions): BrowserWindow => {
   const e2eWindowMode = process.env[E2E_WINDOW_MODE_ENV]
   const window = new BrowserWindow({
@@ -94,6 +97,8 @@ const createAppWindow = (options: BrowserWindowConstructorOptions): BrowserWindo
       ...options.webPreferences
     }
   })
+
+  if (process.platform === 'win32' && options.titleBarOverlay) titleBarWindows.add(window)
 
   window.on('ready-to-show', () => {
     if (e2eWindowMode === 'hidden') return
@@ -639,5 +644,12 @@ const createMainWindow = (
   return window
 }
 
-export { configureMainWindow, createMainWindow, isMainWindow, createAppWindow, loadRenderer }
+export {
+  configureMainWindow,
+  createMainWindow,
+  isMainWindow,
+  isTitleBarWindow,
+  createAppWindow,
+  loadRenderer
+}
 export type { MainWindowCloseOptions }

@@ -358,6 +358,7 @@ type ElectronApp = {
   restoreDelegatedHandoffCleanup: (childName: string) => Promise<void>
   emitPreviewContextMenuAtCssPoint: (point: { x: number; y: number }) => Promise<void>
   showMainWindow: () => Promise<void>
+  focusMainWindow: () => Promise<void>
   restart: (options?: { resourceProfilePhase?: string }) => Promise<Page>
   restartAfterCrash: (options?: { force?: boolean }) => Promise<Page>
   restartWithCorruptHistoricalSessionFile: (projectId: string) => Promise<Page>

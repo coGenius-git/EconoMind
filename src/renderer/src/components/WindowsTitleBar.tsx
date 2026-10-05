@@ -32,7 +32,12 @@ const colorToHex = (color: string): string => {
   )
 }
 
-const WindowsDesktopFrame = ({ children }: { children: ReactNode }): React.JSX.Element => {
+type WindowsTitleBarProps = { children: ReactNode; settings?: boolean }
+
+const WindowsDesktopFrame = ({
+  children,
+  settings = false
+}: WindowsTitleBarProps): React.JSX.Element => {
   const { t } = useTranslation()
   const [commands, setCommands] = useState<WindowsTitleBarCommands | null>(null)
   const commandsRef = useRef(commands)
@@ -47,12 +52,14 @@ const WindowsDesktopFrame = ({ children }: { children: ReactNode }): React.JSX.E
   const mounted = useRef(true)
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme)
   const scale = useInterfaceScaleStore((state) => state.scale)
-  const menus: ReadonlyArray<{ id: WindowsTitleBarMenu; label: string }> = [
-    { id: 'file', label: t('File') },
-    { id: 'edit', label: t('Edit') },
-    { id: 'view', label: t('View') },
-    { id: 'help', label: t('Help') }
-  ]
+  const menus: ReadonlyArray<{ id: WindowsTitleBarMenu; label: string }> = settings
+    ? []
+    : [
+        { id: 'file', label: t('File') },
+        { id: 'edit', label: t('Edit') },
+        { id: 'view', label: t('View') },
+        { id: 'help', label: t('Help') }
+      ]
 
   useLayoutEffect(() => {
     mounted.current = true
@@ -180,7 +187,7 @@ const WindowsDesktopFrame = ({ children }: { children: ReactNode }): React.JSX.E
   }
 
   useEffect(() => {
-    if (fullscreen) return
+    if (fullscreen || settings) return
     let altOnly = false
     const cancelAlt = (): void => {
       altOnly = false
@@ -226,56 +233,62 @@ const WindowsDesktopFrame = ({ children }: { children: ReactNode }): React.JSX.E
       window.removeEventListener('keydown', focusFromShortcut)
       window.removeEventListener('blur', cancelAlt)
     }
-  }, [activeMenu, menuButtons, focusMenu, fullscreen])
+  }, [activeMenu, menuButtons, focusMenu, fullscreen, settings])
 
   return (
     <WindowsTitleBarContext.Provider value={setCommands}>
       <header
         ref={headerRef}
         hidden={fullscreen}
-        className="windows-titlebar bg-background text-foreground"
+        className={
+          settings
+            ? 'windows-titlebar research-settings-titlebar text-foreground'
+            : 'windows-titlebar bg-background text-foreground'
+        }
         data-testid="windows-titlebar"
       >
         <div className="windows-titlebar-safe-area">
           <div className="flex shrink-0 items-center gap-2 px-3 text-xs select-none">
-            <AppLogo alt="" className="size-4 object-contain" />
-            <span>{APP.name}</span>
+            <AppLogo transparent={settings} alt="" className="size-4 object-contain" />
+            <span>{settings ? `${APP.name} — ${t('Settings')}` : APP.name}</span>
           </div>
-          <nav
-            role="menubar"
-            aria-label={t('Application menu')}
-            className="windows-titlebar-menu flex items-center gap-0.5"
-          >
-            {menus.map(({ id, label }, index) => (
-              <button
-                key={id}
-                type="button"
-                role="menuitem"
-                aria-haspopup="menu"
-                aria-expanded={activeMenu === id}
-                tabIndex={focusedMenu === index ? 0 : -1}
-                className="h-7 rounded-md px-2.5 text-xs outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted"
-                onPointerDown={(event) => {
-                  // Mouse menus preserve the editor's focus/selection; native Menu owns its popup.
-                  if (!menuButtons().includes(document.activeElement as HTMLElement)) {
-                    previousFocus.current = document.activeElement as HTMLElement | null
-                  }
-                  event.preventDefault()
-                }}
-                onFocus={(event) => {
-                  const target = event.relatedTarget
-                  if (target instanceof HTMLElement && !menuButtons().includes(target)) {
-                    previousFocus.current = target
-                  }
-                  setFocusedMenu(index)
-                }}
-                onKeyDown={(event) => onMenuKeyDown(event, index)}
-                onClick={(event) => requestMenu(id, event.currentTarget)}
-              >
-                {label}
-              </button>
-            ))}
-          </nav>
+          {!settings ? (
+            <nav
+              role="menubar"
+              aria-label={t('Application menu')}
+              className="windows-titlebar-menu flex items-center gap-0.5"
+            >
+              {menus.map(({ id, label }, index) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="menuitem"
+                  aria-haspopup="menu"
+                  aria-expanded={activeMenu === id}
+                  tabIndex={focusedMenu === index ? 0 : -1}
+                  className="h-7 rounded-md px-2.5 text-xs outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted"
+                  onPointerDown={(event) => {
+                    // Mouse menus preserve the editor's focus/selection; native Menu owns its popup.
+                    if (!menuButtons().includes(document.activeElement as HTMLElement)) {
+                      previousFocus.current = document.activeElement as HTMLElement | null
+                    }
+                    event.preventDefault()
+                  }}
+                  onFocus={(event) => {
+                    const target = event.relatedTarget
+                    if (target instanceof HTMLElement && !menuButtons().includes(target)) {
+                      previousFocus.current = target
+                    }
+                    setFocusedMenu(index)
+                  }}
+                  onKeyDown={(event) => onMenuKeyDown(event, index)}
+                  onClick={(event) => requestMenu(id, event.currentTarget)}
+                >
+                  {label}
+                </button>
+              ))}
+            </nav>
+          ) : null}
         </div>
       </header>
       <div className="windows-app-content">{children}</div>
@@ -283,12 +296,15 @@ const WindowsDesktopFrame = ({ children }: { children: ReactNode }): React.JSX.E
   )
 }
 
-export const WindowsTitleBar = ({ children }: { children: ReactNode }): React.JSX.Element =>
+export const WindowsTitleBar = ({
+  children,
+  settings = false
+}: WindowsTitleBarProps): React.JSX.Element =>
   window.api?.platform === 'win32' &&
   isDesktopRenderer() &&
   typeof window.api.window.showTitleBarMenu === 'function' &&
   typeof window.api.window.updateTitleBar === 'function' ? (
-    <WindowsDesktopFrame>{children}</WindowsDesktopFrame>
+    <WindowsDesktopFrame settings={settings}>{children}</WindowsDesktopFrame>
   ) : (
     <>{children}</>
   )

@@ -20,6 +20,7 @@ import { applyInterfaceScaleShortcut } from './window-shortcuts'
 
 type TitleBarDeps = {
   isMainWindow: (window: BrowserWindow) => boolean
+  isTitleBarWindow?: (window: BrowserWindow) => boolean
   platform?: string
   resolveWindow?: (event: IpcMainInvokeEvent) => BrowserWindow | null
 }
@@ -56,20 +57,21 @@ const isAppearance = (value: unknown): value is WindowsTitleBarAppearance => {
 }
 
 // Native popups preserve the editing target while the renderer supplies the title-bar buttons.
-// Resolve all native effects against the invoking main window, never whichever window is focused.
+// Resolve native effects against the invoking window, never whichever window is focused.
 export const registerWindowsTitleBarIpc = ({
   isMainWindow,
+  isTitleBarWindow = isMainWindow,
   platform = process.platform,
   resolveWindow = (event) => BrowserWindow.fromWebContents(event.sender)
 }: TitleBarDeps): void => {
   if (platform !== 'win32') return
   const log = createLogger('windows-titlebar')
   const pending = new Set<BrowserWindow>()
-  const ownerFor = (event: IpcMainInvokeEvent): BrowserWindow | null => {
+  const ownerFor = (event: IpcMainInvokeEvent, appearanceOnly = false): BrowserWindow | null => {
     const window = resolveWindow(event)
     return window &&
       !window.isDestroyed() &&
-      isMainWindow(window) &&
+      (appearanceOnly ? isTitleBarWindow(window) : isMainWindow(window)) &&
       event.sender === window.webContents &&
       event.senderFrame === window.webContents.mainFrame
       ? window
@@ -78,11 +80,11 @@ export const registerWindowsTitleBarIpc = ({
 
   ipcMainHandle(
     'window:is-full-screen',
-    (event): boolean => ownerFor(event)?.isFullScreen() ?? false
+    (event): boolean => ownerFor(event, true)?.isFullScreen() ?? false
   )
 
   ipcMainHandle('window:update-titlebar', (event, appearance: unknown): void => {
-    const window = ownerFor(event)
+    const window = ownerFor(event, true)
     if (!window || !isAppearance(appearance)) return
     window.setTitleBarOverlay({
       ...appearance,

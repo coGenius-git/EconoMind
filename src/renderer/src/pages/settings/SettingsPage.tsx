@@ -1177,7 +1177,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
             className={cn(
               'research-settings-shell research-glass pointer-events-auto fixed z-50 flex overflow-hidden overscroll-contain text-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:fill-mode-forwards motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none',
               standalone
-                ? 'research-settings-native inset-0 h-dvh w-screen rounded-none border-0 shadow-none'
+                ? 'research-settings-native inset-x-0 bottom-0 top-[var(--windows-titlebar-height,0px)] h-[calc(100dvh-var(--windows-titlebar-height,0px))] w-screen rounded-none border-0 shadow-none'
                 : 'inset-0 h-[100dvh] w-screen max-md:rounded-none md:bottom-auto md:left-1/2 md:right-auto md:top-1/2 md:h-[min(688px,calc(100vh-2rem))] md:w-[min(960px,calc(100vw-2rem))] md:-translate-x-1/2 md:-translate-y-1/2'
             )}
           >

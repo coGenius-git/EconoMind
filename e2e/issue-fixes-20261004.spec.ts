@@ -79,6 +79,17 @@ test('opens one independent Settings window while the main Library remains inter
   const settings = settingsPage.getByRole('dialog', { name: 'Settings', exact: true })
   await expect(settings).toBeVisible()
   const backdrop = page.locator('[data-slot="settings-window-backdrop"]')
+  if (await settingsPage.evaluate(() => window.api.platform === 'win32')) {
+    const titlebar = settingsPage.getByTestId('windows-titlebar')
+    await expect(titlebar).toBeVisible()
+    await expect(titlebar).toContainText('EconoMind — Settings')
+    expect(await titlebar.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(
+      'rgba(0, 0, 0, 0)'
+    )
+    const header = await titlebar.boundingBox()
+    const surface = await settings.locator('[data-slot="settings-surface"]').boundingBox()
+    expect(surface!.y).toBeGreaterThanOrEqual(header!.y + header!.height)
+  }
   await expect(backdrop).toBeVisible()
   expect(await backdrop.evaluate((element) => getComputedStyle(element).backdropFilter)).toContain(
     'blur('

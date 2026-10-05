@@ -1,6 +1,7 @@
 import { BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import { ipcMainHandle } from './ipc-handler-registry'
 import { parseSettingsWindowRoute, type SettingsWindowNavigation } from '../shared/settings-window'
+import { WINDOWS_TITLEBAR_HEIGHT } from '../shared/window-controls'
 
 type SettingsWindowDeps = {
   createWindow: () => Promise<BrowserWindow>
@@ -126,9 +127,23 @@ export const registerSettingsWindowIpcHandlers = (): void => {
         minWidth: 720,
         minHeight: 540,
         title: 'EconoMind',
-        modal: false
+        modal: false,
+        ...(process.platform === 'win32'
+          ? {
+              titleBarStyle: 'hidden',
+              titleBarOverlay: { height: WINDOWS_TITLEBAR_HEIGHT, color: '#00000000' }
+            }
+          : {})
       })
       window.removeMenu()
+      if (process.platform === 'win32') {
+        window.on('enter-full-screen', () =>
+          window.webContents.send('window:full-screen-changed', true)
+        )
+        window.on('leave-full-screen', () =>
+          window.webContents.send('window:full-screen-changed', false)
+        )
+      }
       try {
         await loadRenderer(window, { window: 'settings' })
         return window
