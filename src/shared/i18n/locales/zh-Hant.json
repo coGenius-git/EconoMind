@@ -6781,6 +6781,7 @@
     "Open source page": "開啟來源頁",
     "Imported records live in your library: open one there to look for its open-access full text.": "匯入的文獻已存入文獻庫：在文獻庫打開該筆，即可查找其開放取用全文。",
     "Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.": "備用方式：在知網勾選文獻後匯出為 RefWorks 或 EndNote 檔案，再回到此處匯入該檔案。（RefWorks/EndNote 是知網提供的兩種題錄格式，選任一種即可，無需安裝任何軟體。）",
-    "(Close the tab when you are done.)": "（登入完成後請關閉分頁）"
+    "(Close the tab when you are done.)": "（登入完成後請關閉分頁）",
+    "OpenAlex results include only records whose full text can be retrieved.": "OpenAlex 僅傳回可取得全文的文獻。"
   }
 }

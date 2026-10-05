@@ -6940,6 +6940,7 @@
     "Open source page": "Quellseite öffnen",
     "Imported records live in your library: open one there to look for its open-access full text.": "Importierte Einträge liegen in Ihrer Bibliothek: Öffnen Sie dort einen Eintrag, um nach dem frei zugänglichen Volltext zu suchen.",
     "Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.": "Ersatzweg: Exportieren Sie die ausgewählten Referenzen in CNKI als RefWorks- oder EndNote-Datei und importieren Sie diese Datei anschließend hier.",
-    "(Close the tab when you are done.)": "(Schließen Sie den Tab, wenn Sie fertig sind.)"
+    "(Close the tab when you are done.)": "(Schließen Sie den Tab, wenn Sie fertig sind.)",
+    "OpenAlex results include only records whose full text can be retrieved.": "OpenAlex liefert nur Einträge, deren Volltext abrufbar ist."
   }
 }

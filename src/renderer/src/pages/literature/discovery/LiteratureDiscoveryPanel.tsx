@@ -168,6 +168,11 @@ export function LiteratureDiscoveryPanel({
             ))}
             <span className="text-xs text-muted-foreground">{t('Searched online')}</span>
           </div>
+          {discovery.form.sources.includes('openalex') ? (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {t('OpenAlex results include only records whose full text can be retrieved.')}
+            </p>
+          ) : null}
           {discovery.form.sources.includes('cnki') ? (
             <div className="flex flex-wrap items-center gap-3">
               <Badge variant={discovery.cnkiSignedIn ? 'default' : 'secondary'}>

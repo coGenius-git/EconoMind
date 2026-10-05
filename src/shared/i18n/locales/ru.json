@@ -7245,6 +7245,7 @@
     "Open source page": "Открыть страницу источника",
     "Imported records live in your library: open one there to look for its open-access full text.": "Импортированные записи находятся в вашей библиотеке: откройте запись там, чтобы найти полнотекстовую версию в открытом доступе.",
     "Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.": "Запасной путь: экспортируйте выбранные ссылки из CNKI в файл RefWorks или EndNote, затем импортируйте этот файл здесь.",
-    "(Close the tab when you are done.)": "(Закройте вкладку, когда закончите.)"
+    "(Close the tab when you are done.)": "(Закройте вкладку, когда закончите.)",
+    "OpenAlex results include only records whose full text can be retrieved.": "OpenAlex возвращает только записи, полный текст которых доступен."
   }
 }

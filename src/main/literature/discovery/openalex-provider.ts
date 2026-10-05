@@ -227,6 +227,15 @@ export async function searchOpenAlex(
         if (!title) continue
         const documentType = mapDocumentType(work.type)
         if (query.documentTypes.length && !query.documentTypes.includes(documentType)) continue
+        // Only records whose full text is reachable are kept. A result without an accessible copy
+        // cannot be screened against inclusion criteria or read afterwards, so it is dropped here
+        // instead of being listed and discarded by hand in the next step. The PDF location is
+        // preferred; the general open-access link is accepted as a fallback because it usually
+        // resolves to the PDF (or to a landing page that offers it).
+        const pdfUrl = work.best_oa_location?.pdf_url?.trim() || null
+        const openAccessUrl = work.open_access?.oa_url?.trim() || null
+        const fullTextUrl = pdfUrl ?? openAccessUrl
+        if (!fullTextUrl) continue
         const isOa = work.open_access?.is_oa === true || work.best_oa_location?.is_oa === true
         const tiers: DiscoverySourceTier[] = []
         if (isOa) tiers.push('open-access')
@@ -247,8 +256,7 @@ export async function searchOpenAlex(
           abstract: restoreAbstract(work.abstract_inverted_index),
           citationCount: work.cited_by_count ?? null,
           sourceTiers: tiers,
-          openAccessPdfUrl:
-            work.best_oa_location?.pdf_url?.trim() || work.open_access?.oa_url?.trim() || null
+          openAccessPdfUrl: fullTextUrl
         })
       }
       if (payload.results.length < 25) break
