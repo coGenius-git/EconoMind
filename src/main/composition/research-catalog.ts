@@ -1,3 +1,7 @@
+import {
+  composeLiteratureDiscovery,
+  type LiteratureDiscoveryCapability
+} from './literature-discovery'
 import { composeLiteratureScreening } from './literature-screening'
 import type { LiteratureAttachmentAuthority } from '../literature/attachment-authority'
 import type { LiteratureScreeningWorkflows } from '../literature/screening-workflows'
@@ -86,6 +90,7 @@ export async function composeResearchCatalog({
   literaturePdfImporter: LiteraturePdfImporter
   literaturePdfAcquisition: AgentPdfAcquisition
   literatureBatchJobs: LiteratureBatchJobs
+  literatureDiscovery: LiteratureDiscoveryCapability
   removeResourceTagsOrThrow: (
     resources: Parameters<TagService['removeResources']>[0]
   ) => Promise<void>
@@ -229,6 +234,11 @@ export async function composeResearchCatalog({
     getProjectName,
     modules
   })
+  const literatureDiscovery = await composeLiteratureDiscovery({
+    settingsService,
+    literatureCatalog,
+    modules
+  })
   const tagCleanupLog = createLogger('tags:cleanup')
   const removeResourceTagsOrThrow = async (
     resources: Parameters<TagService['removeResources']>[0]
@@ -257,6 +267,7 @@ export async function composeResearchCatalog({
     literaturePdfImporter,
     literaturePdfAcquisition,
     literatureBatchJobs,
+    literatureDiscovery,
     removeResourceTagsOrThrow,
     removeResourceTags
   }

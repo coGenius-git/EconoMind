@@ -20,6 +20,19 @@ import {
   type LiteratureJobsResult
 } from '../../shared/literature-jobs'
 import {
+  literatureDiscoveryContracts,
+  type DiscoveryImportRequest,
+  type DiscoveryImportResult,
+  type DiscoveryQuery,
+  type DiscoveryScreenRequest,
+  type DiscoveryScreenResult,
+  type DiscoverySearchResponse,
+  type DiscoveryParseRecordsRequest,
+  type DiscoveryParseRecordsResult,
+  type DiscoverySignInResponse,
+  type DiscoverySourceId
+} from '../../shared/literature-discovery'
+import {
   literatureApplicationCommandContracts,
   type LiteratureFullTextRequest,
   type LiteratureFullTextResult,
@@ -76,6 +89,16 @@ type LiteratureCommandOwner = Readonly<{
   ): Promise<LiteraturePdfImportReceipt>
   cancelPdfImport(request: LiteraturePdfCancelImportRequest): { cancelled: boolean }
   transact(command: LiteratureCatalogCommand): Promise<LiteratureCatalogReceipt>
+  discoverySearch(request: DiscoveryQuery, signal?: AbortSignal): Promise<DiscoverySearchResponse>
+  discoveryImport(request: DiscoveryImportRequest): Promise<DiscoveryImportResult>
+  discoveryScreen(
+    request: DiscoveryScreenRequest,
+    signal?: AbortSignal
+  ): Promise<DiscoveryScreenResult>
+  discoveryParseRecords(request: DiscoveryParseRecordsRequest): DiscoveryParseRecordsResult
+  discoverySignIn(source: DiscoverySourceId): Promise<DiscoverySignInResponse>
+  discoverySignOut(source: DiscoverySourceId): Promise<DiscoverySignInResponse>
+  discoveryStatus(source: DiscoverySourceId): Promise<DiscoverySignInResponse>
 }>
 
 const literatureApplicationCommands = Object.freeze({
@@ -163,7 +186,42 @@ const literatureApplicationCommands = Object.freeze({
     'literature:transact',
     readonly [LiteratureCatalogCommand],
     LiteratureCatalogReceipt
-  >('literature:transact', literatureApplicationCommandContracts.transact)
+  >('literature:transact', literatureApplicationCommandContracts.transact),
+  discoverySearch: defineApplicationCommand<
+    'literature:discovery-search',
+    readonly [DiscoveryQuery],
+    DiscoverySearchResponse
+  >('literature:discovery-search', literatureDiscoveryContracts.search),
+  discoveryImport: defineApplicationCommand<
+    'literature:discovery-import',
+    readonly [DiscoveryImportRequest],
+    DiscoveryImportResult
+  >('literature:discovery-import', literatureDiscoveryContracts.import),
+  discoveryScreen: defineApplicationCommand<
+    'literature:discovery-screen',
+    readonly [DiscoveryScreenRequest],
+    DiscoveryScreenResult
+  >('literature:discovery-screen', literatureDiscoveryContracts.screen),
+  discoveryParseRecords: defineApplicationCommand<
+    'literature:discovery-parse-records',
+    readonly [DiscoveryParseRecordsRequest],
+    DiscoveryParseRecordsResult
+  >('literature:discovery-parse-records', literatureDiscoveryContracts.parseRecords),
+  discoverySignIn: defineApplicationCommand<
+    'literature:discovery-sign-in',
+    readonly [DiscoverySourceId],
+    DiscoverySignInResponse
+  >('literature:discovery-sign-in', literatureDiscoveryContracts.signIn),
+  discoverySignOut: defineApplicationCommand<
+    'literature:discovery-sign-out',
+    readonly [DiscoverySourceId],
+    DiscoverySignInResponse
+  >('literature:discovery-sign-out', literatureDiscoveryContracts.signOut),
+  discoveryStatus: defineApplicationCommand<
+    'literature:discovery-status',
+    readonly [DiscoverySourceId],
+    DiscoverySignInResponse
+  >('literature:discovery-status', literatureDiscoveryContracts.status)
 })
 
 const literatureApplicationCommandGroup = defineApplicationCommandGroup('literature', [
@@ -183,7 +241,14 @@ const literatureApplicationCommandGroup = defineApplicationCommandGroup('literat
   literatureApplicationCommands.cancelPdfImport,
   literatureApplicationCommands.importRecords,
   literatureApplicationCommands.search,
-  literatureApplicationCommands.transact
+  literatureApplicationCommands.transact,
+  literatureApplicationCommands.discoverySearch,
+  literatureApplicationCommands.discoveryImport,
+  literatureApplicationCommands.discoveryScreen,
+  literatureApplicationCommands.discoveryParseRecords,
+  literatureApplicationCommands.discoverySignIn,
+  literatureApplicationCommands.discoverySignOut,
+  literatureApplicationCommands.discoveryStatus
 ] as const)
 
 const registerLiteratureApplicationCommands = (
@@ -217,7 +282,17 @@ const registerLiteratureApplicationCommands = (
       'literature:import-records': ({ args }) =>
         withDataRootWrite(() => owner.importRecords(args[0])),
       'literature:search': ({ args }) => withDataRootWrite(() => owner.search(args[0])),
-      'literature:transact': ({ args }) => withDataRootWrite(() => owner.transact(args[0]))
+      'literature:transact': ({ args }) => withDataRootWrite(() => owner.transact(args[0])),
+      'literature:discovery-search': ({ args, callerLease }) =>
+        owner.discoverySearch(args[0], callerLease.signal),
+      'literature:discovery-import': ({ args }) =>
+        withDataRootWrite(() => owner.discoveryImport(args[0])),
+      'literature:discovery-screen': ({ args, callerLease }) =>
+        owner.discoveryScreen(args[0], callerLease.signal),
+      'literature:discovery-parse-records': ({ args }) => owner.discoveryParseRecords(args[0]),
+      'literature:discovery-sign-in': ({ args }) => owner.discoverySignIn(args[0]),
+      'literature:discovery-sign-out': ({ args }) => owner.discoverySignOut(args[0]),
+      'literature:discovery-status': ({ args }) => owner.discoveryStatus(args[0])
     })
     return scope.complete()
   } catch (error) {

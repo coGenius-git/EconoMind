@@ -12,7 +12,7 @@ test('Settings workflow buttons open a draft in the main renderer', async ({ app
   await createProject(page, 'Settings workflow routing')
   for (const panel of ['Skills', 'Specialists'] as const) {
     const opened = page.context().waitForEvent('page')
-    await page.evaluate(() => window.api.window.openSettings())
+    await page.evaluate(() => window.api.window.openSettings!())
     const settingsPage = await opened
     const settings = settingsPage.getByRole('dialog', { name: 'Settings', exact: true })
     await settings

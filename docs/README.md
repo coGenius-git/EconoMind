@@ -7,6 +7,7 @@
 - [开发与贡献](../CONTRIBUTING.md)
 - [路线图](../ROADMAP.md)
 - [安全模型](security.md)与[问题反馈](../SECURITY.md)
+- [文献检索与初筛](literature-discovery.md)
 - [界面设计规范](design.md)
 - [翻译术语表](i18n-glossary.md)
 - [CLI/SDK 兼容包](../packages/open-science/package.json)

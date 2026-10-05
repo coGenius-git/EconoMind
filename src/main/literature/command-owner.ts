@@ -16,6 +16,7 @@ import type { LiteratureCitationDocument } from './citation-document'
 import type { LiteratureCatalog } from './catalog'
 import type { LiteraturePdfImporter } from './pdf-importer'
 import type { ContentRepository } from '../storage/content-repository'
+import type { LiteratureDiscoveryCapability } from '../composition/literature-discovery'
 
 type LiteratureCommandServices = Readonly<{
   screeningWorkflows: Pick<LiteratureScreeningWorkflows, 'run'>
@@ -53,6 +54,7 @@ type LiteratureCommandServices = Readonly<{
   >
   literaturePdfImporter: Pick<LiteraturePdfImporter, 'import' | 'cancelImport'>
   contentRepository: Pick<ContentRepository, 'sweep'>
+  literatureDiscovery: LiteratureDiscoveryCapability
 }>
 
 export const createLiteratureCommandOwner = ({
@@ -69,9 +71,26 @@ export const createLiteratureCommandOwner = ({
   literatureCitationDocument,
   literatureCatalog,
   literaturePdfImporter,
-  contentRepository
+  contentRepository,
+  literatureDiscovery
 }: LiteratureCommandServices): LiteratureCommandOwner => ({
   screening: (request) => screeningWorkflows.run(request),
+  discoverySearch: (request, signal) => literatureDiscovery.discovery.search(request, signal),
+  discoveryImport: (request) => literatureDiscovery.discovery.import(request),
+  discoveryScreen: (request, signal) => literatureDiscovery.discovery.screen(request, signal),
+  discoveryParseRecords: (request) => literatureDiscovery.discovery.parseRecords(request),
+  discoverySignIn: (source) =>
+    source === 'cnki'
+      ? literatureDiscovery.signInCnki()
+      : Promise.resolve({ signedIn: true, message: 'OpenAlex does not require a sign-in.' }),
+  discoverySignOut: (source) =>
+    source === 'cnki'
+      ? literatureDiscovery.signOutCnki()
+      : Promise.resolve({ signedIn: false, message: 'OpenAlex does not require a sign-in.' }),
+  discoveryStatus: (source) =>
+    source === 'cnki'
+      ? literatureDiscovery.getCnkiState()
+      : Promise.resolve({ signedIn: true, message: 'OpenAlex does not require a sign-in.' }),
   journals: (request) => journalAttributes.run(request),
   jobs: (request) => literatureBatchJobs.run(request),
   citationStyles: async (request) => {

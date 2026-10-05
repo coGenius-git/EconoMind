@@ -13,6 +13,7 @@ import {
   LibraryBig,
   PanelLeft,
   Plus,
+  Search,
   Trash2
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -50,6 +51,7 @@ type SidebarNavigation = {
   openCitationStyles: () => void
   openScreening: () => void
   openBibliometrics: () => void
+  openDiscovery: () => void
   screeningAvailable: boolean
 }
 
@@ -92,6 +94,7 @@ export function LiteratureLibrarySidebar({
     openCitationStyles,
     openScreening,
     openBibliometrics,
+    openDiscovery,
     screeningAvailable
   } = navigation
   const { inboxPendingCount, libraryCountRevision, projectItemCounts, duplicateCountRef } = counts
@@ -317,6 +320,20 @@ export function LiteratureLibrarySidebar({
                     >
                       <Funnel className="size-4" aria-hidden="true" />
                       {!sidebarCollapsed ? <span>{t('Literature screening')}</span> : null}
+                    </button>
+                  </LiteratureSidebarHint>
+                  <LiteratureSidebarHint
+                    label={t('Search external sources')}
+                    collapsed={sidebarCollapsed}
+                  >
+                    <button
+                      type="button"
+                      className={navButtonClassName}
+                      aria-label={t('Search external sources')}
+                      onClick={openDiscovery}
+                    >
+                      <Search className="size-4" aria-hidden="true" />
+                      {!sidebarCollapsed ? <span>{t('Search external sources')}</span> : null}
                     </button>
                   </LiteratureSidebarHint>
                   <LiteratureSidebarHint label={t('Bibliometrics')} collapsed={sidebarCollapsed}>
