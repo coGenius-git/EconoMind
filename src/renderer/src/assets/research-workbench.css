@@ -336,6 +336,17 @@
     background: transparent;
   }
 
+  /* Independent Settings uses the same atmosphere and glass as the main workspace. */
+  .research-settings-native .research-settings-content {
+    background: var(--research-panel-tint);
+    border: 1px solid var(--research-glass-edge);
+  }
+
+  :root:not(.dark) .research-settings-native {
+    --card: rgb(247 251 255 / 0.32);
+    --bg-000: rgb(247 251 255 / 0.32);
+  }
+
   .research-discovery-section {
     border: 1px solid var(--research-glass-edge);
     border-radius: 18px;
