@@ -98,8 +98,6 @@ const GENERATED_SOURCE_OMISSIONS = [
   'officePreview.reportState',
   'previewContextMenu.onRequested',
 
-
-
   'sessions.sendFlushResponse',
   'settings.exportCustomServerTemplate',
   'settings.exportSkill',
@@ -130,9 +128,6 @@ const GENERATED_SOURCE_OMISSIONS = [
   'specialist.exportSpecialist',
   'specialist.getHandoffEvents',
 
-
-
-
   'specialist.onHandoffLifecycleEvent',
 
   'specialist.onPendingSwitch',
@@ -150,9 +145,11 @@ const GENERATED_SOURCE_OMISSIONS = [
   'window.announceWindowFindContentReady',
   'window.announceWindowFindReady',
   'window.clearFind',
+  'window.confirmSettingsClose',
   'window.closeFind',
   'window.findInPage',
   'window.isFullScreen',
+  'window.navigateMain',
   'window.onCloseActivePane',
   'window.onCloseConfirmDismiss',
   'window.onCloseConfirmRequest',
@@ -161,11 +158,16 @@ const GENERATED_SOURCE_OMISSIONS = [
   'window.onFindInOffice',
   'window.onHideWindowFind',
   'window.onInterfaceScaleShortcut',
+  'window.onSettingsCloseRequest',
+  'window.onSettingsNavigation',
+  'window.onSettingsRoute',
   'window.onShowWindowFind',
   'window.onWindowFindAppearance',
+  'window.openSettings',
   'window.sendCloseConfirmResponse',
   'window.setZoomFactor',
   'window.showTitleBarMenu',
+  'window.takeSettingsRoute',
   'window.updateTitleBar'
 ] as const
 

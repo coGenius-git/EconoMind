@@ -11,7 +11,6 @@ import {
   Loader2,
   Archive,
   ArrowLeft,
-  ArrowRight,
   Bot,
   Brain,
   BrainCircuit,
@@ -20,10 +19,8 @@ import {
   Globe,
   KeyRound,
   LockKeyhole,
-  Maximize2,
   Menu,
   MessageSquare,
-  Minimize2,
   ScrollText,
   Settings2,
   TerminalSquare,
@@ -55,15 +52,13 @@ import {
   type UpsertProviderRequest
 } from '../../../../shared/settings'
 import { APP } from '../../../../shared/app-config'
-import type { SpecialistListItem } from '../../../../shared/specialist'
 import { Button } from '@/components/ui/button'
 import { ConfirmActionDialog } from '@/components/ui/confirm-action-dialog'
 import type { SkillEditorLeaveState } from './SkillEditor'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { useMediaQuery } from '@/hooks/useMediaQuery'
 import { cn } from '@/lib/utils'
 import type { SessionCatalogRecovery } from '@/lib/session-persistence/session-persistence'
-import { preloadComputeHosts, useComputeStore } from '@/stores/compute-store'
+import { preloadComputeHosts } from '@/stores/compute-store'
 import { useMemoryStore } from '@/stores/memory-store'
 import { useNavigationStore } from '@/stores/navigation-store'
 import { useProjectStore } from '@/stores/project-store'
@@ -113,7 +108,6 @@ import { SettingsPanelLoadingBoundary } from './SettingsPanelLoadingBoundary'
 import { localizeProviderResourceMessage } from './validation-message'
 import { ProviderTestResultCard } from './ProviderTestResultCard'
 import { loadSettingsPanel } from './settings-panel-loader'
-import { SettingsGlobalSearch } from './SettingsGlobalSearch'
 import type { SettingsWriteErrorCode } from '../../../../shared/settings'
 
 const AgentPanel = lazy(async () => ({ default: (await import('./AgentPanel')).AgentPanel }))
@@ -226,8 +220,11 @@ const TokenUsagePanel = lazy(async () => ({
 
 type SettingsPageProps = {
   open: boolean
+  standalone?: boolean
   onClose: () => void
   onOpenSession?: (sessionId: string) => void
+  onOpenProject?: (projectId: string) => void
+  onOpenLiteratureItem?: (itemId: string) => void
   canDeleteProjects?: boolean
   hasCompleteSessionCatalog?: boolean
   catalogRecovery?: SessionCatalogRecovery
@@ -291,7 +288,7 @@ type SettingsPanel = {
   Icon: React.ComponentType<{ className?: string }>
 }
 
-// The panels that can host a drilled-in sub-view, mapped from the capitalized name the breadcrumb
+// The panels that can host a drilled-in sub-view, mapped from the capitalized name the subpage
 // button shows to the lowercase form mid-sentence copy needs ("Back to skills"). English distinguishes
 // the two, Chinese does not, so they are separate catalog entries that resolve to the same translation.
 // Keyed rather than derived: the old code sliced a prefix off the key and cast the result, which hid
@@ -358,11 +355,6 @@ const SETTINGS_GROUPS: ReadonlyArray<SettingsGroup> = [
   }
 ]
 
-// Flattened panel list for lookups (header title, etc.).
-const SETTINGS_PANELS: ReadonlyArray<SettingsPanel> = SETTINGS_GROUPS.flatMap(
-  (group) => group.panels
-)
-
 // Display copy for the write-failure codes produced by settings-write-coordinator. Module-level
 // table of catalog keys (not resolved strings), resolved through t() at render time.
 const SETTINGS_WRITE_ERROR_COPY: Record<SettingsWriteErrorCode, string> = {
@@ -397,8 +389,11 @@ const PdfAnnotationPreviewDialog = lazy(() =>
 const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function SettingsPage(
   {
     open,
+    standalone = false,
     onClose,
     onOpenSession,
+    onOpenProject,
+    onOpenLiteratureItem,
     canDeleteProjects = true,
     hasCompleteSessionCatalog = true,
     catalogRecovery = { kind: 'ready' },
@@ -484,8 +479,8 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
     typeof window.api.settings.listAgentHomeSkills === 'function' &&
     typeof window.api.settings.importAgentHomeSkills === 'function'
 
-  // Settings navigation history (browser-like back/forward). Each entry contains only its active
-  // panel route, so unrelated panel views cannot form impossible combinations.
+  // Retain visited routes for closing nested panes and returning from credential creation.
+  // Each entry contains only its active panel route.
   const [history, setHistory] = useState<SettingsRoute[]>([INITIAL_SETTINGS_ROUTE])
   const [historyIndex, setHistoryIndex] = useState(0)
   const skillLeaveReturnFocus = useRef<HTMLElement | null>(null)
@@ -512,8 +507,6 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   }, [])
   const requestClose = (): void => requestLeave(onClose)
   const returnFocusRef = useRef<HTMLElement | null>(null)
-  // Whether the dialog is enlarged to near-fullscreen via the maximize control.
-  const [isExpanded, setIsExpanded] = useState(false)
   const isMobile = useMediaQuery('(max-width: 767px)')
   const [isMobileNavOpen, setIsMobileNavOpenState] = useState(false)
   const isMobileNavOpenRef = useRef(false)
@@ -527,11 +520,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   const mobileNavTriggerRef = useRef<HTMLButtonElement | null>(null)
   const mobileNavWasOpenRef = useRef(false)
   const codebuddyAutoDetectAttempted = useRef(false)
-  const skills = useSettingsStore((state) => state.skills)
-  const connectors = useSettingsStore((state) => state.connectors)
   const customServers = useSettingsStore((state) => state.customServers)
-  const deviceCredentials = useSettingsStore((state) => state.deviceCredentials)
-  const computeHosts = useComputeStore((state) => state.hosts)
   const specialistItems = useSpecialistStore((state) => state.items)
   const loadTags = useTagStore((state) => state.load)
   const listenForTagChanges = useTagStore((state) => state.listen)
@@ -718,13 +707,12 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         ? tagsView.tagId
         : undefined
   const canGoBack = historyIndex > 0
-  const canGoForward = historyIndex < history.length - 1
 
   useEffect(() => {
     if (activeTagId) setSelectedTagId(activeTagId)
   }, [activeTagId, setSelectedTagId])
 
-  // Pushes a complete active route, dropping any forward entries. Routes contain only serializable
+  // Track local route transitions for nested panes. Routes contain only serializable
   // navigation values, so comparing the whole route automatically covers fields added later.
   const navigate = (route: SettingsRoute, onNavigated?: () => void): void => {
     if (JSON.stringify(route) === JSON.stringify(currentRoute)) {
@@ -782,7 +770,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
     navigate({ panel: 'specialists', view: specialists })
 
   // Navigates within the network panel (package-mirror list vs. configure) as a history entry, so the
-  // configure form gets a proper "Network / Package mirror" breadcrumb + back/forward.
+  // configure form can return to the network list.
   const navigateNetwork = (network: NetworkView): void =>
     navigate({ panel: 'network', view: network })
 
@@ -800,185 +788,19 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   const navigateCredentials = (credentials: CredentialsView): void =>
     navigate({ panel: 'credentials', view: credentials })
 
-  // Shared header breadcrumb for a drilled-in sub-view (null when on a panel's list, so the plain
-  // panel title shows). Covers both the skills and model panels.
-  const breadcrumb = ((): {
-    rootLabelKey: DrillablePanelName
-    rootTo: SettingsRoute
-    parents?: ReadonlyArray<{
-      label: string
-      to: SettingsRoute
-      ariaLabel: string
-      onClick?: () => void
-    }>
-    leaf: string
-  } | null => {
-    if (activePanel === 'skills' && skillsView.kind !== 'list') {
-      const leaf =
-        skillsView.kind === 'create'
-          ? t('New skill')
-          : skillsView.kind === 'upload'
-            ? t('Upload skills')
-            : skillsView.kind === 'import'
-              ? t('Import from GitHub')
-              : skillsView.kind === 'import-agent-home'
-                ? t('Import installed skills')
-                : (() => {
-                    const name = skills.find((skill) => skill.id === skillsView.id)?.name ?? ''
-                    return skillsView.kind === 'edit' ? t('Edit {{name}}', { name }).trim() : name
-                  })()
-      return {
-        rootLabelKey: 'Skills',
-        rootTo: { panel: 'skills', view: { kind: 'list' } },
-        leaf
-      }
-    }
-    if (
-      activePanel === 'model' &&
-      (modelView.kind === 'classification-create' || modelView.kind === 'classification-edit')
-    )
-      return {
-        rootLabelKey: 'Model',
-        rootTo: { panel: 'model', view: { kind: 'classification' } },
-        leaf:
-          modelView.kind === 'classification-create'
-            ? t('Add model service')
-            : t('Edit model service')
-      }
-    if (activePanel === 'model' && (modelView.kind === 'create' || modelView.kind === 'edit')) {
-      const name =
-        modelView.kind === 'edit'
-          ? (providers.find((provider) => provider.id === modelView.providerId)?.name ?? '')
-          : ''
-      return {
-        rootLabelKey: 'Model',
-        rootTo: { panel: 'model', view: { kind: 'list' } },
-        leaf: modelView.kind === 'create' ? t('Add provider') : t('Edit {{name}}', { name }).trim()
-      }
-    }
-    if (activePanel === 'network' && networkView.kind !== 'list') {
-      return {
-        rootLabelKey: 'Network',
-        rootTo: { panel: 'network', view: { kind: 'list' } },
-        leaf:
-          networkView.kind === 'proxy'
-            ? t('Proxy')
-            : networkView.kind === 'domains'
-              ? t('Notebook network access')
-              : t('Package mirror')
-      }
-    }
-    if (activePanel === 'connectors' && connectorsView.kind !== 'list') {
-      if (connectorsView.kind === 'add' && connectorsView.credentialView === 'create') {
-        const addConnectorRoute: SettingsRoute = {
-          panel: 'connectors',
-          view: {
-            kind: 'add',
-            transport: connectorsView.transport,
-            ...(connectorsView.template ? { template: connectorsView.template } : {})
-          }
-        }
+  // Sub-pages still need a local way to return to their panel after the window toolbar is removed.
+  const subpage = ((): { rootLabelKey: DrillablePanelName; rootTo: SettingsRoute } | null => {
+    if (activePanel === 'model') {
+      if (modelView.kind === 'classification-create' || modelView.kind === 'classification-edit')
         return {
-          rootLabelKey: 'Connectors',
-          rootTo: { panel: 'connectors', view: { kind: 'list' } },
-          parents: [
-            {
-              label: t('Add connector'),
-              to: addConnectorRoute,
-              ariaLabel: t('Back to {{panel}}', { panel: t('Add connector') }),
-              onClick: () => setHistoryIndex((index) => Math.max(0, index - 1))
-            }
-          ],
-          leaf: t('New credential')
+          rootLabelKey: 'Model',
+          rootTo: { panel: 'model', view: { kind: 'classification' } }
         }
-      }
-      if (connectorsView.kind === 'edit' && connectorsView.credentialView === 'create') {
-        const connectorName =
-          customServers.find((server) => server.id === connectorsView.id)?.name ?? t('connector')
-        const editConnectorLabel = t('Edit {{name}}', { name: connectorName }).trim()
-        return {
-          rootLabelKey: 'Connectors',
-          rootTo: { panel: 'connectors', view: { kind: 'list' } },
-          parents: [
-            {
-              label: editConnectorLabel,
-              to: { panel: 'connectors', view: { kind: 'edit', id: connectorsView.id } },
-              ariaLabel: t('Back to {{panel}}', { panel: editConnectorLabel }),
-              onClick: () => setHistoryIndex((index) => Math.max(0, index - 1))
-            }
-          ],
-          leaf: t('New credential')
-        }
-      }
-      const leaf =
-        connectorsView.kind === 'add'
-          ? t('Add connector')
-          : connectorsView.kind === 'import'
-            ? t('Import Connector or MCP configuration')
-            : connectorsView.kind === 'export'
-              ? t('Export {{name}}', {
-                  name:
-                    customServers.find((s) => s.id === connectorsView.id)?.name ?? t('connector')
-                }).trim()
-              : connectorsView.kind === 'edit'
-                ? t('Edit {{name}}', {
-                    name:
-                      customServers.find((s) => s.id === connectorsView.id)?.name ?? t('connector')
-                  }).trim()
-                : (connectors.find((c) => c.id === connectorsView.id)?.displayName ?? '')
-      return {
-        rootLabelKey: 'Connectors',
-        rootTo: { panel: 'connectors', view: { kind: 'list' } },
-        leaf
-      }
+      if (modelView.kind === 'create' || modelView.kind === 'edit')
+        return { rootLabelKey: 'Model', rootTo: settingsPanelRoute('model') }
+      return null
     }
-    if (activePanel === 'compute' && computeView.kind !== 'list') {
-      const leaf =
-        computeView.kind === 'add'
-          ? t('Add SSH host')
-          : (computeHosts.find((host) => host.providerId === computeView.providerId)?.displayName ??
-            computeView.providerId)
-      return {
-        rootLabelKey: 'Compute',
-        rootTo: { panel: 'compute', view: { kind: 'list' } },
-        leaf
-      }
-    }
-    if (activePanel === 'specialists' && specialistsView.kind !== 'list') {
-      const rootTo: SettingsRoute = {
-        panel: 'specialists',
-        view: { kind: 'list' }
-      }
-
-      const editingSpecialist =
-        specialistsView.kind === 'edit'
-          ? specialistItems.find(
-              (item): item is Extract<SpecialistListItem, { kind: 'custom' }> =>
-                item.kind === 'custom' && item.id === specialistsView.id
-            )
-          : undefined
-      const leaf =
-        specialistsView.kind === 'create'
-          ? t('New specialist')
-          : specialistsView.kind === 'import'
-            ? t('Import ZIP')
-            : specialistsView.kind === 'export'
-              ? t('Export ZIP')
-              : (editingSpecialist?.name ?? t('Edit specialist'))
-      return {
-        rootLabelKey: 'Specialists',
-        rootTo,
-        leaf
-      }
-    }
-    if (activePanel === 'memory' && memoryView.kind !== 'list') {
-      return {
-        rootLabelKey: 'Memory',
-        rootTo: { panel: 'memory', view: { kind: 'list' } },
-        leaf: memoryView.kind === 'create' ? t('New category') : t('Edit category')
-      }
-    }
-    if (activePanel === 'tags' && tagsView.kind !== 'list') {
+    if (activePanel === 'tags' && tagsView.kind !== 'list')
       return {
         rootLabelKey: 'Tags',
         rootTo: {
@@ -987,50 +809,41 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
             kind: 'list',
             tagId: tagsView.kind === 'edit' ? tagsView.tagId : browserSelectedTagId
           }
-        },
-        leaf: tagsView.kind === 'create' ? t('New Tag') : t('Edit Tag')
+        }
       }
-    }
-    if (activePanel === 'credentials' && credentialsView.kind !== 'list') {
-      const leaf =
-        credentialsView.kind === 'create'
-          ? t('New credential')
-          : credentialsView.kind === 'credential'
-            ? (deviceCredentials.find(({ id }) => id === credentialsView.id)?.displayName ??
-              t('Credential'))
-            : credentialsView.serviceId === 'github'
-              ? t('GitHub')
-              : credentialsView.serviceId === 'openalex'
-                ? t('OpenAlex')
-                : credentialsView.serviceId === 'unpaywall'
-                  ? t('Unpaywall')
-                  : t('Literature access')
-      return {
-        rootLabelKey: 'Credentials',
-        rootTo: { panel: 'credentials', view: { kind: 'list' } },
-        leaf
-      }
-    }
-    if (activePanel === 'archived' && archivedView.kind === 'project') {
-      return {
-        rootLabelKey: 'Archived',
-        rootTo: { panel: 'archived', view: { kind: 'list' } },
-        leaf:
-          projects.find((project) => project.id === archivedView.projectId)?.name ??
-          t('Archived project')
-      }
-    }
-    return null
+    const panels = [
+      ['skills', 'Skills', skillsView],
+      ['network', 'Network', networkView],
+      ['connectors', 'Connectors', connectorsView],
+      ['compute', 'Compute', computeView],
+      ['specialists', 'Specialists', specialistsView],
+      ['memory', 'Memory', memoryView],
+      ['credentials', 'Credentials', credentialsView],
+      ['archived', 'Archived', archivedView]
+    ] as const
+    const panel = panels.find(([id, , view]) => activePanel === id && view.kind !== 'list')
+    return panel ? { rootLabelKey: panel[1], rootTo: settingsPanelRoute(panel[0]) } : null
   })()
+
+  const formTitle =
+    activePanel === 'model' && (modelView.kind === 'create' || modelView.kind === 'edit')
+      ? modelView.kind === 'create'
+        ? t('Add provider')
+        : t('Edit {{name}}', {
+            name: providers.find((provider) => provider.id === modelView.providerId)?.name ?? ''
+          }).trim()
+      : activePanel === 'tags' && tagsView.kind !== 'list'
+        ? tagsView.kind === 'create'
+          ? t('New Tag')
+          : t('Edit Tag')
+        : null
 
   const goBack = (): void => {
     if (!canGoBack) return
-    requestLeave(() => setHistoryIndex((index) => index - 1))
-  }
-
-  const goForward = (): void => {
-    if (!canGoForward) return
-    requestLeave(() => setHistoryIndex((index) => index + 1))
+    requestLeave(() => {
+      setHistory((entries) => entries.slice(0, historyIndex))
+      setHistoryIndex((index) => index - 1)
+    })
   }
 
   useImperativeHandle(ref, () => ({
@@ -1054,12 +867,12 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
         setIsMobileNavOpen(false)
         return true
       }
-      if (breadcrumb) {
+      if (subpage) {
         if (canGoBack) goBack()
         else {
           requestLeave(() =>
             setHistory((entries) =>
-              entries.map((entry, index) => (index === historyIndex ? breadcrumb.rootTo : entry))
+              entries.map((entry, index) => (index === historyIndex ? subpage.rootTo : entry))
             )
           )
         }
@@ -1350,16 +1163,6 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
               event.preventDefault()
               return
             }
-            // Global search: the combobox's own Escape closes the results list first; keep that
-            // keypress from also dismissing the whole dialog (Radix listens in capture phase).
-            if (
-              event.target instanceof HTMLElement &&
-              event.target.closest('[data-slot="settings-global-search"]') &&
-              document.querySelector('[data-slot="settings-global-search"] [role="listbox"]')
-            ) {
-              event.preventDefault()
-              return
-            }
             if (!isMobileNavOpenRef.current) return
             event.preventDefault()
             setIsMobileNavOpen(false)
@@ -1371,12 +1174,12 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
             data-state={open ? 'open' : 'closed'}
             className={cn(
               'pointer-events-auto fixed z-50 flex overflow-hidden overscroll-contain rounded-xl border border-border bg-card text-foreground shadow-dialog outline-none data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:fill-mode-forwards motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none',
-              isExpanded
-                ? 'inset-0 rounded-none md:inset-4 md:rounded-xl'
+              standalone
+                ? 'inset-0 h-dvh w-screen rounded-none border-0 shadow-none'
                 : 'inset-0 h-[100dvh] w-screen rounded-none md:bottom-auto md:left-1/2 md:right-auto md:top-1/2 md:h-[min(688px,calc(100vh-2rem))] md:w-[min(960px,calc(100vw-2rem))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl'
             )}
           >
-            {/* Radix requires a Title/Description for a11y; the visible panel title lives in the header. */}
+            {/* Radix requires a Title/Description for a11y; the native window supplies the visible title. */}
             <Dialog.Title className="sr-only">{t('Settings')}</Dialog.Title>
             <Dialog.Description className="sr-only">
               {t('Manage your agent runtime and model providers.')}
@@ -1425,19 +1228,6 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
                     data-slot="settings-navigation-scroll"
                     className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain p-3"
                   >
-                    {isMobile ? (
-                      <div data-slot="settings-global-search" className="mb-4">
-                        <SettingsGlobalSearch
-                          panels={SETTINGS_PANELS}
-                          onNavigate={(panel, onNavigated) => {
-                            navigatePanel(panel, () => {
-                              setIsMobileNavOpen(false)
-                              onNavigated()
-                            })
-                          }}
-                        />
-                      </div>
-                    ) : null}
                     {SETTINGS_GROUPS.map((group) => (
                       <div key={group.labelKey} className="flex flex-col gap-0.5">
                         <div className="px-2 pb-1 pt-1 text-xs font-medium text-muted-foreground">
@@ -1477,6 +1267,18 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
                     data-slot="settings-navigation-footer"
                     className="shrink-0 border-t border-border px-3 py-2"
                   >
+                    {!standalone ? (
+                      <Dialog.Close asChild>
+                        <Button
+                          variant="ghost"
+                          className="mb-1 h-8 w-full justify-start gap-2 px-2 text-muted-foreground"
+                          aria-label={t('Close settings')}
+                        >
+                          <X className="size-4" aria-hidden="true" />
+                          {t('Close settings')}
+                        </Button>
+                      </Dialog.Close>
+                    ) : null}
                     <a
                       href={APP.links.githubFeedback}
                       target="_blank"
@@ -1494,192 +1296,84 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
               </div>
             </FocusScope>
 
-            {/* Right column: header bar + scrollable panel content. */}
+            {/* Right column: scrollable panel content without a duplicate window toolbar. */}
             <div
               data-slot="settings-main"
               aria-hidden={isMobile && isMobileNavOpen ? true : undefined}
               inert={isMobile && isMobileNavOpen ? true : undefined}
               className="flex min-h-0 min-w-0 flex-1 flex-col bg-card"
             >
-              <TooltipProvider>
-                <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border bg-card px-2 md:px-3">
-                  <div className="flex min-w-0 items-center gap-1">
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          ref={mobileNavTriggerRef}
-                          type="button"
-                          variant="ghost"
-                          size="icon-sm"
-                          onClick={() => setIsMobileNavOpen(true)}
-                          aria-label={t('Open settings navigation')}
-                          className="shrink-0 rounded-lg text-muted-foreground md:hidden"
-                        >
-                          <Menu className="size-4" aria-hidden="true" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>{t('Navigation')}</TooltipContent>
-                    </Tooltip>
-                    {/* Browser-like history controls for the settings navigation. */}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-sm"
-                          onClick={goBack}
-                          disabled={!canGoBack}
-                          aria-label={t('Back', { context: 'step' })}
-                          className="shrink-0 rounded-lg text-muted-foreground disabled:opacity-40"
-                        >
-                          <ArrowLeft className="size-4" aria-hidden="true" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>{t('Back', { context: 'step' })}</TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-sm"
-                          onClick={goForward}
-                          disabled={!canGoForward}
-                          aria-label={t('Forward')}
-                          className="shrink-0 rounded-lg text-muted-foreground disabled:opacity-40"
-                        >
-                          <ArrowRight className="size-4" aria-hidden="true" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>{t('Forward')}</TooltipContent>
-                    </Tooltip>
-                    <span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-border" />
-                    {breadcrumb !== null ? (
-                      <div className="flex min-w-0 items-center gap-1.5 text-sm font-semibold">
-                        <button
-                          type="button"
-                          onClick={() => navigate(breadcrumb.rootTo)}
-                          aria-label={t('Back to {{panel}}', {
-                            panel: t(PANEL_NAME_LOWER[breadcrumb.rootLabelKey])
-                          })}
-                          className="shrink-0 text-muted-foreground transition-colors motion-reduce:transition-none hover:text-foreground"
-                        >
-                          {t(breadcrumb.rootLabelKey)}
-                        </button>
-                        {breadcrumb.parents?.map((parent) => (
-                          <span key={parent.label} className="contents">
-                            <span className="shrink-0 text-muted-foreground" aria-hidden="true">
-                              ›
-                            </span>
-                            <button
-                              type="button"
-                              onClick={parent.onClick ?? (() => navigate(parent.to))}
-                              aria-label={parent.ariaLabel}
-                              className="shrink-0 text-muted-foreground transition-colors motion-reduce:transition-none hover:text-foreground"
-                            >
-                              {parent.label}
-                            </button>
-                          </span>
-                        ))}
-                        <span className="shrink-0 text-muted-foreground" aria-hidden="true">
-                          ›
-                        </span>
-                        <span className="truncate text-foreground">{breadcrumb.leaf}</span>
-                      </div>
-                    ) : (
-                      <h2 className="truncate text-sm font-semibold text-foreground">
-                        {(() => {
-                          const panel = SETTINGS_PANELS.find((item) => item.id === activePanel)
-                          return panel ? t(panel.labelKey) : null
-                        })()}
-                      </h2>
-                    )}
-                  </div>
-                  {!isMobile ? (
-                    <div
-                      data-slot="settings-global-search"
-                      className="min-w-0 flex-1 px-2 md:max-w-xs"
-                    >
-                      <SettingsGlobalSearch panels={SETTINGS_PANELS} onNavigate={navigatePanel} />
-                    </div>
-                  ) : null}
-                  <div className="flex shrink-0 items-center gap-1">
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-sm"
-                          onClick={() => setIsExpanded((value) => !value)}
-                          aria-label={isExpanded ? t('Restore') : t('Maximize')}
-                          className="rounded-lg text-muted-foreground"
-                        >
-                          {isExpanded ? (
-                            <Minimize2 className="size-4" aria-hidden="true" />
-                          ) : (
-                            <Maximize2 className="size-4" aria-hidden="true" />
-                          )}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>{isExpanded ? t('Restore') : t('Maximize')}</TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <Dialog.Close asChild>
-                        <TooltipTrigger asChild>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label={t('Close settings')}
-                            className="rounded-lg text-muted-foreground"
-                          >
-                            <X className="size-4" aria-hidden="true" />
-                          </Button>
-                        </TooltipTrigger>
-                      </Dialog.Close>
-                      <TooltipContent>{t('Close settings')}</TooltipContent>
-                    </Tooltip>
-                  </div>
-                </div>
+              {isMobile ? (
+                <Button
+                  ref={mobileNavTriggerRef}
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setIsMobileNavOpen(true)}
+                  aria-label={t('Open settings navigation')}
+                  className="mx-3 mt-3 shrink-0 self-start text-muted-foreground"
+                >
+                  <Menu className="size-4" aria-hidden="true" />
+                </Button>
+              ) : null}
 
-                {preflightFailed ? (
-                  <Notice
-                    inline
-                    level="error"
+              {preflightFailed ? (
+                <Notice
+                  inline
+                  level="error"
+                  role="alert"
+                  className="mx-3 mt-3"
+                  description={t(
+                    'Could not refresh environment readiness. Saved settings are unchanged.'
+                  )}
+                  primaryButton={{
+                    label: t('Retry preflight'),
+                    onClick: () => void refreshPreflight().catch(() => undefined)
+                  }}
+                />
+              ) : null}
+
+              {settingsWriteError ? (
+                <div data-slot="settings-write-error" className="mx-3 mt-3">
+                  <ErrorNotice
+                    tone="amber"
                     role="alert"
-                    className="mx-3 mt-3"
-                    description={t(
-                      'Could not refresh environment readiness. Saved settings are unchanged.'
-                    )}
-                    primaryButton={{
-                      label: t('Retry preflight'),
-                      onClick: () => void refreshPreflight().catch(() => undefined)
+                    icon={AlertTriangle}
+                    title={t('Settings could not be saved')}
+                    description={settingsWriteError
+                      .split(' ')
+                      .map((code) => {
+                        const copyKey = SETTINGS_WRITE_ERROR_COPY[code as SettingsWriteErrorCode]
+                        return copyKey ? t(copyKey) : code
+                      })
+                      .join(' ')}
+                    dismissButton={{
+                      label: t('Dismiss settings error'),
+                      onClick: clearSettingsWriteError
                     }}
                   />
-                ) : null}
+                </div>
+              ) : null}
 
-                {settingsWriteError ? (
-                  <div data-slot="settings-write-error" className="mx-3 mt-3">
-                    <ErrorNotice
-                      tone="amber"
-                      role="alert"
-                      icon={AlertTriangle}
-                      title={t('Settings could not be saved')}
-                      description={settingsWriteError
-                        .split(' ')
-                        .map((code) => {
-                          const copyKey = SETTINGS_WRITE_ERROR_COPY[code as SettingsWriteErrorCode]
-                          return copyKey ? t(copyKey) : code
-                        })
-                        .join(' ')}
-                      dismissButton={{
-                        label: t('Dismiss settings error'),
-                        onClick: clearSettingsWriteError
-                      }}
-                    />
-                  </div>
-                ) : null}
-              </TooltipProvider>
+              {subpage ? (
+                <div className="mx-auto w-full max-w-[880px] shrink-0 pb-3">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => navigate(subpage.rootTo)}
+                    className="mx-5 mt-3 gap-2 text-muted-foreground"
+                    aria-label={t('Back to {{panel}}', {
+                      panel: t(PANEL_NAME_LOWER[subpage.rootLabelKey])
+                    })}
+                  >
+                    <ArrowLeft className="size-4" aria-hidden="true" />
+                    {t('Back to {{panel}}', { panel: t(PANEL_NAME_LOWER[subpage.rootLabelKey]) })}
+                  </Button>
+                  {formTitle ? (
+                    <h2 className="mx-5 mt-3 text-lg font-semibold">{formTitle}</h2>
+                  ) : null}
+                </div>
+              ) : null}
 
               <motion.div
                 layoutScroll
@@ -1813,9 +1507,11 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
                               return
                             }
                             if (reference.resourceType === 'literature.item') {
-                              useNavigationStore
-                                .getState()
-                                .openLiteratureItem(reference.resourceId, 'user')
+                              if (onOpenLiteratureItem) onOpenLiteratureItem(reference.resourceId)
+                              else
+                                useNavigationStore
+                                  .getState()
+                                  .openLiteratureItem(reference.resourceId, 'user')
                               requestClose()
                               return
                             }
@@ -1837,7 +1533,8 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
                         view={memoryView}
                         onNavigate={navigateMemory}
                         onOpenProject={(projectId) => {
-                          useNavigationStore.getState().openProject(projectId, 'user', onClose)
+                          if (onOpenProject) requestLeave(() => onOpenProject(projectId))
+                          else useNavigationStore.getState().openProject(projectId, 'user', onClose)
                         }}
                       />
                     ) : activePanel === 'connectors' ? (

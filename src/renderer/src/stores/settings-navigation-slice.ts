@@ -5,6 +5,7 @@ import {
   type SettingsRoute
 } from '../pages/settings/settings-navigation'
 import { rememberSettingsReturnFocusTarget } from './settings-return-focus'
+import { isSettingsWindow } from '../../../shared/settings-window'
 
 export type SettingsNavigationIntent = Readonly<{
   requestId: number
@@ -20,6 +21,7 @@ export type SettingsNavigationState = {
 
 export type SettingsNavigationActions = {
   openSettings: () => void
+  openSettingsToRoute: (route: SettingsRoute) => void
   openSettingsToPanel: (panel: SettingsPanelId) => void
   openSettingsToClassification: () => void
   openSettingsToOpenAlex: () => void
@@ -51,19 +53,34 @@ export const createSettingsNavigationSlice = ({
   getState,
   setState
 }: SettingsNavigationSliceOptions): SettingsNavigationActions => {
-  const openTo = (route: SettingsRoute): void => {
-    rememberSettingsReturnFocusTarget(getState().isSettingsOpen)
-    setState({
-      isSettingsOpen: true,
-      pendingSettingsIntent: { requestId: ++settingsNavigationRequestId, route }
-    })
+  const openTo = (route?: SettingsRoute, requestId?: number): void => {
+    const openLocally = (): void => {
+      rememberSettingsReturnFocusTarget(getState().isSettingsOpen)
+      setState({
+        isSettingsOpen: true,
+        ...(route
+          ? {
+              pendingSettingsIntent: {
+                requestId: requestId ?? ++settingsNavigationRequestId,
+                route
+              }
+            }
+          : {})
+      })
+    }
+    if (typeof window !== 'undefined' && window.api?.window?.openSettings && !isSettingsWindow()) {
+      void window.api.window
+        .openSettings(route ? JSON.stringify(route) : undefined)
+        .catch((error) => {
+          console.warn('Could not open the Settings window', error)
+          openLocally()
+        })
+    } else openLocally()
   }
 
   return {
-    openSettings: () => {
-      rememberSettingsReturnFocusTarget(getState().isSettingsOpen)
-      setState({ isSettingsOpen: true })
-    },
+    openSettings: () => openTo(),
+    openSettingsToRoute: (route) => openTo(route),
 
     openSettingsToPanel: (panel) => openTo(settingsPanelRoute(panel)),
     openSettingsToClassification: () =>
@@ -92,23 +109,19 @@ export const createSettingsNavigationSlice = ({
       openTo({ panel: 'compute', view: { kind: 'detail', providerId } }),
 
     openSettingsToComputeAuthentication: (providerId, errorCode) => {
-      rememberSettingsReturnFocusTarget(getState().isSettingsOpen)
       const requestId = ++settingsNavigationRequestId
-      setState({
-        isSettingsOpen: true,
-        pendingSettingsIntent: {
-          requestId,
-          route: {
-            panel: 'compute',
-            view: {
-              kind: 'detail',
-              providerId,
-              authenticationFocus: errorCode,
-              authenticationRequestId: requestId
-            }
+      openTo(
+        {
+          panel: 'compute',
+          view: {
+            kind: 'detail',
+            providerId,
+            authenticationFocus: errorCode,
+            authenticationRequestId: requestId
           }
-        }
-      })
+        },
+        requestId
+      )
     },
 
     consumePendingSettingsIntent: (requestId) => {

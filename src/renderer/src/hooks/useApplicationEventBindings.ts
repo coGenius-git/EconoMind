@@ -265,6 +265,17 @@ const useApplicationEventBindings = ({
     [closeSettings, requestSettingsLeave]
   )
 
+  useEffect(
+    () =>
+      window.api.window?.onSettingsNavigation?.((request) => {
+        if (request.kind === 'session') openPermissionSession(request.id)
+        else if (request.kind === 'project')
+          useNavigationStore.getState().openProject(request.id, 'user')
+        else useNavigationStore.getState().openLiteratureItem(request.id, 'user')
+      }),
+    [openPermissionSession]
+  )
+
   useEffect(() => {
     const api = window.api?.sideChat
     if (!api) return

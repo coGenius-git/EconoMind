@@ -1,6 +1,6 @@
 import './assets/main.css'
 
-import { StrictMode } from 'react'
+import { lazy, StrictMode, Suspense } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import { ApplicationErrorBoundary } from '@/components/application-error-boundary'
@@ -17,6 +17,15 @@ import { useSettingsStore } from '@/stores/settings-store'
 import { startLocalePreferenceSync } from '@/stores/locale-store'
 import { useInterfaceScaleStore } from '@/stores/interface-scale-store'
 import { WindowsTitleBar } from '@/components/WindowsTitleBar'
+import { isSettingsWindow } from '../../shared/settings-window'
+
+const SettingsWindow = lazy(() =>
+  import('@/pages/settings/SettingsWindow').then((module) => ({
+    default: module.SettingsWindow
+  }))
+)
+const standaloneSettings = isSettingsWindow()
+if (standaloneSettings) useSettingsStore.setState({ isSettingsOpen: true })
 
 const rendererBootMark = 'open-science:renderer-boot-start'
 performance.mark(rendererBootMark)
@@ -69,15 +78,22 @@ const startRenderer = (): void => {
     'open-science:renderer-root-created'
   )
 
+  const content = (
+    <ApplicationErrorBoundary>
+      <DatabaseStartupGate>
+        {standaloneSettings ? (
+          <Suspense fallback={null}>
+            <SettingsWindow />
+          </Suspense>
+        ) : (
+          <App />
+        )}
+      </DatabaseStartupGate>
+    </ApplicationErrorBoundary>
+  )
   rendererRoot.render(
     <StrictMode>
-      <WindowsTitleBar>
-        <ApplicationErrorBoundary>
-          <DatabaseStartupGate>
-            <App />
-          </DatabaseStartupGate>
-        </ApplicationErrorBoundary>
-      </WindowsTitleBar>
+      {standaloneSettings ? content : <WindowsTitleBar>{content}</WindowsTitleBar>}
     </StrictMode>
   )
   performance.mark('open-science:renderer-render-scheduled')
