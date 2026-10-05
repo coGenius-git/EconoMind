@@ -25,6 +25,8 @@ import { useApplicationStartup } from '@/hooks/useApplicationStartup'
 import { WorkspaceAgentRuntimeProvider } from '@/lib/acp/useWorkspaceAgentRuntime'
 import { WorkspaceComputeRecoveryBridge } from '@/lib/compute/WorkspaceComputeRecoveryBridge'
 import { HomePage } from '@/pages/home/HomePage'
+import { RetainedWorkspacePage, WorkbenchPageBoundary } from '@/components/WorkbenchPageBoundary'
+import { loadLiteratureLibraryPage, loadWorkspacePage } from '@/lib/workbench-page-loaders'
 import type { SettingsPageHandle } from '@/pages/settings/SettingsPage'
 import { EnvStatusBanner } from '@/pages/workspace/EnvStatusBanner'
 import {
@@ -33,12 +35,12 @@ import {
 } from '@/pages/workspace/workspace-message-queue-controller'
 
 const WorkspacePage = lazy(() =>
-  import('@/pages/workspace/WorkspacePage').then(({ WorkspacePage }) => ({
+  loadWorkspacePage().then(({ WorkspacePage }) => ({
     default: WorkspacePage
   }))
 )
 const LiteratureLibraryPage = lazy(() =>
-  import('@/pages/literature/LiteratureLibraryPage').then(({ LiteratureLibraryPage }) => ({
+  loadLiteratureLibraryPage().then(({ LiteratureLibraryPage }) => ({
     default: LiteratureLibraryPage
   }))
 )
@@ -282,7 +284,7 @@ const ApplicationPresentationContent = ({
               <WorkspaceMessageQueueRuntimeBridge
                 persistenceBlockedSessionIds={sessions.persistenceBlockedSessionIds}
               />
-              <Suspense fallback={null}>
+              <WorkbenchPageBoundary view={events.navigation.view}>
                 {events.navigation.view === 'home' ? (
                   <HomePage
                     canDeleteProjects={sessions.canDeleteSessionsAndProjects}
@@ -292,17 +294,21 @@ const ApplicationPresentationContent = ({
                   />
                 ) : events.navigation.view === 'library' ? (
                   <StableLiteratureLibraryPage />
-                ) : (
-                  <WorkspacePage
-                    isSessionPersistenceHydrated={sessions.isHydrated}
-                    isSessionPersistenceReady={sessions.isReady}
-                    persistenceBlockedSessionIds={sessions.persistenceBlockedSessionIds}
-                    onSessionSizeLimit={sessions.reportSessionSizeLimit}
-                    canDeleteConversations={sessions.canDeleteSessionsAndProjects}
-                    isPreviewPresentationActive={isBasePresentationActive}
-                  />
-                )}
-              </Suspense>
+                ) : null}
+                <RetainedWorkspacePage active={events.navigation.view === 'workspace'}>
+                  {(projectId) => (
+                    <WorkspacePage
+                      projectId={projectId}
+                      isSessionPersistenceHydrated={sessions.isHydrated}
+                      isSessionPersistenceReady={sessions.isReady}
+                      persistenceBlockedSessionIds={sessions.persistenceBlockedSessionIds}
+                      onSessionSizeLimit={sessions.reportSessionSizeLimit}
+                      canDeleteConversations={sessions.canDeleteSessionsAndProjects}
+                      isPreviewPresentationActive={isBasePresentationActive}
+                    />
+                  )}
+                </RetainedWorkspacePage>
+              </WorkbenchPageBoundary>
               <ActionToastStack>
                 {sessions.catalogRecovery.kind !== 'ready' ? null : sessions.loadError ? (
                   <SessionPersistenceAlert

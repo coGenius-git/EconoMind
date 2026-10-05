@@ -55,7 +55,9 @@ const seedProjects = async (page: Page, count: number): Promise<void> => {
 
 const reloadAndOpenProject = async (page: Page, name: string): Promise<void> => {
   await page.reload({ waitUntil: 'domcontentloaded' })
-  const projectButton = page.getByRole('button', { name, exact: true })
+  const projectButton = page
+    .getByRole('region', { name: 'Projects', exact: true })
+    .getByRole('button', { name, exact: true })
   await expect(projectButton).toBeVisible()
   await projectButton.click()
   await expect(page.locator(`button[title="${name}"]`)).toBeVisible()
@@ -69,7 +71,11 @@ test('switches projects from the Workspace project menu and expands remaining pr
 
   await seedProjects(page, 15)
   page = await app.restart()
-  await expect(page.getByText('Project 15', { exact: true })).toBeVisible()
+  await expect(
+    page
+      .getByRole('region', { name: 'Projects', exact: true })
+      .getByRole('button', { name: 'Project 15', exact: true })
+  ).toBeVisible()
   await createProject(page, 'Project 16', 'Description 16', false)
   await reloadAndOpenProject(page, 'Project 16')
 
@@ -202,10 +208,14 @@ test('switches projects from the Workspace project menu and expands remaining pr
     if (!searchInput || !clearButton) return null
 
     const searchBounds = searchInput.getBoundingClientRect()
+    // Compare padding inside the scrollport. Windows classic scrollbars occupy width outside
+    // clientWidth, so measuring against the border box makes equal padding look asymmetric.
+    const contentLeft = menuBounds.left + element.clientLeft
+    const contentRight = contentLeft + element.clientWidth
     return {
       clearButtonSize: clearButton.getBoundingClientRect().width,
-      leftInset: searchBounds.left - menuBounds.left,
-      rightInset: menuBounds.right - searchBounds.right
+      leftInset: searchBounds.left - contentLeft,
+      rightInset: contentRight - searchBounds.right
     }
   })
   expect(searchPresentation).not.toBeNull()
@@ -265,7 +275,11 @@ test('closes mobile navigation when switching projects', async ({ app }) => {
 
   await seedProjects(page, 1)
   page = await app.restart()
-  await expect(page.getByText('Project 1', { exact: true })).toBeVisible()
+  await expect(
+    page
+      .getByRole('region', { name: 'Projects', exact: true })
+      .getByRole('button', { name: 'Project 1', exact: true })
+  ).toBeVisible()
   await createProject(page, 'Project 2', 'Description 2', false)
   await reloadAndOpenProject(page, 'Project 2')
 
