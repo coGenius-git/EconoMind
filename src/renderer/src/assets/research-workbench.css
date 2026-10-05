@@ -41,13 +41,15 @@
     opacity: 0.92;
     background: conic-gradient(
       from 0deg,
-      transparent 0deg 242deg,
-      #688eaa00 262deg,
-      #688eaa88 288deg,
-      #d3ecf4 316deg,
-      #fff 327deg,
-      #9fb9c8bb 340deg,
-      transparent 356deg
+      transparent 0deg 180deg,
+      #5486b500 206deg,
+      #528cb9cc 240deg,
+      #72badd 286deg,
+      #d8f2ff 310deg,
+      #fff 320deg,
+      #9fd3ea 334deg,
+      #477fabcc 348deg,
+      transparent 359deg
     );
     animation: research-logo-orbit 10s linear infinite;
   }
