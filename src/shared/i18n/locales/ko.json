@@ -6737,6 +6737,7 @@
     "Install the compatible <code>open-science</code> command to control the EconoMind backend from a terminal. The original command name is retained for existing scripts.": "호환 명령어 <code>open-science</code>를 설치하여 터미널에서 EconoMind 백엔드를 제어할 수 있습니다. 기존 스크립트와의 호환성을 위해 원래 명령어 이름을 유지합니다.",
     "The Specialist template ZIP is ready for editing.": "스페셜리스트 템플릿 ZIP이 저장되어 편집할 수 있습니다.",
     "EconoMind is an independent derivative of AIPOCH Open Science, licensed under Apache-2.0.": "EconoMind는 AIPOCH Open Science를 독립적으로 수정한 파생 소프트웨어이며 Apache-2.0 라이선스를 따릅니다.",
-    "The license and attribution notices are bundled with this app and available offline.": "라이선스와 출처 고지는 앱에 포함되어 있으며 오프라인으로 읽을 수 있습니다."
+    "The license and attribution notices are bundled with this app and available offline.": "라이선스와 출처 고지는 앱에 포함되어 있으며 오프라인으로 읽을 수 있습니다.",
+    "Restore preview of {{title}}": "{{title}} 미리보기 복원"
   }
 }

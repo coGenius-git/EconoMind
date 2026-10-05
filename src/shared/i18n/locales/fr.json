@@ -7065,6 +7065,7 @@
     "Install the compatible <code>open-science</code> command to control the EconoMind backend from a terminal. The original command name is retained for existing scripts.": "Installez la commande compatible <code>open-science</code> pour contrôler le backend EconoMind depuis un terminal. Le nom original de la commande est conservé pour les scripts existants.",
     "The Specialist template ZIP is ready for editing.": "Le fichier ZIP du modèle de Spécialiste est prêt à être modifié.",
     "EconoMind is an independent derivative of AIPOCH Open Science, licensed under Apache-2.0.": "EconoMind est une version dérivée indépendante d’AIPOCH Open Science, sous licence Apache-2.0.",
-    "The license and attribution notices are bundled with this app and available offline.": "La licence et les mentions d’attribution sont incluses dans cette application et disponibles hors ligne."
+    "The license and attribution notices are bundled with this app and available offline.": "La licence et les mentions d’attribution sont incluses dans cette application et disponibles hors ligne.",
+    "Restore preview of {{title}}": "Restaurer l’aperçu de {{title}}"
   }
 }

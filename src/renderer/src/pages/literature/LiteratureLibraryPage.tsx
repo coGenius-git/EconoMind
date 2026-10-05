@@ -2804,6 +2804,7 @@ const LiteratureLibraryPage = (): React.JSX.Element => {
           <ProjectFormDialog {...batchProjectFormDialog.dialogProps} />
           <LiteratureFilePreviewDialog
             onFocusFallback={focusPreviewFallback}
+            onMinimize={closeSelectedItemDetail}
             item={previewItem}
             allowReadingContext={false}
             onReadWithAgent={requestReadWithAgent}

@@ -6739,6 +6739,7 @@
     "Install the compatible <code>open-science</code> command to control the EconoMind backend from a terminal. The original command name is retained for existing scripts.": "安裝相容命令 <code>open-science</code>，即可在終端機中管理 EconoMind 後端。保留原命令名稱是為了相容既有指令碼。",
     "The Specialist template ZIP is ready for editing.": "專家範本 ZIP 已儲存，可以開始編輯。",
     "EconoMind is an independent derivative of AIPOCH Open Science, licensed under Apache-2.0.": "EconoMind 基於 AIPOCH Open Science 獨立修改開發，採用 Apache-2.0 授權條款。",
-    "The license and attribution notices are bundled with this app and available offline.": "授權條款與來源聲明隨軟體提供，無需連線即可閱讀。"
+    "The license and attribution notices are bundled with this app and available offline.": "授權條款與來源聲明隨軟體提供，無需連線即可閱讀。",
+    "Restore preview of {{title}}": "恢復 {{title}} 的預覽"
   }
 }
