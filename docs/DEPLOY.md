@@ -13,6 +13,21 @@ npm run dev
 
 独立开发配置方法见 [README](../README.md#独立开发配置powershell)。首次启动通过向导配置数据位置和模型，默认开发配置与安装版配置使用不同目录。
 
+## Windows Notebook 开发准备
+
+Notebook 与命令行执行需要 Windows 原生宿主 `notebook-appcontainer-host.exe`，用于进程树管理及 AppContainer 保护。源码仓库不保存此二进制，`npm ci` 也不会生成它；首次开发和宿主源码更新后，先安装 [Rust](https://www.rust-lang.org/tools/install) 的 MSVC 工具链、Visual Studio C++ Build Tools 与 Windows SDK，再在仓库根目录执行：
+
+```powershell
+cargo --version
+rustup show
+npm run build:notebook-host
+npm run dev:isolated
+```
+
+构建默认匹配本机 x64/ARM64 架构。显式构建可运行 `npm run build:notebook-host -- x64` 或 `npm run build:notebook-host -- arm64`；相应 Rust target 与 MSVC 交叉编译组件必须已安装。产物位于 `packages/notebook-network-sandbox/vendor/windows/<架构>/`，保持忽略，不要提交。
+
+遇到 `spawn ...notebook-appcontainer-host.exe ENOENT` 时检查产物是否存在，构建成功后重启开发进程。构建错误若提示找不到 `cargo`，安装 Rust 后重新打开终端；若提示缺少 MSVC 链接器，检查 C++ 工作负载与 Windows SDK。缺失宿主时不会自动绕过保护启动 Notebook。安装版由打包流程携带宿主，缺失时修复或重新安装软件。
+
 ## 本地 Web 模式
 
 ```bash

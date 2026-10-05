@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { preloadWorkbenchPage } from '@/lib/workbench-page-loaders'
 
 type Props = {
   active: 'home' | 'library' | 'analysis'
@@ -26,17 +27,25 @@ export function ResearchWorkbenchHeader({
 }: Props): React.JSX.Element {
   const { t } = useTranslation()
   const links = [
-    { label: t('Research home'), icon: House, onClick: onHome, active: active === 'home' },
+    {
+      label: t('Research home'),
+      icon: House,
+      onClick: onHome,
+      active: active === 'home',
+      page: undefined
+    },
     {
       label: t('Library'),
       icon: BookOpenText,
       onClick: onLibrary,
+      page: 'library' as const,
       active: active === 'library'
     },
     {
       label: t('Research workspace'),
       icon: LineChart,
       onClick: onAnalysis,
+      page: 'workspace' as const,
       active: active === 'analysis'
     }
   ]
@@ -54,11 +63,13 @@ export function ResearchWorkbenchHeader({
         aria-label={t('Workbench modules')}
         className="order-3 flex w-full items-stretch gap-1 overflow-x-auto md:order-none md:mx-auto md:w-auto lg:gap-5"
       >
-        {links.map(({ label, icon: Icon, onClick, active }) => (
+        {links.map(({ label, icon: Icon, onClick, active, page }) => (
           <button
             key={label}
             type="button"
             onClick={onClick}
+            onPointerEnter={() => page && void preloadWorkbenchPage(page)}
+            onFocus={() => page && void preloadWorkbenchPage(page)}
             aria-current={active ? 'page' : undefined}
             className={cn(
               'flex shrink-0 items-center gap-2 border-b-2 border-transparent px-3 py-4 text-sm transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:py-5',

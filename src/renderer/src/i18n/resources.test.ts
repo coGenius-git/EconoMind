@@ -1907,7 +1907,6 @@ describe('mandatory product glossary', () => {
       Image: 'Image',
       'Copy command': 'Copier la commande',
       'Data location': 'Emplacement des données',
-      'Edit specialist': 'Modifier le spécialiste',
       'Recent files': 'Fichiers récents',
       'Search messages, projects, files and Library…':
         'Rechercher des messages, projets, fichiers et dans la bibliothèque…',

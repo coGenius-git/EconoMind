@@ -62,7 +62,10 @@ const BLOCKING_DOM_PRESENTATION_SELECTOR = `[role="dialog"], [role="alertdialog"
 const FILE_PREVIEW_DIALOG_SELECTOR = '[data-slot="file-preview-dialog"]'
 
 const isEffectivelyOpen = (element: HTMLElement): boolean =>
-  element.dataset.state !== 'closed' && element.closest('[aria-hidden="true"], [hidden]') === null
+  element.dataset.state !== 'closed' &&
+  element.closest('[aria-hidden="true"], [hidden]') === null &&
+  // Retained Activity content (including portals) stays in the DOM with display:none.
+  element.checkVisibility?.() !== false
 
 const findTopmostDomPresentation = (
   root: ParentNode,

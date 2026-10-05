@@ -113,6 +113,8 @@ import { annotationValidationMessage } from './annotations/annotation-validation
 import { annotationRequiresImageInput } from '../../../../shared/annotations'
 
 type WorkspacePageProps = {
+  // The visited-page owner retains this scope while Home clears its navigation selection.
+  projectId?: string
   isSessionPersistenceHydrated: boolean
   isSessionPersistenceReady: boolean
   persistenceBlockedSessionIds?: readonly string[]
@@ -142,6 +144,7 @@ const planProjectionRecoveryPorts = {
 }
 
 const WorkspacePage = ({
+  projectId,
   isSessionPersistenceHydrated,
   isSessionPersistenceReady,
   persistenceBlockedSessionIds = [],
@@ -154,7 +157,7 @@ const WorkspacePage = ({
   // The active project scopes which sessions are visible and stamps newly created ones. The workspace
   // is only reachable via openProject/openSession (which set it); '' is a defensive sentinel that
   // matches no session and triggers the redirect below.
-  const activeProjectId = useNavigationStore((state) => state.activeProjectId)
+  const activeProjectId = useNavigationStore((state) => projectId ?? state.activeProjectId)
   const pendingCustomizePrefill = useNavigationStore((state) => state.pendingCustomizePrefill)
   const pendingLiteratureReviewPrefill = useNavigationStore(
     (state) => state.pendingLiteratureReviewPrefill
@@ -1875,12 +1878,10 @@ const WorkspacePage = ({
             />
 
             <FilePreviewDialog
+              presentationActive={isPreviewPresentationActive}
+              onMinimizedChange={usePreviewWorkbenchStore.getState().setFileDialogMinimized}
               onFocusFallback={() => previewFocusFallbackRef.current?.focus()}
-              item={
-                isPreviewPresentationActive && fileDialogItem?.projectId === activeProjectId
-                  ? fileDialogItem
-                  : undefined
-              }
+              item={fileDialogItem?.projectId === activeProjectId ? fileDialogItem : undefined}
               onClose={usePreviewWorkbenchStore.getState().closeFileDialog}
               onItemChange={usePreviewWorkbenchStore.getState().openFileDialog}
               {...previewAnnotations}

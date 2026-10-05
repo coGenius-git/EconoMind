@@ -8,6 +8,7 @@ import type { NotebookInputRegistry } from '../notebook/input-registry'
 import type { NamedElectronSurfaceAdapter } from '../runtime-electron-wiring'
 import { registerWindowFindIpcHandlers } from '../window-find-ipc'
 import { registerWindowCloseIpcHandler } from '../window-ipc'
+import { registerSettingsWindowIpcHandlers } from '../settings-window'
 import { createElectronSurfaceAdapter } from './adapter'
 
 type DesktopUtilitiesOwners = {
@@ -46,5 +47,6 @@ export const createDesktopUtilitiesElectronSurface = ({
     registerGithubIpcHandlers({}, github)
     registerCliInstallIpcHandlers(cli)
     registerWindowCloseIpcHandler()
+    registerSettingsWindowIpcHandlers()
     return registerWindowFindIpcHandlers()
   })

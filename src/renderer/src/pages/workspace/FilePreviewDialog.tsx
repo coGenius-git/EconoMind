@@ -3,8 +3,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { RemoveScroll } from 'react-remove-scroll'
 import * as Dialog from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
 
 import { dialogOverlayClassName, dialogPanelClassName } from '@/components/ui/dialog-chrome'
+import { useOverlayLayer } from '@/components/ui/overlay-layer'
 import { STREAMDOWN_FULLSCREEN_SELECTOR } from '@/components/streamdown/dom-selectors'
 import { useRetainedDialogValue } from '@/components/ui/use-retained-dialog-value'
 import type { PreviewFileItem } from '@/stores/preview-workbench-store'
@@ -22,10 +24,32 @@ type FilePreviewDialogProps = PreviewInteractionPort & {
   onPdfContextError?: (message: string | null) => void
   onViewInContextNavigate?: () => void
   onFocusFallback?: () => void
+  onMinimize?: () => void
+  onMinimizedChange?: (minimized: boolean) => void
+  presentationActive?: boolean
 }
 
 const hasStreamdownFullscreen = (): boolean =>
   Boolean(document.querySelector(STREAMDOWN_FULLSCREEN_SELECTOR))
+
+const PreviewBackdrop = ({
+  open,
+  minimized
+}: {
+  open: boolean
+  minimized: boolean
+}): React.JSX.Element => {
+  const layer = useOverlayLayer()
+  return (
+    <div
+      aria-hidden="true"
+      data-slot="file-preview-backdrop"
+      data-state={open ? 'open' : 'closed'}
+      className={dialogOverlayClassName}
+      style={{ zIndex: layer, display: minimized ? 'none' : undefined }}
+    />
+  )
+}
 
 let backgroundIsolationCount = 0
 let previousRootAriaHidden: string | null = null
@@ -64,22 +88,41 @@ const FilePreviewDialog = ({
   onPdfContextError,
   onViewInContextNavigate,
   onFocusFallback,
+  onMinimize,
+  onMinimizedChange,
+  presentationActive = true,
   ...annotationPort
 }: FilePreviewDialogProps): React.JSX.Element | null => {
   const { t } = useTranslation()
   const dialogItem = useRetainedDialogValue(item)
   const open = Boolean(item)
+  const [presentation, setPresentation] = useState({ item, minimized: false })
+  if (presentation.item !== item) setPresentation({ item, minimized: false })
+  const minimized = open && presentation.item === item && presentation.minimized
+  const visible = open && !minimized && presentationActive
+  const retained = minimized || (open && !presentationActive)
+  useEffect(() => onMinimizedChange?.(minimized), [minimized, onMinimizedChange])
+  useEffect(() => () => onMinimizedChange?.(false), [onMinimizedChange])
   const [hasNestedFullscreen, setHasNestedFullscreen] = useState(hasStreamdownFullscreen)
   const isBackgroundIsolatedRef = useRef(false)
   const returnFocusRef = useRef<HTMLElement | null>(null)
   const contentElementRef = useRef<HTMLDivElement | null>(null)
   const previewSurfaceRef = useRef<PreviewFileSurfaceHandle | null>(null)
+  const minimize = (): void => {
+    setPresentation({ item, minimized: true })
+    releaseBackgroundIsolation()
+    onMinimize?.()
+  }
   const requestClose = useCallback(
     (checkGuard = true): void => {
       if (checkGuard && previewSurfaceRef.current) {
-        previewSurfaceRef.current.requestLeave(() => onClose(true))
+        previewSurfaceRef.current.requestLeave(() => {
+          setPresentation((current) => ({ ...current, minimized: false }))
+          onClose(true)
+        })
         return
       }
+      setPresentation((current) => ({ ...current, minimized: false }))
       onClose(true)
     },
     [onClose]
@@ -114,129 +157,183 @@ const FilePreviewDialog = ({
   }, [])
 
   useEffect(() => {
-    if (open) acquireBackgroundIsolation()
+    if (minimized || !presentationActive) releaseBackgroundIsolation()
+    else if (open) acquireBackgroundIsolation()
     else if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
       releaseBackgroundIsolation()
     }
-  }, [acquireBackgroundIsolation, open, releaseBackgroundIsolation])
+  }, [acquireBackgroundIsolation, minimized, open, presentationActive, releaseBackgroundIsolation])
 
   useEffect(() => releaseBackgroundIsolation, [releaseBackgroundIsolation])
 
+  useEffect(() => {
+    if (!minimized) return
+    // Restore focus after React has disabled the preview's focus trap.
+    const trigger = returnFocusRef.current
+    if (trigger?.isConnected && !trigger.matches(':disabled, [inert], [aria-disabled="true"]')) {
+      trigger.focus()
+    } else onFocusFallback?.()
+  }, [minimized, open, onFocusFallback])
+
   return (
-    <Dialog.Root
-      modal={false}
-      open={open}
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen) requestClose(true)
-      }}
-    >
-      <Dialog.Portal>
-        <div
-          aria-hidden="true"
-          data-state={open ? 'open' : 'closed'}
-          className={`${dialogOverlayClassName} z-[60]`}
-        />
-        {/* Own the top scroll lock when previewing over another modal (e.g. Settings).
-            React capture also admits child portals; fullscreen content keeps its own boundary. */}
-        <RemoveScroll
-          ref={setContentRef}
-          enabled={open}
-          // The application body already hides overflow; only lock scroll events here.
-          // Toggling the scrollbar stylesheet invalidates styles throughout the app.
-          removeScrollBar={false}
-          allowPinchZoom
-          noIsolation={hasNestedFullscreen}
-          forwardProps
+    <>
+      {minimized && item && presentationActive ? (
+        <Button
+          type="button"
+          variant="outline"
+          className="fixed bottom-4 right-4 z-40 max-w-[calc(100vw-2rem)]"
+          aria-label={t('Restore preview of {{title}}', { title: item.title })}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => {
+            setPresentation((current) => ({ ...current, minimized: false }))
+            requestAnimationFrame(() => contentElementRef.current?.focus())
+          }}
         >
-          <Dialog.Content
-            data-slot="file-preview-dialog"
-            aria-describedby={undefined}
-            aria-modal="true"
-            onCloseAutoFocus={(event) => event.preventDefault()}
-            // The inner FocusScope owns mount focus; without this the outer scope races it to the
-            // first header button.
-            onOpenAutoFocus={(event) => event.preventDefault()}
-            onEscapeKeyDown={(event) => {
-              // Radix handles Escape at document capture, before the PDF tool's
-              // bubbling handler can exit its mode. Preserve that inner action.
-              if (
-                event.target instanceof Element &&
-                event.target.closest(
-                  '[data-pdf-tool-active="true"], [data-preview-escape-boundary]'
-                )
-              ) {
-                event.preventDefault()
-              }
-            }}
-            onInteractOutside={(event) => event.preventDefault()}
-            onAnimationEnd={(event) => {
-              if (!open && event.target === event.currentTarget) releaseBackgroundIsolation()
-            }}
-            className={dialogPanelClassName(
-              'z-[60] box-border flex h-[90vh] w-[90vw] max-h-[calc(100svh-2rem)] max-w-[calc(100vw-2rem)] min-h-0 min-w-0 overflow-hidden overscroll-contain p-0'
-            )}
+          <span className="truncate">
+            {t('Restore preview of {{title}}', { title: item.title })}
+          </span>
+        </Button>
+      ) : null}
+      <Dialog.Root
+        modal={false}
+        open={visible}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) requestClose(true)
+        }}
+      >
+        <Dialog.Portal forceMount={retained ? true : undefined}>
+          {/* Keep the backdrop mounted with the retained content: Radix portals each child
+            separately, so recreating it would place it above the content after restoration. */}
+          <PreviewBackdrop open={open} minimized={retained} />
+          {/* Own the top scroll lock when previewing over another modal (e.g. Settings).
+            React capture also admits child portals; fullscreen content keeps its own boundary. */}
+          <RemoveScroll
+            ref={setContentRef}
+            enabled={visible}
+            // The application body already hides overflow; only lock scroll events here.
+            // Toggling the scrollbar stylesheet invalidates styles throughout the app.
+            removeScrollBar={false}
+            allowPinchZoom
+            noIsolation={hasNestedFullscreen}
+            forwardProps
           >
-            <Dialog.Title className="sr-only">
-              {dialogItem ? t('Preview {{title}}', { title: dialogItem.title }) : t('File preview')}
-            </Dialog.Title>
-            <FocusScope
-              asChild
-              loop
-              trapped={!(open && hasNestedFullscreen)}
-              onMountAutoFocus={(event) => {
-                returnFocusRef.current =
-                  document.activeElement instanceof HTMLElement ? document.activeElement : null
-                // Open with nothing selected: an auto-focused header button shows a focus ring and
-                // its tooltip, and the first Escape dies on that control instead of closing the
-                // dialog. Focus the dialog shell (tabIndex -1 via the outer FocusScope) instead.
-                event.preventDefault()
-                contentElementRef.current?.focus()
-              }}
-              onUnmountAutoFocus={(event) => {
-                releaseBackgroundIsolation()
-                const trigger = returnFocusRef.current
+            <Dialog.Content
+              forceMount={retained ? true : undefined}
+              style={retained ? { display: 'none' } : undefined}
+              data-slot="file-preview-dialog"
+              aria-describedby={undefined}
+              aria-modal={visible ? 'true' : undefined}
+              onCloseAutoFocus={(event) => event.preventDefault()}
+              // The inner FocusScope owns mount focus; without this the outer scope races it to the
+              // first header button.
+              onOpenAutoFocus={(event) => event.preventDefault()}
+              onEscapeKeyDown={(event) => {
+                if (minimized) {
+                  event.preventDefault()
+                  return
+                }
+                // Radix handles Escape at document capture, before the PDF tool's
+                // bubbling handler can exit its mode. Preserve that inner action.
                 if (
-                  !trigger?.isConnected ||
-                  trigger.matches(':disabled, [inert], [aria-disabled="true"]')
+                  event.target instanceof Element &&
+                  event.target.closest(
+                    '[data-pdf-tool-active="true"], [data-preview-escape-boundary]'
+                  )
                 ) {
-                  if (onFocusFallback) {
-                    event.preventDefault()
-                    onFocusFallback()
-                  }
+                  event.preventDefault()
                 }
               }}
+              onInteractOutside={(event) => {
+                const childInteraction = event.defaultPrevented
+                event.preventDefault()
+                if (
+                  !childInteraction &&
+                  visible &&
+                  event.detail.originalEvent.type === 'pointerdown' &&
+                  !hasNestedFullscreen
+                ) {
+                  minimize()
+                }
+              }}
+              onAnimationEnd={(event) => {
+                if (!open && event.target === event.currentTarget) releaseBackgroundIsolation()
+              }}
+              className={dialogPanelClassName(
+                'box-border flex h-[90vh] w-[90vw] max-h-[calc(100svh-2rem)] max-w-[calc(100vw-2rem)] min-h-0 min-w-0 overflow-hidden overscroll-contain p-0'
+              )}
             >
-              <div className="flex size-full min-h-0 min-w-0 overflow-hidden">
-                {dialogItem ? (
-                  <PreviewFileSurface
-                    ref={previewSurfaceRef}
-                    item={dialogItem}
-                    onClose={() => requestClose(false)}
-                    {...(onItemChange
-                      ? {
-                          onItemChange: (nextItem: PreviewFileItem) => onItemChange(nextItem, true)
-                        }
-                      : {})}
-                    provenanceEntry="trailing"
-                    // The modal overlays the conversation panel, so a View in context navigation must
-                    // also close the dialog for the switched session to become visible.
-                    onViewInContextNavigate={onViewInContextNavigate ?? onClose}
-                    allowReadingContext={allowReadingContext}
-                    onReadWithAgent={onReadWithAgent}
-                    onPdfContextError={onPdfContextError}
-                    tooltipClassName="z-[70]"
-                    actionMenuContentClassName="z-[70]"
-                    leaveGuardScope={dialogPreviewGuardScope(dialogItem.projectId, dialogItem.id)}
-                    retryResolutionEnabled={open}
-                    {...annotationPort}
-                  />
-                ) : null}
-              </div>
-            </FocusScope>
-          </Dialog.Content>
-        </RemoveScroll>
-      </Dialog.Portal>
-    </Dialog.Root>
+              <Dialog.Title className="sr-only">
+                {dialogItem
+                  ? t('Preview {{title}}', { title: dialogItem.title })
+                  : t('File preview')}
+              </Dialog.Title>
+              <FocusScope
+                asChild
+                loop
+                trapped={visible && !hasNestedFullscreen}
+                onMountAutoFocus={(event) => {
+                  returnFocusRef.current =
+                    document.activeElement instanceof HTMLElement ? document.activeElement : null
+                  // Open with nothing selected: an auto-focused header button shows a focus ring and
+                  // its tooltip, and the first Escape dies on that control instead of closing the
+                  // dialog. Focus the dialog shell (tabIndex -1 via the outer FocusScope) instead.
+                  event.preventDefault()
+                  contentElementRef.current?.focus()
+                }}
+                onUnmountAutoFocus={(event) => {
+                  // Radix schedules this after unmount. A new preview may already have opened;
+                  // the old cleanup must not unlock its background or steal its focus.
+                  if (contentElementRef.current) {
+                    event.preventDefault()
+                    return
+                  }
+                  releaseBackgroundIsolation()
+                  const trigger = returnFocusRef.current
+                  if (
+                    !trigger?.isConnected ||
+                    trigger.matches(':disabled, [inert], [aria-disabled="true"]')
+                  ) {
+                    if (onFocusFallback) {
+                      event.preventDefault()
+                      onFocusFallback()
+                    }
+                  }
+                }}
+              >
+                <div className="flex size-full min-h-0 min-w-0 overflow-hidden">
+                  {dialogItem ? (
+                    <PreviewFileSurface
+                      ref={previewSurfaceRef}
+                      item={dialogItem}
+                      onClose={() => requestClose(false)}
+                      onMinimize={minimize}
+                      {...(onItemChange
+                        ? {
+                            onItemChange: (nextItem: PreviewFileItem) =>
+                              onItemChange(nextItem, true)
+                          }
+                        : {})}
+                      provenanceEntry="trailing"
+                      // The modal overlays the conversation panel, so a View in context navigation must
+                      // also close the dialog for the switched session to become visible.
+                      onViewInContextNavigate={onViewInContextNavigate ?? onClose}
+                      allowReadingContext={allowReadingContext}
+                      onReadWithAgent={onReadWithAgent}
+                      onPdfContextError={onPdfContextError}
+                      tooltipClassName="z-[70]"
+                      actionMenuContentClassName="z-[70]"
+                      leaveGuardScope={dialogPreviewGuardScope(dialogItem.projectId, dialogItem.id)}
+                      retryResolutionEnabled={open}
+                      {...annotationPort}
+                    />
+                  ) : null}
+                </div>
+              </FocusScope>
+            </Dialog.Content>
+          </RemoveScroll>
+        </Dialog.Portal>
+      </Dialog.Root>
+    </>
   )
 }
 

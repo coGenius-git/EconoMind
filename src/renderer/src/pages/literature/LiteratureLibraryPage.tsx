@@ -1,7 +1,5 @@
 import { ResearchWorkbenchHeader } from '@/components/ResearchWorkbenchHeader'
 import { useSettingsStore } from '@/stores/settings-store'
-import { LiteratureScreeningWizard } from './LiteratureScreeningWizard'
-import { BibliometricsPanel } from '../research-tools/BibliometricsPanel'
 import { ConfirmActionDialog } from '@/components/ui/confirm-action-dialog'
 import { LITERATURE_JOB_MAX_ITEMS } from '../../../../shared/literature-jobs'
 import type { PdfAnnotation } from '../../../../shared/pdf-annotations'
@@ -157,6 +155,29 @@ import { LiteratureRowActions } from './list/LiteratureItemRow'
 const JournalManager = lazy(() =>
   import('./JournalManager').then((module) => ({ default: module.JournalManager }))
 )
+const LiteratureScreeningWizard = lazy(() =>
+  import('./LiteratureScreeningWizard').then((module) => ({
+    default: module.LiteratureScreeningWizard
+  }))
+)
+const BibliometricsPanel = lazy(() =>
+  import('../research-tools/BibliometricsPanel').then((module) => ({
+    default: module.BibliometricsPanel
+  }))
+)
+
+const LiteratureToolLoading = (): React.JSX.Element => {
+  const { t } = useTranslation()
+  return (
+    <div
+      role="status"
+      className="flex flex-1 items-center justify-center gap-3 p-8 text-muted-foreground"
+    >
+      <LoaderCircle className="size-5 motion-safe:animate-spin" aria-hidden="true" />
+      {t('Loading…')}
+    </div>
+  )
+}
 
 const CHILD_LAYER_DISMISS_GUARD_MS = 1_000
 
@@ -1541,19 +1562,21 @@ const LiteratureLibraryPage = (): React.JSX.Element => {
           onSettings={() => useSettingsStore.getState().openSettings()}
         />
         {screeningWizardOpen ? (
-          <LiteratureScreeningWizard
-            open
-            onClose={() => setScreeningWizardOpen(false)}
-            reviewProjectId={reviewProjectId}
-            reviewProjectName={
-              activeProjects.find((project) => project.id === reviewProjectId)?.name
-            }
-            scope={{
-              projectId,
-              collectionId,
-              scopeName: selectedProject?.name ?? selectedCollection?.name ?? t('All references')
-            }}
-          />
+          <Suspense fallback={<LiteratureToolLoading />}>
+            <LiteratureScreeningWizard
+              open
+              onClose={() => setScreeningWizardOpen(false)}
+              reviewProjectId={reviewProjectId}
+              reviewProjectName={
+                activeProjects.find((project) => project.id === reviewProjectId)?.name
+              }
+              scope={{
+                projectId,
+                collectionId,
+                scopeName: selectedProject?.name ?? selectedCollection?.name ?? t('All references')
+              }}
+            />
+          </Suspense>
         ) : null}
         <div className={cn('flex min-h-0 flex-1 overflow-hidden', screeningWizardOpen && 'hidden')}>
           <LiteratureLibrarySidebar
@@ -2804,19 +2827,24 @@ const LiteratureLibraryPage = (): React.JSX.Element => {
           <ProjectFormDialog {...batchProjectFormDialog.dialogProps} />
           <LiteratureFilePreviewDialog
             onFocusFallback={focusPreviewFallback}
+            onMinimize={closeSelectedItemDetail}
             item={previewItem}
             allowReadingContext={false}
             onReadWithAgent={requestReadWithAgent}
             onClose={closeFilePreview}
           />
         </div>
-        <BibliometricsPanel
-          open={bibliometricsOpen}
-          onClose={() => setBibliometricsOpen(false)}
-          projectId={projectId}
-          collectionId={collectionId}
-          scopeName={selectedProject?.name ?? selectedCollection?.name ?? t('All references')}
-        />
+        {bibliometricsOpen ? (
+          <Suspense fallback={<LiteratureToolLoading />}>
+            <BibliometricsPanel
+              open
+              onClose={() => setBibliometricsOpen(false)}
+              projectId={projectId}
+              collectionId={collectionId}
+              scopeName={selectedProject?.name ?? selectedCollection?.name ?? t('All references')}
+            />
+          </Suspense>
+        ) : null}
       </main>
     </SmartDecisionPendingContext.Provider>
   )

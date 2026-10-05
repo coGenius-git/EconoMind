@@ -14,6 +14,7 @@ import {
   Link2Off,
   Loader2,
   Maximize2,
+  Minimize2,
   MoreHorizontal,
   Pencil,
   X
@@ -109,6 +110,7 @@ type PreviewFileSurfaceProps = PreviewInteractionPort & {
   tooltipClassName?: string
   actionMenuContentClassName?: string
   onClose: () => void
+  onMinimize?: () => void
   onOpenFullScreen?: () => void
   onOpenProvenance?: () => void
   onViewInContextNavigate?: () => void
@@ -241,6 +243,7 @@ const PreviewViewInContextButton = ({
 const PreviewFileHeader = ({
   item,
   onClose,
+  onMinimize,
   onOpenFullScreen,
   onOpenProvenance,
   onViewInContext,
@@ -258,6 +261,7 @@ const PreviewFileHeader = ({
   PreviewFileSurfaceProps,
   | 'item'
   | 'onClose'
+  | 'onMinimize'
   | 'onOpenFullScreen'
   | 'onOpenProvenance'
   | 'onReload'
@@ -496,6 +500,19 @@ const PreviewFileHeader = ({
           </Tooltip>
         </TooltipProvider>
       ) : null}
+      {onMinimize ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          className={previewHeaderActionClassName}
+          aria-label={t('Hide preview')}
+          title={t('Hide preview')}
+          onClick={onMinimize}
+        >
+          <Minimize2 aria-hidden="true" />
+        </Button>
+      ) : null}
       {!managedControlsOnly ? (
         <TooltipProvider>
           <Tooltip>
@@ -654,6 +671,7 @@ const PreviewFileSurfaceContent = forwardRef<PreviewFileSurfaceHandle, PreviewFi
       tooltipClassName,
       actionMenuContentClassName,
       onClose,
+      onMinimize,
       onOpenFullScreen,
       onViewInContextNavigate,
       provenanceEntry = 'menu',
@@ -1526,6 +1544,7 @@ const PreviewFileSurfaceContent = forwardRef<PreviewFileSurfaceHandle, PreviewFi
               <PreviewFileHeader
                 item={resolvedPreviewItem}
                 onClose={closePreview}
+                onMinimize={onMinimize}
                 onOpenFullScreen={onOpenFullScreen}
                 onReload={() => setReloadToken((token) => token + 1)}
                 pdfContextAction={visiblePdfContextAction}

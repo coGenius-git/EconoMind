@@ -136,7 +136,7 @@ describe('FilePreviewDialog closing lifecycle', () => {
     )
   })
 
-  it('keeps the fullscreen chrome modal behavior without outside dismissal', () => {
+  it('minimizes an outside pointer interaction without closing the preview', () => {
     act(() => root.render(<FilePreviewDialog item={item} onClose={vi.fn()} />))
 
     expect(rootSpy).toHaveBeenCalledWith(expect.objectContaining({ modal: false }))
@@ -149,8 +149,27 @@ describe('FilePreviewDialog closing lifecycle', () => {
       | ((event: { preventDefault: () => void; detail: { originalEvent: Event } }) => void)
       | undefined
     const preventDefault = vi.fn()
-    onInteractOutside?.({ preventDefault, detail: { originalEvent: new Event('pointerdown') } })
+    act(() =>
+      onInteractOutside?.({ preventDefault, detail: { originalEvent: new Event('pointerdown') } })
+    )
     expect(preventDefault).toHaveBeenCalledOnce()
+    expect(rootSpy).toHaveBeenLastCalledWith({ open: false, modal: false })
+    expect(container.inert).toBe(false)
+    expect(container.querySelector('[aria-label="Restore preview of report.pdf"]')).not.toBeNull()
+  })
+
+  it('does not minimize a gesture already consumed by a child dialog or menu', () => {
+    act(() => root.render(<FilePreviewDialog item={item} onClose={vi.fn()} />))
+    const handler = contentSpy.mock.calls.at(-1)?.[0].onInteractOutside
+    act(() =>
+      handler({
+        defaultPrevented: true,
+        preventDefault: vi.fn(),
+        detail: { originalEvent: new Event('pointerdown') }
+      })
+    )
+    expect(rootSpy).toHaveBeenLastCalledWith({ open: true, modal: false })
+    expect(container.inert).toBe(true)
   })
 
   it('places a direct Provenance entry in the modal header actions', () => {

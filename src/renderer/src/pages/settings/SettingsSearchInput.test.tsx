@@ -115,37 +115,6 @@ describe('SettingsSearchInput', () => {
     )
   })
 
-  it('routes plain K to global search and Alt+K to the local search in the same dialog', () => {
-    ;(window as unknown as { api: unknown }).api = { platform: 'darwin' }
-    act(() => {
-      root.render(
-        <div role="dialog">
-          <SettingsSearchInput
-            aria-label="Search settings"
-            shortcutScope="global"
-            value=""
-            onChange={() => undefined}
-          />
-          <SettingsSearchInput aria-label="Search skills" value="" onChange={() => undefined} />
-        </div>
-      )
-    })
-
-    pressSearchShortcut({ metaKey: true })
-
-    const globalSearch = document.body.querySelector<HTMLInputElement>(
-      '[aria-label="Search settings"]'
-    )!
-    expect(document.activeElement).toBe(globalSearch)
-    expect(globalSearch.getAttribute('aria-keyshortcuts')).toBe('Meta+K')
-    expect(globalSearch.nextElementSibling?.textContent).toBe('⌘K')
-
-    pressSearchShortcut({ metaKey: true, altKey: true })
-    expect(document.activeElement).toBe(
-      document.body.querySelector<HTMLInputElement>('[aria-label="Search skills"]')
-    )
-  })
-
   it('keeps last-mounted-wins for same-scope fields in the same dialog', () => {
     ;(window as unknown as { api: unknown }).api = { platform: 'darwin' }
     act(() => {
@@ -164,17 +133,12 @@ describe('SettingsSearchInput', () => {
     )
   })
 
-  it('keeps a nested dialog search ahead of the global field in the dialog below', () => {
+  it('keeps a nested dialog search ahead of the field in the dialog below', () => {
     ;(window as unknown as { api: unknown }).api = { platform: 'darwin' }
     act(() => {
       root.render(
         <div role="dialog" aria-label="Settings">
-          <SettingsSearchInput
-            aria-label="Search settings"
-            shortcutScope="global"
-            value=""
-            onChange={() => undefined}
-          />
+          <SettingsSearchInput aria-label="Search skills" value="" onChange={() => undefined} />
           <div role="dialog" aria-label="Bulk manage">
             <SettingsSearchInput aria-label="Filter selected" value="" onChange={() => undefined} />
           </div>
@@ -204,15 +168,6 @@ describe('SettingsSearchInput', () => {
 
     const event = pressSearchShortcut({ metaKey: true, altKey: true })
 
-    expect(event.defaultPrevented).toBe(false)
-    expect(document.activeElement).toBe(document.body)
-  })
-
-  it('preserves the global shortcut character on alternate keyboard layouts', () => {
-    act(() =>
-      root.render(<SettingsSearchInput shortcutScope="global" aria-label="Global search" />)
-    )
-    const event = pressSearchShortcut({ metaKey: true, key: 't', code: 'KeyK' })
     expect(event.defaultPrevented).toBe(false)
     expect(document.activeElement).toBe(document.body)
   })

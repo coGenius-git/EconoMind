@@ -11,6 +11,7 @@ import type {
 } from '../window-controls'
 
 import type { InterfaceScale } from '../interface-scale'
+import type { SettingsWindowNavigation } from '../settings-window'
 
 import {
   callable,
@@ -25,6 +26,39 @@ import {
 } from './definition'
 
 export const contracts = {
+  'window.confirmSettingsClose': callable<() => Promise<void>>()(
+    'window',
+    ['window:confirm-settings-close', ELECTRON],
+    { optionalMember: true }
+  ),
+  'window.onSettingsCloseRequest': callable<(listener: () => void) => RemoveListener>()(
+    'window',
+    ['window:settings-close-request', ELECTRON_EVENT],
+    { optionalMember: true }
+  ),
+  'window.openSettings': callable<(route?: string) => Promise<void>>()(
+    'window',
+    ['window:open-settings', ELECTRON],
+    { optionalMember: true }
+  ),
+  'window.takeSettingsRoute': callable<() => Promise<string | undefined>>()(
+    'window',
+    ['window:take-settings-route', ELECTRON],
+    { optionalMember: true }
+  ),
+  'window.onSettingsRoute': callable<(listener: (route: string) => void) => RemoveListener>()(
+    'window',
+    ['window:settings-route', ELECTRON_EVENT],
+    { optionalMember: true }
+  ),
+  'window.navigateMain': callable<(request: SettingsWindowNavigation) => Promise<void>>()(
+    'window',
+    ['window:navigate-main', ELECTRON],
+    { optionalMember: true }
+  ),
+  'window.onSettingsNavigation': callable<
+    (listener: (request: SettingsWindowNavigation) => void) => RemoveListener
+  >()('window', ['window:settings-navigation', ELECTRON_EVENT], { optionalMember: true }),
   'window.announceWindowFindAppearance': callable<(appearance: WindowFindAppearance) => void>()(
     'window',
     ['window:find-appearance-changed', SEND],
