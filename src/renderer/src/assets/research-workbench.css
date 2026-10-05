@@ -336,12 +336,16 @@
     background: transparent;
   }
 
-  /* Native title bars share the atmosphere and glass of the main workspace. */
+  /* Native title bars expose the workspace atmosphere without adding a separate tint. */
   .research-titlebar {
     pointer-events: auto;
-    background: var(--research-glass);
-    -webkit-backdrop-filter: var(--research-glass-filter);
-    backdrop-filter: var(--research-glass-filter);
+    background: transparent;
+  }
+
+  /* Keep one viewport-aligned image beneath the title bar and the page below it. */
+  .windows-app-content.research-page,
+  .windows-app-content .research-page {
+    background-attachment: fixed;
   }
 
   /* Independent Settings uses the same atmosphere and glass as the main workspace. */
