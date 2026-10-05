@@ -35,6 +35,35 @@
 }
 
 @layer components {
+  .research-logo-orbit {
+    width: 1024px;
+    height: 1024px;
+    opacity: 0.92;
+    background: conic-gradient(
+      from 0deg,
+      transparent 0deg 242deg,
+      #688eaa00 262deg,
+      #688eaa88 288deg,
+      #d3ecf4 316deg,
+      #fff 327deg,
+      #9fb9c8bb 340deg,
+      transparent 356deg
+    );
+    animation: research-logo-orbit 10s linear infinite;
+  }
+
+  @keyframes research-logo-orbit {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .research-logo-flow {
+      display: none;
+    }
+  }
+
   .research-settings-focus-backdrop {
     background: rgb(71 93 112 / 0.16);
     -webkit-backdrop-filter: blur(14px) saturate(0.78);

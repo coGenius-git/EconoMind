@@ -7,6 +7,7 @@ import { sessionPackageImportAvailable } from '@/components/session-package-impo
 import { importSessionPackage } from '@/lib/session-package-import'
 
 import { AppLogo } from '@/components/AppLogo'
+import { FlowingAppLogo } from '@/components/FlowingAppLogo'
 
 const SessionPackageEntryRow = ({ projectId }: { projectId: string }): React.JSX.Element => {
   const { t } = useTranslation()
@@ -211,11 +212,15 @@ const EmptyConversationBanner = ({
       data-testid="empty-conversation-banner"
       className="pointer-events-none absolute inset-x-0 top-[42%] flex -translate-y-1/2 flex-col items-center gap-4 px-6 text-center"
     >
-      <AppLogo
-        transparent
-        className="research-starter-logo size-28 object-contain md:size-32"
-        aria-hidden="true"
-      />
+      {researchTitle ? (
+        <AppLogo
+          transparent
+          className="research-starter-logo size-28 object-contain md:size-32"
+          aria-hidden="true"
+        />
+      ) : (
+        <FlowingAppLogo className="research-starter-logo size-28 object-contain md:size-32" />
+      )}
       <div className="flex flex-col gap-2">
         <h2 className="text-balance text-lg font-normal text-text-000 md:text-xl">
           {researchTitle
