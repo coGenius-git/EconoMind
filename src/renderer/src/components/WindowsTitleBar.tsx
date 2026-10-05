@@ -240,16 +240,12 @@ const WindowsDesktopFrame = ({
       <header
         ref={headerRef}
         hidden={fullscreen}
-        className={
-          settings
-            ? 'windows-titlebar research-settings-titlebar text-foreground'
-            : 'windows-titlebar bg-background text-foreground'
-        }
+        className="windows-titlebar research-titlebar text-foreground"
         data-testid="windows-titlebar"
       >
         <div className="windows-titlebar-safe-area">
           <div className="flex shrink-0 items-center gap-2 px-3 text-xs select-none">
-            <AppLogo transparent={settings} alt="" className="size-4 object-contain" />
+            <AppLogo transparent alt="" className="size-4 object-contain" />
             <span>{settings ? `${APP.name} — ${t('Settings')}` : APP.name}</span>
           </div>
           {!settings ? (
@@ -291,7 +287,7 @@ const WindowsDesktopFrame = ({
           ) : null}
         </div>
       </header>
-      <div className="windows-app-content">{children}</div>
+      <div className="windows-app-content research-page">{children}</div>
     </WindowsTitleBarContext.Provider>
   )
 }
