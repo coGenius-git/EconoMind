@@ -5,6 +5,7 @@ import {
   type SettingsRoute
 } from '../pages/settings/settings-navigation'
 import { rememberSettingsReturnFocusTarget } from './settings-return-focus'
+import { isSettingsWindow } from '../../../shared/settings-window'
 
 export type SettingsNavigationIntent = Readonly<{
   requestId: number
@@ -67,7 +68,14 @@ export const createSettingsNavigationSlice = ({
           : {})
       })
     }
-    openLocally()
+    if (typeof window !== 'undefined' && window.api?.window?.openSettings && !isSettingsWindow()) {
+      void window.api.window
+        .openSettings(route ? JSON.stringify(route) : undefined)
+        .catch((error) => {
+          console.warn('Could not open the Settings window', error)
+          openLocally()
+        })
+    } else openLocally()
   }
 
   return {

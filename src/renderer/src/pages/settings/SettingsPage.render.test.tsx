@@ -1201,7 +1201,7 @@ describe('SettingsPage layout', () => {
     // Model is the default active panel.
     expect(nav?.querySelector('[aria-current="page"]')?.textContent).toContain('Model')
 
-    // Browser Settings keeps its close control in the sidebar footer.
+    // Browser Settings keeps its close control in the upper-right corner.
     expect(document.body.querySelector('[aria-label="Close settings"]')).not.toBeNull()
     expect(document.body.querySelector('[aria-label="Back"]')).toBeNull()
     expect(document.body.querySelector('[aria-label="Maximize"]')).toBeNull()

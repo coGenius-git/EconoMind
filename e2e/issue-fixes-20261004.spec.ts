@@ -66,42 +66,6 @@ test('workspace preview minimization restores main-window search shortcuts', asy
   await expect(preview).toBeVisible()
 })
 
-test('opens frosted Settings in place, keeps edits, and restores the main view on close', async ({
-  app
-}, testInfo) => {
-  const page = await app.completeOnboarding()
-  await page.evaluate(() => window.api.locale.setPreference({ preference: 'en' }))
-  const windowCount = page.context().pages().length
-  await page.getByRole('button', { name: 'Settings', exact: true }).click()
-  const settings = page.getByRole('dialog', { name: 'Settings', exact: true })
-  await expect(settings).toBeVisible()
-  expect(page.context().pages()).toHaveLength(windowCount)
-  const backdrop = page.locator('.research-settings-backdrop')
-  await expect(backdrop).toBeVisible()
-  expect(await backdrop.evaluate((element) => getComputedStyle(element).backdropFilter)).toContain(
-    'blur('
-  )
-  await settings
-    .getByRole('navigation', { name: 'Settings', exact: true })
-    .getByRole('button', { name: 'General', exact: true })
-    .click()
-  const toggle = settings.getByRole('switch', { name: 'Toggle task notifications', exact: true })
-  const wasEnabled = (await toggle.getAttribute('aria-checked')) === 'true'
-  await toggle.click()
-  await expect
-    .poll(
-      async () =>
-        (await page.evaluate(() => window.api.settings.getSettings())).notificationsEnabled
-    )
-    .toBe(!wasEnabled)
-  await page.screenshot({ path: testInfo.outputPath('frosted-settings-overlay.png') })
-  await settings.getByRole('button', { name: 'Close settings', exact: true }).click()
-  await expect(settings).toBeHidden()
-  await expect(backdrop).toBeHidden()
-  await page.getByRole('button', { name: 'Library', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Literature library', exact: true })).toBeVisible()
-})
-
 test('opens one independent Settings window while the main Library remains interactive', async ({
   app
 }, testInfo) => {
@@ -109,7 +73,7 @@ test('opens one independent Settings window while the main Library remains inter
   await page.evaluate(() => window.api.locale.setPreference({ preference: 'en' }))
   await expect(page.getByText('Getting started with EconoMind', { exact: true })).toHaveCount(0)
   const nextWindow = page.context().waitForEvent('page')
-  await page.evaluate(() => window.api.window.openSettings!())
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
   const settingsPage = await nextWindow
   await expect(settingsPage).toHaveURL(/window=settings/)
   const settings = settingsPage.getByRole('dialog', { name: 'Settings', exact: true })
@@ -128,7 +92,7 @@ test('opens one independent Settings window while the main Library remains inter
   expect(await page.locator('#root').evaluate((element) => (element as HTMLElement).inert)).toBe(
     false
   )
-  await page.evaluate(() => window.api.window.openSettings!())
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
   expect(
     page
       .context()

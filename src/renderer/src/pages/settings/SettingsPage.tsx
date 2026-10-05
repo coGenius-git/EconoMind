@@ -1267,18 +1267,6 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
                     data-slot="settings-navigation-footer"
                     className="shrink-0 border-t border-border px-3 py-2"
                   >
-                    {!standalone ? (
-                      <Dialog.Close asChild>
-                        <Button
-                          variant="ghost"
-                          className="mb-1 h-8 w-full justify-start gap-2 px-2 text-muted-foreground"
-                          aria-label={t('Close settings')}
-                        >
-                          <X className="size-4" aria-hidden="true" />
-                          {t('Close settings')}
-                        </Button>
-                      </Dialog.Close>
-                    ) : null}
                     <a
                       href={APP.links.githubFeedback}
                       target="_blank"
@@ -1303,18 +1291,35 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
               inert={isMobile && isMobileNavOpen ? true : undefined}
               className="research-settings-content flex min-h-0 min-w-0 flex-1 flex-col"
             >
-              {isMobile ? (
-                <Button
-                  ref={mobileNavTriggerRef}
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => setIsMobileNavOpen(true)}
-                  aria-label={t('Open settings navigation')}
-                  className="mx-3 mt-3 shrink-0 self-start text-muted-foreground"
-                >
-                  <Menu className="size-4" aria-hidden="true" />
-                </Button>
+              {isMobile || !standalone ? (
+                <div className="flex h-10 shrink-0 items-center justify-end px-3">
+                  {isMobile ? (
+                    <Button
+                      ref={mobileNavTriggerRef}
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => setIsMobileNavOpen(true)}
+                      aria-label={t('Open settings navigation')}
+                      className="mr-auto text-muted-foreground"
+                    >
+                      <Menu className="size-4" aria-hidden="true" />
+                    </Button>
+                  ) : null}
+                  {!standalone ? (
+                    <Dialog.Close asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={t('Close settings')}
+                        className="text-muted-foreground"
+                      >
+                        <X className="size-4" aria-hidden="true" />
+                      </Button>
+                    </Dialog.Close>
+                  ) : null}
+                </div>
               ) : null}
 
               {preflightFailed ? (
