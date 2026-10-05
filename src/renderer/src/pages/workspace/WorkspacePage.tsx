@@ -1878,12 +1878,10 @@ const WorkspacePage = ({
             />
 
             <FilePreviewDialog
+              presentationActive={isPreviewPresentationActive}
+              onMinimizedChange={usePreviewWorkbenchStore.getState().setFileDialogMinimized}
               onFocusFallback={() => previewFocusFallbackRef.current?.focus()}
-              item={
-                isPreviewPresentationActive && fileDialogItem?.projectId === activeProjectId
-                  ? fileDialogItem
-                  : undefined
-              }
+              item={fileDialogItem?.projectId === activeProjectId ? fileDialogItem : undefined}
               onClose={usePreviewWorkbenchStore.getState().closeFileDialog}
               onItemChange={usePreviewWorkbenchStore.getState().openFileDialog}
               {...previewAnnotations}

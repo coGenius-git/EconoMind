@@ -19,7 +19,14 @@ export const SETTINGS_PANEL_IDS = [
 
 export type SettingsPanelId = (typeof SETTINGS_PANEL_IDS)[number]
 export type SettingsWindowNavigation = {
-  kind: 'session' | 'project' | 'literature'
+  kind:
+    | 'session'
+    | 'project'
+    | 'literature'
+    | 'customize-skill'
+    | 'customize-specialist'
+    | 'wsl-support'
+    | 'wsl-create-project'
   id: string
 }
 

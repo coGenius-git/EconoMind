@@ -195,6 +195,7 @@ type PreviewWorkbenchStoreData = PreviewSlice & {
   // A one-off file preview stays outside the tab list so Files and Global Search can open the same
   // dialog without creating a durable workbench tab.
   fileDialogItem: PreviewFileItem | undefined
+  fileDialogMinimized: boolean
 }
 
 type PreviewWorkbenchStore = PreviewWorkbenchStoreData & {
@@ -224,6 +225,7 @@ type PreviewWorkbenchStore = PreviewWorkbenchStoreData & {
   setToolItemExpanded: (itemId: string | null) => void
   openFileDialog: (item: PreviewFileItem, skipGuard?: boolean) => boolean
   closeFileDialog: (skipGuard?: boolean) => boolean
+  setFileDialogMinimized: (minimized: boolean) => void
   openPanel: () => void
   collapsePanel: () => void
   togglePanel: () => void
@@ -242,7 +244,8 @@ export const createInitialPreviewWorkbenchState = (): PreviewWorkbenchStoreData 
   draftStagedUploadIds: [],
   pdfReadingPositionByBindingId: {},
   expandedToolItemId: null,
-  fileDialogItem: undefined
+  fileDialogItem: undefined,
+  fileDialogMinimized: false
 })
 
 // The empty slice a project starts from before any preview tabs are opened.
@@ -980,7 +983,7 @@ export const usePreviewWorkbenchStore = create<PreviewWorkbenchStore>((set, get)
     const current = get().fileDialogItem
     return previewLeaveGuards.request(
       skipGuard ? undefined : dialogPreviewGuardScope(current?.projectId, current?.id),
-      () => set({ fileDialogItem: item })
+      () => set({ fileDialogItem: item, fileDialogMinimized: false })
     )
   },
 
@@ -988,9 +991,11 @@ export const usePreviewWorkbenchStore = create<PreviewWorkbenchStore>((set, get)
     const item = get().fileDialogItem
     return previewLeaveGuards.request(
       skipGuard ? undefined : dialogPreviewGuardScope(item?.projectId, item?.id),
-      () => set({ fileDialogItem: undefined })
+      () => set({ fileDialogItem: undefined, fileDialogMinimized: false })
     )
   },
+
+  setFileDialogMinimized: (minimized) => set({ fileDialogMinimized: minimized }),
 
   // Records an explicit open request so the resizable panel can expand even if it is already open.
   openPanel: () => {

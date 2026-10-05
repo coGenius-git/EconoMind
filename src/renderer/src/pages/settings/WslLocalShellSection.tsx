@@ -41,6 +41,7 @@ import {
 } from '../../../../shared/wsl-setup'
 import { SettingsField, SettingsSection } from './SettingsLayout'
 import { useWslSetupStatus } from './useWslSetupStatus'
+import { requestSettingsWindowWorkflow } from './settings-window-workflow'
 
 const statusCopy = (snapshot: WslSetupSnapshot, t: (key: string) => string): string => {
   switch (snapshot.state) {
@@ -489,6 +490,7 @@ export const WslLocalShellSection = ({
 
   const startSupportConversation = async (): Promise<void> => {
     if (!chatProjectId) return
+    if (requestSettingsWindowWorkflow({ kind: 'wsl-support', id: chatProjectId })) return
     setBusy(true)
     setConversationError(false)
     try {
@@ -502,6 +504,7 @@ export const WslLocalShellSection = ({
   }
 
   const createProjectForSetup = (): void => {
+    if (requestSettingsWindowWorkflow({ kind: 'wsl-create-project', id: 'new-project' })) return
     useSettingsStore.getState().closeSettings()
     useNavigationStore.getState().requestWslSetupProjectCreation()
   }

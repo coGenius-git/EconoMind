@@ -12,6 +12,7 @@ import {
 } from '../../../../shared/settings-window'
 import { SettingsPage, type SettingsPageHandle } from './SettingsPage'
 import type { SettingsRoute } from './settings-navigation'
+import { SETTINGS_WINDOW_WORKFLOW_EVENT } from './settings-window-workflow'
 
 // Like the modal Settings surface, editing owns Ctrl+Z; undo receipts remain clickable.
 const allowsArchiveShortcut = (): boolean => false
@@ -29,6 +30,17 @@ export function SettingsWindow(): React.JSX.Element {
   const navigate = (kind: SettingsWindowNavigation['kind'], id: string): void => {
     void window.api.window.navigateMain?.({ kind, id })
   }
+
+  useEffect(() => {
+    const launch = (event: Event): void => {
+      const request = (event as CustomEvent<SettingsWindowNavigation>).detail
+      pageRef.current?.requestLeave(() => {
+        void window.api.window.navigateMain?.(request).then(close).catch(console.error)
+      })
+    }
+    window.addEventListener(SETTINGS_WINDOW_WORKFLOW_EVENT, launch)
+    return () => window.removeEventListener(SETTINGS_WINDOW_WORKFLOW_EVENT, launch)
+  }, [close])
 
   useEffect(() => {
     document.title = `EconoMind — ${t('Settings')}`

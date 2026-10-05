@@ -74,7 +74,15 @@ export const createSettingsWindowController = (
       if (event.sender !== settingsWindow?.webContents || !owner || owner.isDestroyed()) return
       if (
         !request ||
-        !['session', 'project', 'literature'].includes(request.kind) ||
+        ![
+          'session',
+          'project',
+          'literature',
+          'customize-skill',
+          'customize-specialist',
+          'wsl-support',
+          'wsl-create-project'
+        ].includes(request.kind) ||
         typeof request.id !== 'string' ||
         !request.id ||
         request.id.length > 1024

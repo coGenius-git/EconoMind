@@ -3,7 +3,68 @@ import { PDFDocument } from 'pdf-lib'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { test } from './fixtures/electron-app'
+import { createProject } from './certification/helpers'
 import { literatureItemInputSchema } from '../src/shared/literature'
+
+test('Settings workflow buttons open a draft in the main renderer', async ({ app }) => {
+  const page = await app.completeOnboarding()
+  await page.evaluate(() => window.api.locale.setPreference({ preference: 'en' }))
+  await createProject(page, 'Settings workflow routing')
+  for (const panel of ['Skills', 'Specialists'] as const) {
+    const opened = page.context().waitForEvent('page')
+    await page.evaluate(() => window.api.window.openSettings())
+    const settingsPage = await opened
+    const settings = settingsPage.getByRole('dialog', { name: 'Settings', exact: true })
+    await settings
+      .getByRole('navigation', { name: 'Settings', exact: true })
+      .getByRole('button', { name: panel, exact: true })
+      .click()
+    await settings
+      .getByRole('button', {
+        name: panel === 'Skills' ? 'Add skill' : 'Add specialist',
+        exact: true
+      })
+      .click()
+    await settingsPage.getByRole('menuitem', { name: /Chat with agent/ }).click()
+    await expect.poll(() => settingsPage.isClosed()).toBe(true)
+    await expect(page.getByRole('textbox', { name: 'Ask anything', exact: true })).toContainText(
+      /\/customize/i
+    )
+    expect(
+      await page.evaluate(async () => (await window.api.sessions.list()).sessions)
+    ).toHaveLength(0)
+  }
+})
+
+test('workspace preview minimization restores main-window search shortcuts', async ({ app }) => {
+  await app.completeOnboarding()
+  const page = await app.configureFakeAgent()
+  await page.evaluate(() => window.api.locale.setPreference({ preference: 'en' }))
+  await createProject(page, 'Preview shortcut ownership')
+  await page.locator('input[type="file"][multiple]').setInputFiles({
+    name: 'shortcut-check.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('Retain this preview while searching')
+  })
+  await page
+    .getByRole('textbox', { name: 'Ask anything', exact: true })
+    .fill('Read my attached note')
+  await page.getByRole('button', { name: 'Send message', exact: true }).click()
+  await expect(page.getByText('Deterministic reply:', { exact: false })).toBeVisible()
+  await page.getByRole('button', { name: 'Files', exact: true }).click()
+  await page
+    .getByRole('button', { name: 'Preview uploaded file shortcut-check.txt', exact: true })
+    .click()
+  const preview = page.locator('[data-slot="file-preview-dialog"]')
+  await expect(preview).toBeVisible()
+  await preview.getByRole('button', { name: 'Hide preview', exact: true }).click()
+  await expect(preview).toBeHidden()
+  await page.keyboard.press('Control+k')
+  await expect(page.getByRole('dialog', { name: 'Global search', exact: true })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: /Restore preview of/ }).click()
+  await expect(preview).toBeVisible()
+})
 
 test('opens one independent Settings window while the main Library remains interactive', async ({
   app

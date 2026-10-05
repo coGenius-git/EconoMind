@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { startWslSetupConversation } from '@/lib/wsl-support-handoff'
 
 import type { OpenSessionFromNotificationRequest } from '../../../shared/notifications'
 import type { WebEventConnectionPhase } from '../../../shared/web-event-connection'
@@ -91,6 +93,7 @@ const useApplicationEventBindings = ({
   closeActiveSettingsPane,
   requestSettingsLeave
 }: ApplicationEventBindingsInput): ApplicationEventProjection => {
+  const { t } = useTranslation()
   const view = useNavigationStore((state) => state.view)
   const isSettingsOpen = useSettingsStore((state) => state.isSettingsOpen)
   const openSettings = useSettingsStore((state) => state.openSettings)
@@ -119,7 +122,9 @@ const useApplicationEventBindings = ({
   const applyJobUpdate = useSessionJobStore((state) => state.applyUpdate)
   const hydrateNonTerminalJobs = useSessionJobStore((state) => state.hydrateNonTerminal)
   const isUpdateDialogOpen = useUpdateStore((state) => state.isDialogOpen)
-  const isFilePreviewOpen = usePreviewWorkbenchStore((state) => state.fileDialogItem !== undefined)
+  const isFilePreviewOpen = usePreviewWorkbenchStore(
+    (state) => state.fileDialogItem !== undefined && !state.fileDialogMinimized
+  )
   const isExpandedPreviewOpen = usePreviewWorkbenchStore(
     (state) => state.panelState === 'open' && state.expandedToolItemId === state.activeItemId
   )
@@ -271,9 +276,21 @@ const useApplicationEventBindings = ({
         if (request.kind === 'session') openPermissionSession(request.id)
         else if (request.kind === 'project')
           useNavigationStore.getState().openProject(request.id, 'user')
-        else useNavigationStore.getState().openLiteratureItem(request.id, 'user')
+        else if (request.kind === 'literature')
+          useNavigationStore.getState().openLiteratureItem(request.id, 'user')
+        else if (request.kind === 'customize-skill' || request.kind === 'customize-specialist')
+          useNavigationStore
+            .getState()
+            .startCustomizeConversation(
+              request.id,
+              request.kind === 'customize-skill' ? 'skill' : 'specialist'
+            )
+        else if (request.kind === 'wsl-create-project')
+          useNavigationStore.getState().requestWslSetupProjectCreation()
+        else if (request.kind === 'wsl-support')
+          void startWslSetupConversation(request.id, t).catch(console.error)
       }),
-    [openPermissionSession]
+    [openPermissionSession, t]
   )
 
   useEffect(() => {

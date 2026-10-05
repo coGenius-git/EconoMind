@@ -72,6 +72,30 @@ it('rejects malformed routes and restricts navigation to the Settings sender', a
     id: 'project-1'
   })
   expect(owner.focus).toHaveBeenCalledOnce()
+  for (const kind of [
+    'customize-skill',
+    'customize-specialist',
+    'wsl-support',
+    'wsl-create-project'
+  ] as const) {
+    controller.navigateMain({ sender: settings.webContents } as unknown as IpcMainInvokeEvent, {
+      kind,
+      id: 'project-1'
+    })
+    expect(owner.webContents.send).toHaveBeenLastCalledWith('window:settings-navigation', {
+      kind,
+      id: 'project-1'
+    })
+  }
+  vi.mocked(owner.webContents.send).mockClear()
+  controller.navigateMain(
+    { sender: settings.webContents } as unknown as IpcMainInvokeEvent,
+    {
+      kind: 'arbitrary',
+      id: 'project-1'
+    } as never
+  )
+  expect(owner.webContents.send).not.toHaveBeenCalled()
 })
 
 it('waits for the owning Settings renderer to confirm native close', async () => {

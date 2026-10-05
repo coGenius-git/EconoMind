@@ -57,6 +57,7 @@ import {
 import { resolveCustomizeProjectId } from '@/lib/last-opened-project'
 import { SettingsToggle } from './SettingsLayout'
 import { useNavigationStore } from '@/stores/navigation-store'
+import { requestSettingsWindowWorkflow } from './settings-window-workflow'
 import { useProjectStore } from '@/stores/project-store'
 import { useSettingsStore } from '@/stores/settings-store'
 
@@ -472,6 +473,7 @@ const InstalledSpecialistsPanel = ({
   // mutation approval. Final activation against the real Featured Skill is owned by issue 08.
   const startChatWithAgent = (): void => {
     if (!chatProjectId) return
+    if (requestSettingsWindowWorkflow({ kind: 'customize-specialist', id: chatProjectId })) return
     useSettingsStore.getState().closeSettings()
     useNavigationStore.getState().startCustomizeConversation(chatProjectId, 'specialist')
   }

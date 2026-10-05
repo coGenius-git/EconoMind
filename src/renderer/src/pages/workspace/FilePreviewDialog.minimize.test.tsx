@@ -52,6 +52,7 @@ afterEach(async () => {
 it('returns to Home and restores the same mounted preview without closing it', async () => {
   const onClose = vi.fn()
   const onMinimize = vi.fn()
+  const onMinimizedChange = vi.fn()
   const backgroundAction = vi.fn()
   await act(async () =>
     root.render(
@@ -59,7 +60,12 @@ it('returns to Home and restores the same mounted preview without closing it', a
         <button id="home-action" onClick={backgroundAction}>
           Home action
         </button>
-        <FilePreviewDialog item={item} onClose={onClose} onMinimize={onMinimize} />
+        <FilePreviewDialog
+          item={item}
+          onClose={onClose}
+          onMinimize={onMinimize}
+          onMinimizedChange={onMinimizedChange}
+        />
       </>
     )
   )
@@ -79,13 +85,42 @@ it('returns to Home and restores the same mounted preview without closing it', a
   expect(backgroundAction).toHaveBeenCalledOnce()
   expect(onClose).not.toHaveBeenCalled()
   expect(onMinimize).toHaveBeenCalledOnce()
+  expect(onMinimizedChange).toHaveBeenLastCalledWith(true)
   expect(unmount).not.toHaveBeenCalled()
+  await act(async () =>
+    root.render(
+      <>
+        <button id="home-action" onClick={backgroundAction}>
+          Home action
+        </button>
+        <FilePreviewDialog
+          item={item}
+          onClose={onClose}
+          presentationActive={false}
+          onMinimizedChange={onMinimizedChange}
+        />
+      </>
+    )
+  )
+  expect(document.querySelector('input[aria-label="Reading note"]')).toBe(note)
+  expect(container.inert).toBe(false)
+  await act(async () =>
+    root.render(
+      <>
+        <button id="home-action" onClick={backgroundAction}>
+          Home action
+        </button>
+        <FilePreviewDialog item={item} onClose={onClose} onMinimizedChange={onMinimizedChange} />
+      </>
+    )
+  )
   await act(async () => {
     container
       .querySelector<HTMLButtonElement>('button[aria-label="Restore preview of paper.pdf"]')!
       .click()
   })
   expect(container.inert).toBe(true)
+  expect(onMinimizedChange).toHaveBeenLastCalledWith(false)
   expect(document.querySelector('input[aria-label="Reading note"]')).toBe(note)
   expect(note.value).toBe('reading note')
   expect(unmount).not.toHaveBeenCalled()

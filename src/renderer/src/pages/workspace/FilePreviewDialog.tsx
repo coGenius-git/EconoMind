@@ -25,6 +25,8 @@ type FilePreviewDialogProps = PreviewInteractionPort & {
   onViewInContextNavigate?: () => void
   onFocusFallback?: () => void
   onMinimize?: () => void
+  onMinimizedChange?: (minimized: boolean) => void
+  presentationActive?: boolean
 }
 
 const hasStreamdownFullscreen = (): boolean =>
@@ -87,6 +89,8 @@ const FilePreviewDialog = ({
   onViewInContextNavigate,
   onFocusFallback,
   onMinimize,
+  onMinimizedChange,
+  presentationActive = true,
   ...annotationPort
 }: FilePreviewDialogProps): React.JSX.Element | null => {
   const { t } = useTranslation()
@@ -95,7 +99,10 @@ const FilePreviewDialog = ({
   const [presentation, setPresentation] = useState({ item, minimized: false })
   if (presentation.item !== item) setPresentation({ item, minimized: false })
   const minimized = open && presentation.item === item && presentation.minimized
-  const visible = open && !minimized
+  const visible = open && !minimized && presentationActive
+  const retained = minimized || (open && !presentationActive)
+  useEffect(() => onMinimizedChange?.(minimized), [minimized, onMinimizedChange])
+  useEffect(() => () => onMinimizedChange?.(false), [onMinimizedChange])
   const [hasNestedFullscreen, setHasNestedFullscreen] = useState(hasStreamdownFullscreen)
   const isBackgroundIsolatedRef = useRef(false)
   const returnFocusRef = useRef<HTMLElement | null>(null)
@@ -150,12 +157,12 @@ const FilePreviewDialog = ({
   }, [])
 
   useEffect(() => {
-    if (minimized) releaseBackgroundIsolation()
+    if (minimized || !presentationActive) releaseBackgroundIsolation()
     else if (open) acquireBackgroundIsolation()
     else if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
       releaseBackgroundIsolation()
     }
-  }, [acquireBackgroundIsolation, minimized, open, releaseBackgroundIsolation])
+  }, [acquireBackgroundIsolation, minimized, open, presentationActive, releaseBackgroundIsolation])
 
   useEffect(() => releaseBackgroundIsolation, [releaseBackgroundIsolation])
 
@@ -170,7 +177,7 @@ const FilePreviewDialog = ({
 
   return (
     <>
-      {minimized && item ? (
+      {minimized && item && presentationActive ? (
         <Button
           type="button"
           variant="outline"
@@ -194,10 +201,10 @@ const FilePreviewDialog = ({
           if (!nextOpen) requestClose(true)
         }}
       >
-        <Dialog.Portal forceMount={minimized ? true : undefined}>
+        <Dialog.Portal forceMount={retained ? true : undefined}>
           {/* Keep the backdrop mounted with the retained content: Radix portals each child
             separately, so recreating it would place it above the content after restoration. */}
-          <PreviewBackdrop open={open} minimized={minimized} />
+          <PreviewBackdrop open={open} minimized={retained} />
           {/* Own the top scroll lock when previewing over another modal (e.g. Settings).
             React capture also admits child portals; fullscreen content keeps its own boundary. */}
           <RemoveScroll
@@ -211,8 +218,8 @@ const FilePreviewDialog = ({
             forwardProps
           >
             <Dialog.Content
-              forceMount={minimized ? true : undefined}
-              style={minimized ? { display: 'none' } : undefined}
+              forceMount={retained ? true : undefined}
+              style={retained ? { display: 'none' } : undefined}
               data-slot="file-preview-dialog"
               aria-describedby={undefined}
               aria-modal={visible ? 'true' : undefined}
