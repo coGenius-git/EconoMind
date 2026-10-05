@@ -83,7 +83,7 @@ describe('Windows title bar', () => {
     ])
     expect(document.documentElement.hasAttribute('data-windows-titlebar')).toBe(true)
     expect(window.api.window.updateTitleBar).toHaveBeenCalledWith({
-      color: '#0a141e',
+      color: '#00000000',
       symbolColor: '#0a141e'
     })
     expect(screen.getByRole('textbox')).toBeTruthy()

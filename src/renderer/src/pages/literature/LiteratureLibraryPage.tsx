@@ -1551,7 +1551,7 @@ const LiteratureLibraryPage = (): React.JSX.Element => {
 
   return (
     <SmartDecisionPendingContext.Provider value={pendingDecisions.size > 0}>
-      <main className="flex h-svh min-h-0 flex-col overflow-hidden bg-background text-foreground">
+      <main className="research-page flex h-svh min-h-0 flex-col overflow-hidden text-foreground">
         <ResearchWorkbenchHeader
           active="library"
           onHome={() => useNavigationStore.getState().goHome('user')}
@@ -1590,7 +1590,12 @@ const LiteratureLibraryPage = (): React.JSX.Element => {
             />
           </Suspense>
         ) : null}
-        <div className={cn('flex min-h-0 flex-1 overflow-hidden', screeningWizardOpen && 'hidden')}>
+        <div
+          className={cn(
+            'research-library-shell flex min-h-0 flex-1 overflow-hidden',
+            screeningWizardOpen && 'hidden'
+          )}
+        >
           <LiteratureLibrarySidebar
             navigation={{
               section,
@@ -1638,7 +1643,7 @@ const LiteratureLibraryPage = (): React.JSX.Element => {
             openCreateCollection={openCreateCollection}
           />
 
-          <section className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+          <section className="research-library-content research-glass flex min-h-0 min-w-0 flex-1 overflow-hidden">
             <LiteratureDuplicatesView
               active={duplicatesOpen && !citationStylesOpen && !journalsOpen}
               revision={duplicatesRevision}
@@ -1685,7 +1690,7 @@ const LiteratureLibraryPage = (): React.JSX.Element => {
             ) : null}
             <div
               className={cn(
-                'flex h-full min-h-0 w-full max-w-none flex-col px-4 py-6 lg:px-6 lg:py-8',
+                'research-library-catalog flex h-full min-h-0 w-full max-w-none flex-col overflow-y-auto overscroll-contain px-4 py-5 lg:px-6 lg:py-6',
                 (citationStylesOpen || journalsOpen || duplicatesOpen) && 'hidden'
               )}
             >

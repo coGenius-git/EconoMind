@@ -49,7 +49,10 @@ const isMenuRequest = (value: unknown): value is WindowsTitleBarMenuRequest => {
 const isAppearance = (value: unknown): value is WindowsTitleBarAppearance => {
   if (!value || typeof value !== 'object') return false
   const appearance = value as WindowsTitleBarAppearance
-  return /^#[\da-f]{6}$/i.test(appearance.color) && /^#[\da-f]{6}$/i.test(appearance.symbolColor)
+  return (
+    (appearance.color === '#00000000' || /^#[\da-f]{6}$/i.test(appearance.color)) &&
+    /^#[\da-f]{6}$/i.test(appearance.symbolColor)
+  )
 }
 
 // Native popups preserve the editing target while the renderer supplies the title-bar buttons.

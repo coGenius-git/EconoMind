@@ -73,7 +73,7 @@ test('opens one independent Settings window while the main Library remains inter
   await page.evaluate(() => window.api.locale.setPreference({ preference: 'en' }))
   await expect(page.getByText('Getting started with EconoMind', { exact: true })).toHaveCount(0)
   const nextWindow = page.context().waitForEvent('page')
-  await page.getByRole('button', { name: 'Model settings', exact: true }).click()
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
   const settingsPage = await nextWindow
   await expect(settingsPage).toHaveURL(/window=settings/)
   const settings = settingsPage.getByRole('dialog', { name: 'Settings', exact: true })

@@ -121,6 +121,28 @@ describe('explicit Specialist example selection', () => {
     expect(hook.changed).toHaveBeenCalledTimes(1)
   })
 
+  it.each(['literature-review-agent', undefined])(
+    'replaces a restored untouched example when selecting %s after the panel remounts',
+    (id) => {
+      const hook = mount({
+        selectedId: 'literature-agent',
+        doc: textDoc(builtinSpecialistExample(builtin('literature-agent'), t)!)
+      })
+      hook.choose(id)
+      hook.update({ selectedId: id })
+      expect(hook.text()).toBe(builtinSpecialistExample(id ? builtin(id) : undefined, t) ?? '')
+    }
+  )
+
+  it('preserves an edited example restored after navigation', () => {
+    const edited = builtinSpecialistExample(builtin('literature-agent'), t)!.replace('2015', '2020')
+    const hook = mount({ selectedId: 'literature-agent', doc: textDoc(edited) })
+    hook.choose('literature-review-agent')
+    hook.update({ selectedId: 'literature-review-agent' })
+    expect(hook.text()).toBe(edited)
+    expect(hook.changed).not.toHaveBeenCalled()
+  })
+
   it('waits for a pending switch and preserves typing during the wait', () => {
     const hook = mount()
     hook.choose('data-agent')

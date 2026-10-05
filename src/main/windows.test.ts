@@ -308,7 +308,7 @@ describe('window presentation', () => {
     if (platformName === 'win32') {
       expect(lastWindowOptions).toMatchObject({
         titleBarStyle: 'hidden',
-        titleBarOverlay: { height: 36 }
+        titleBarOverlay: { height: 36, color: '#00000000' }
       })
       expect(lastWindow?.removeMenu).toHaveBeenCalledOnce()
       lastWindow?.handlers.get('enter-full-screen')?.forEach((handler) => handler({} as CloseEvent))

@@ -47,11 +47,7 @@ for (const localized of localizedSettingsCases) {
       page
     }) => {
       await page.goto('/')
-      await expect(page.locator('.github-star-cta').first()).toHaveAttribute(
-        'data-state',
-        'success'
-      )
-      await expect(page.locator('.github-star-cta').first()).not.toContainText('NaN')
+      await expect(page.getByRole('navigation', { name: 'Workbench modules' })).toBeVisible()
       await page.setViewportSize({ width: viewportWidth, height: 800 })
 
       await selectLanguage(page, localized.pickerLabel)
@@ -67,7 +63,7 @@ for (const localized of localizedSettingsCases) {
         )
         .toBe(true)
 
-      await page.getByRole('button', { name: localized.modelSettings }).click()
+      await page.getByRole('button', { name: localized.settings, exact: true }).click()
       const settings = page.getByRole('dialog', { name: localized.settings })
       const navigation = settings.getByRole('navigation', { name: localized.settings })
       if (!(await navigation.isVisible())) {

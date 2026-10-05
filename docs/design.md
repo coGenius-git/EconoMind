@@ -1,6 +1,6 @@
 # EconoMind shadcn/ui Design Specification
 
-This specification defines the EconoMind workspace design system. The design system is based on shadcn/ui, Radix primitives, Tailwind CSS variables, and semantic tokens. Use shadcn semantic tokens (`bg-background`, `text-foreground`, `bg-card`, and so on) by default. Use workspace tokens (`bg-bg-10`, `text-text-000`, and so on) only for the named surfaces listed in **Workspace Tokens** and the component guidelines below. The canonical token values live in `src/renderer/src/assets/main.css`.
+This specification defines the EconoMind workspace design system. The design system is based on shadcn/ui, Radix primitives, Tailwind CSS variables, and semantic tokens. Use shadcn semantic tokens (`bg-background`, `text-foreground`, `bg-card`, and so on) by default. Use workspace tokens (`bg-bg-10`, `text-text-000`, and so on) only for the named surfaces listed in **Workspace Tokens** and the component guidelines below. The canonical semantic/workspace tokens live in `src/renderer/src/assets/main.css`; D material tokens and named surface rules live in `src/renderer/src/assets/research-workbench.css`.
 
 This document records reusable UI/UX rules only. It must not include sample project names, sample tasks, dataset names, organization IDs, personal email addresses, concrete model product names, or third-party brand copy.
 
@@ -33,8 +33,8 @@ This document records reusable UI/UX rules only. It must not include sample proj
 ```
 
 - Use `cssVariables: true`; expose all colors, radii, rings, and sidebar colors through CSS variables.
-- Use `neutral` as the `baseColor`; the EconoMind deep green should only appear through semantic tokens such as `--primary` and `--ring`.
-- Use the `.dark` class to override shadcn tokens in dark mode. Components must use tokens from this specification only; do not invent new color variable names outside the shadcn and workspace token sets defined here.
+- Use `neutral` as the `baseColor`; the light theme's blue-gray accent is exposed through semantic tokens such as `--primary` and `--ring`.
+- Use the `.dark` class to override shadcn tokens in dark mode. Components must use the semantic, workspace, and named material roles documented here; register new roles in their canonical CSS owner before use.
 - Prefer shadcn components for new UI: `Button`, `Dialog`, `DropdownMenu`, `Select`, `Tabs`, `Sidebar`, `Input`, `Textarea`, `Card`, `Separator`, `ScrollArea`, and `Tooltip`.
 
 ### Global CSS Skeleton
@@ -103,108 +103,103 @@ This document records reusable UI/UX rules only. It must not include sample proj
 
 ## Theme Tokens
 
-### Light Theme
+### D / Frosted Research Workspace
 
-The light theme uses a warm off-white page background, white cards, and a deep-green interaction focus. Values below match `src/renderer/src/assets/main.css`:
+The local light theme is the second implementation of the selected D direction: a generated
+blue-silver folded-glass atmosphere, a compact floating glass module header, transparent layout
+shells, independently frosted panels, and local near-white paper surfaces for reading.
+Low-saturation blue-gray identifies primary actions, links, and focus; semantic status and chart
+colors retain their established meanings.
 
-```css
-:root {
-  --radius: 0.5rem;
+The first implementation passed its recorded functional checks but was rejected by the user for
+visual fidelity. Those checks are historical evidence, not visual acceptance of this revision.
+This revision's visual review and user evaluation remain pending; no GitHub push or merge is
+authorized before the user's evaluation and confirmation.
 
-  /* Workspace tokens */
-  --bg-10: hsl(60 14% 99%);
-  --bg-000: hsl(0 0% 100%);
-  --bg-200: hsl(60 11% 95%);
-  --bg-300: hsl(45 12% 93%);
-  --bg-400: hsl(45 10% 88%);
-  --border-ink-channel: 60 2% 12%;
-  --text-000: hsl(0 0% 7%);
-  --text-100: var(--muted-foreground);
-  --text-300: hsl(43 3% 57%);
-  --rail-card-bg: 0 0% 100%;
-  --danger-000: hsl(0 45% 38%);
-  --danger-900: hsl(0 55% 95%);
-  --action-panel-toggle: hsl(0 0% 42%);
-  --surface-control-hover: hsl(38 20% 90%);
-  --message-user-text: hsl(0 0% 12%);
-  --always-black: 0 0% 0%;
+Canonical values live in [main.css](../src/renderer/src/assets/main.css) for semantic/workspace
+tokens and [research-workbench.css](../src/renderer/src/assets/research-workbench.css) for material
+tokens and responsive surface rules. Read those files rather than copying a second theme block
+into components or this specification.
 
-  /* shadcn semantic tokens */
-  --background: #fafaf8;
-  --foreground: #202321;
-  --card: #ffffff;
-  --card-foreground: #202321;
-  --popover: #ffffff;
-  --popover-foreground: #202321;
-  --primary: oklch(0.47 0.105 184);
-  --primary-foreground: oklch(0.985 0.008 180);
-  --secondary: #ececea;
-  --secondary-foreground: #202321;
-  --muted: #ececea;
-  --muted-foreground: #646762;
-  --accent: oklch(0.87 0.115 82);
-  --accent-foreground: oklch(0.2 0.03 62);
-  --destructive: oklch(0.58 0.22 25);
-  --chart-1: rgb(109 167 236);
-  --chart-2: rgb(88 176 133);
-  --chart-3: rgb(210 157 56);
-  --chart-4: rgb(178 132 229);
-  --chart-5: rgb(225 113 91);
-  --border: #dededa;
-  --input: #dededa;
-  --ring: oklch(0.58 0.11 184);
-}
-```
+| Role                       | Canonical token                       | Light value           |
+| -------------------------- | ------------------------------------- | --------------------- |
+| Semantic background        | `--background`                        | `#e8eef2`             |
+| Artwork fallback           | `.research-page`                      | `#c4d0da`             |
+| Primary text               | `--foreground`                        | `#202d3a`             |
+| Reading/card surface       | `--research-reading`, `--card`        | `#fbfcfd`             |
+| Secondary text             | `--muted-foreground`                  | `#566879`             |
+| Primary action             | `--primary`                           | `#344e65`             |
+| Selected/secondary surface | `--accent`, `--secondary`, `--bg-300` | `#e4ecf3`             |
+| Muted surface              | `--muted`, `--bg-200`                 | `#edf2f6`             |
+| Structure / form boundary  | `--border` / `--input`                | `#d2dce4` / `#b8c6d1` |
+| Keyboard focus             | `--ring`                              | `#496980`             |
+
+### Material Roles and Surface Hooks
+
+Material tokens complement semantic colors; they do not replace content, status, focus, or
+permission semantics. These roles are intentionally owned by `research-workbench.css` and consumed
+through named component hooks instead of new utility-color aliases.
+
+| Role                   | Token family / class                             | Scope                                                                   |
+| ---------------------- | ------------------------------------------------ | ----------------------------------------------------------------------- |
+| Static atmosphere      | `--research-atmosphere`, `research-page`         | Home, Library, Workspace backgrounds                                    |
+| Glass sheet            | `--research-glass*`, `research-glass`            | Module header and independent sidebar, conversation, and content panels |
+| Tinted support panel   | `--research-panel-tint`                          | Settings navigation and supporting panel tint                           |
+| Local reading paper    | `--research-paper`                               | Assistant messages, Home list sheets, Settings/tool content             |
+| Opaque reading         | `--research-reading`, `research-reading-surface` | References, dense tables, file previews, and renderer content           |
+| Opaque control/overlay | `--research-overlay`                             | Mobile drawers and material fallback                                    |
+| Composer elevation     | `--research-composer-shadow`                     | Composer form within its reserved layout lane                           |
+
+The atmosphere combines `research-glass-atmosphere.webp` with a 35% pale blue-gray wash, centered
+with `background-size: cover`. The asset contains no UI or text; real controls remain DOM
+components. Its generation prompt and compression details are recorded in
+[glass-background-source.md](design-proposals/glass-background-source.md).
+
+The general light glass surface grades from 32% white to 18% pale blue, with an 18px backdrop
+blur, `saturate(0.78) brightness(1.08)`, a fine bright edge, and cool layered shadows. Home and
+Library sidebars use a slightly denser 40%–28% tint; each major glass sheet filters the atmosphere
+once. The layout shells have no fill, border, shadow, padding, or blur of their own, so exposed
+gutters retain visible background contrast.
+
+Local assistant and Home paper sheets use `rgb(251 253 255 / 0.88)`. The conversation scroller
+stays transparent around those sheets; do not fill the entire conversation with opaque white.
+Dense tables and file previews retain opaque reading surfaces, and PDF pages retain original
+colors. The composer has a 32%–20% glass-like outer fill and a separate 74% pale input field,
+without adding another backdrop-filter layer. Menus remain opaque.
+
+Glass-scoped text tokens darken supporting copy (`--text-000: #172735` and
+`--muted-foreground: #3f5363`) so low-opacity panels do not also fade their text. These named
+material rules do not change status, focus, permission, or business semantics.
+
+The shared `ResearchWorkbenchHeader` uses `research-workbench-header`, `research-module-nav`,
+`research-module-link`, and `research-brand`. Active module buttons expose
+`aria-current="page"` and a short primary-colored underline. Home, Library, and Workspace use
+`research-home-shell`, `research-library-shell`, and `research-workspace-shell` respectively.
+Supporting hooks identify their sidebars, reading panes, lists, conversation, preview, and composer;
+keep those hooks with their owning production components.
+
+No animated atmosphere is introduced. Mobile workspace drawers and Settings/tool shells disable
+their filters where a filtered ancestor would change fixed-drawer positioning. The transparent
+layout shells never filter the background. Reduced-transparency preferences and unsupported
+`backdrop-filter` use the opaque overlay surface. Forced-colors mode removes the atmosphere and
+shadow and supplies system `Canvas` / `CanvasText` boundaries.
 
 ### Dark Theme
 
-Target values for dark mode. Apply under `.dark` when dark theme is enabled:
+The existing `.dark` semantic palette remains in `main.css`; this work does not introduce the
+unselected E / dark-glass palette. Material roles map to the existing dark background, popover,
+reading, border, and shadow tokens, with no generated atmosphere image or blur; the glass fill maps
+to a low-contrast gradient between existing dark backgrounds. The shared navigation,
+layout, and component geometry still apply in dark mode and require regression verification.
 
-```css
-.dark {
-  --background: hsl(60 2% 12%);
-  --foreground: hsl(60 14% 97%);
+### Implementation and Acceptance Status
 
-  --card: hsl(60 2% 17%);
-  --card-foreground: hsl(60 14% 97%);
-
-  --popover: hsl(60 2% 17%);
-  --popover-foreground: hsl(60 14% 97%);
-
-  --primary: oklch(0.68 0.1 184);
-  --primary-foreground: hsl(60 2% 12%);
-
-  --secondary: hsl(60 2% 9%);
-  --secondary-foreground: hsl(60 14% 97%);
-
-  --muted: hsl(60 2% 9%);
-  --muted-foreground: hsl(48 5% 57%);
-
-  --accent: hsl(0 0% 7%);
-  --accent-foreground: hsl(60 14% 97%);
-
-  --destructive: oklch(0.704 0.191 22.216);
-
-  --border: hsl(53 12% 87% / 0.1);
-  --input: hsl(53 12% 87% / 0.15);
-  --ring: oklch(0.7 0.1 184);
-
-  --chart-1: rgb(109 167 236);
-  --chart-2: rgb(88 176 133);
-  --chart-3: rgb(210 157 56);
-  --chart-4: rgb(178 132 229);
-  --chart-5: rgb(225 113 91);
-
-  --sidebar: hsl(60 2% 12%);
-  --sidebar-foreground: hsl(60 14% 97%);
-  --sidebar-primary: var(--primary);
-  --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: hsl(0 0% 7%);
-  --sidebar-accent-foreground: hsl(60 14% 97%);
-  --sidebar-border: hsl(53 12% 87% / 0.1);
-  --sidebar-ring: var(--ring);
-}
-```
+As of 2026-10-05, the D presentation is implemented locally across Home, Library, Workspace,
+Settings, and the bibliometrics surface. This specification describes that local implementation.
+User acceptance remains pending; it is not a declaration that all tests, interaction journeys, or
+performance checks have passed. The change has not been pushed or merged to GitHub. Existing
+panel resizing, collapse, and native fullscreen remain available; no new dedicated focus-mode
+button or automatic reading-mode switch is part of this implementation.
 
 ## Token References
 
@@ -212,7 +207,7 @@ Target values for dark mode. Apply under `.dark` when dark theme is enabled:
 
 1. Default to shadcn semantic classes for new UI: `bg-background`, `text-foreground`, `bg-card`, `bg-accent`, `text-muted-foreground`, and so on.
 2. Use workspace classes only where this document names a workspace surface (shell, sidebar rows, composer, session menus, markdown blocks, and similar).
-3. Add color roles only when an existing semantic token cannot preserve the intended meaning and visual value. Register the role in `main.css` and document it here before using it in components.
+3. Add color roles only when an existing semantic token cannot preserve the intended meaning and visual value. Register semantic/workspace roles in `main.css` and structural material roles in `research-workbench.css`, then document them here before component use.
 
 ### shadcn Semantic Tokens
 
@@ -231,7 +226,7 @@ Target values for dark mode. Apply under `.dark` when dark theme is enabled:
 
 ### Workspace ↔ shadcn Equivalence
 
-Workspace tokens share the same visual intent as several shadcn tokens. Workspace surfaces use the workspace class explicitly.
+Workspace tokens share the same visual intent as several shadcn tokens. Workspace surfaces use the workspace class explicitly. Named D material surfaces can specialize those shared backgrounds; do not override the opaque reading role with the atmosphere token.
 
 | Workspace token        | Tailwind class      | shadcn counterpart   | Usage                                                               |
 | ---------------------- | ------------------- | -------------------- | ------------------------------------------------------------------- |
@@ -245,23 +240,25 @@ Workspace tokens share the same visual intent as several shadcn tokens. Workspac
 
 ### Workspace Tokens
 
-Workspace-only tokens without a shadcn counterpart, plus shadow tokens. For shared surface colors, see **Workspace ↔ shadcn Equivalence** above.
+Workspace-only tokens without a shadcn counterpart, plus shadow aliases, retain their established
+meaning. Exact values for both themes are canonical in `main.css`; material elevation is in
+`research-workbench.css`.
 
-| Token                               | Tailwind class                                                                         | Light value                                                       | Usage                                                |
-| ----------------------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | ---------------------------------------------------- |
-| `--bg-400`                          | `bg-bg-400`                                                                            | `hsl(45 10% 88%)`                                                 | Sidebar row action hover                             |
-| `--text-300`                        | `text-text-300`                                                                        | `hsl(43 3% 57%)`                                                  | Action icon default color and loading dots           |
-| `--rail-card-bg`                    | `bg-rail-card-bg`                                                                      | `hsl(0 0% 100%)`                                                  | Sidebar rail card                                    |
-| `--danger-000` / `--danger-900`     | `text-danger-000`, `bg-danger-900`                                                     | `hsl(0 45% 38%)`, `hsl(0 55% 95%)`                                | Destructive session menu and dialog actions          |
-| `--action-panel-toggle`             | `text-action-panel-toggle`                                                             | `hsl(0 0% 42%)`                                                   | Collapsed preview toggle                             |
-| `--surface-control-hover`           | `hover:bg-surface-control-hover`                                                       | `hsl(38 20% 90%)`                                                 | Header icon control hover                            |
-| `--message-user-text`               | `text-message-user-text`                                                               | `hsl(0 0% 12%)`                                                   | User message bubble text                             |
-| `--diff-added-*`                    | `bg-diff-added-surface`, `bg-diff-added-highlight`, `text-diff-added-foreground`       | Light green surfaces with `hsl(145 60% 24%)` foreground           | Added Version-diff rows, inline spans, and markers   |
-| `--diff-removed-*`                  | `bg-diff-removed-surface`, `bg-diff-removed-highlight`, `text-diff-removed-foreground` | Light red surfaces with `hsl(0 55% 32%)` foreground               | Removed Version-diff rows, inline spans, and markers |
-| `--shadow-card`                     | `shadow-card`                                                                          | `0 0 0 1px rgb(10 10 10 / 0.06), 0 4px 24px rgb(10 10 10 / 0.04)` | Sidebar rail card and composer dock                  |
-| `--shadow-card-opaque`              | `shadow-card-opaque`                                                                   | `0 0 0 1px rgb(10 10 10 / 0.08), 0 8px 28px rgb(10 10 10 / 0.1)`  | Composer form                                        |
-| `--shadow-menu` / `--shadow-dialog` | `shadow-menu`, `shadow-dialog`                                                         | `0 2px 8px rgb(0 0 0 / 0.08)`, `0 8px 32px rgb(10 10 10 / 12%)`   | Menus and modal dialogs                              |
-| `--shadow-sheet`                    | `shadow-sheet`                                                                         | `0 4px 24px rgb(10 10 10 / 0.04)`                                 | Borderless document sheets (SKILL.md panel)          |
+| Token                                          | Tailwind class                                                                         | Usage                                         |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `--bg-400`                                     | `bg-bg-400`                                                                            | Sidebar row action hover                      |
+| `--text-200`, `--text-300`                     | `text-text-200`, `text-text-300`                                                       | Secondary action details, icons, loading dots |
+| `--rail-card-bg`                               | `bg-rail-card-bg`                                                                      | Legacy rail/background-gradient compatibility |
+| `--danger-000`, `--danger-900`                 | `text-danger-000`, `bg-danger-900`                                                     | Destructive session menu and dialog actions   |
+| `--action-panel-toggle`                        | `text-action-panel-toggle`                                                             | Collapsed preview toggle                      |
+| `--surface-control-hover`                      | `hover:bg-surface-control-hover`                                                       | Header icon control hover                     |
+| `--message-user-text`                          | `text-message-user-text`                                                               | User message text                             |
+| `--diff-added-*`                               | `bg-diff-added-surface`, `bg-diff-added-highlight`, `text-diff-added-foreground`       | Added diff rows, inline spans, and markers    |
+| `--diff-removed-*`                             | `bg-diff-removed-surface`, `bg-diff-removed-highlight`, `text-diff-removed-foreground` | Removed diff rows, inline spans, and markers  |
+| `--shadow-card-value`                          | `shadow-card`                                                                          | Raised cards with a hairline ring             |
+| `--shadow-card-opaque-value`                   | `shadow-card-opaque`                                                                   | Opaque raised workspace controls              |
+| `--shadow-menu-value`, `--shadow-dialog-value` | `shadow-menu`, `shadow-dialog`                                                         | Menus and modal dialogs                       |
+| `--shadow-sheet-value`                         | `shadow-sheet`                                                                         | Borderless document sheets                    |
 
 ### Settings Status and Category Tokens
 
@@ -293,77 +290,68 @@ colors communicate a successful or failed probe/migration result.
 
 ### Border Opacity
 
-| Context                   | Light                   | Dark                         |
-| ------------------------- | ----------------------- | ---------------------------- |
-| Hairline / card ring      | `hsl(60 2% 12% / 0.1)`  | `hsl(53 12% 87% / 0.1)`      |
-| Dialog border             | `hsl(60 2% 12% / 0.15)` | `hsl(53 12% 87% / 0.05-0.1)` |
-| Split-pane divider        | `hsl(60 2% 12% / 0.2)`  | `hsl(53 12% 87% / 0.1)`      |
-| Dropdown / outline button | `hsl(60 2% 12% / 0.3)`  | `hsl(53 12% 87% / 0.15)`     |
-| Default input border      | `hsl(60 2% 12% / 0.4)`  | `hsl(53 12% 87% / 0.15)`     |
+Use `border-border` for structural dividers and `border-input` for form boundaries. Workspace
+opacity utilities continue to resolve through `--border-ink-channel`; the light channel is
+blue-gray and the dark channel stays theme-owned. Do not duplicate their resolved RGB values.
+Glass edges are decorative `--research-glass-edge` boundaries; controls still need an independently
+legible semantic boundary or focus indicator.
 
 ### Key Colors
 
-| Semantic role           | Light value             | Dark value            |
-| ----------------------- | ----------------------- | --------------------- |
-| Page background         | `rgb(250 250 248)`      | `rgb(31 31 30)`       |
-| Primary text            | `rgb(32 35 33)`         | `rgb(248 248 246)`    |
-| Secondary text          | `rgb(55 55 52)`         | `rgb(195 194 183)`    |
-| Weak text / icons       | `rgb(100 103 98)`       | `rgb(148 146 139)`    |
-| Active background       | `rgb(236 236 234)`      | `rgb(18 18 18)`       |
-| Card / menu background  | `rgb(255 255 255)`      | `rgb(44 44 42)`       |
-| Primary actions / links | `oklch(0.47 0.105 184)` | `oklch(0.68 0.1 184)` |
-| Focus ring              | `oklch(0.58 0.11 184)`  | `oklch(0.7 0.1 184)`  |
+Use the role-to-token mapping under **Theme Tokens**. Status-success, warning, failure, info,
+diff-added/removed, syntax highlighting, and chart categories retain their own semantic palettes;
+do not recolor them as brand accents merely to reduce the number of visible hues.
 
 ## Style Guidelines
 
 ### Typography
 
-- Global body text: `text-sm leading-5` or `text-base leading-6`, depending on page density. Long-form workspace content uses `text-[15px] leading-[1.625]`.
-- Home brand title: `text-[26px] leading-none font-medium`.
+- Global body text: `text-sm leading-5` or `text-base leading-6`, depending on page density. Inside conversation assistant paper, `.agent-markdown` uses 16px/1.8, with serif `h1`/`h2`/`h3` at 28px/26px/20px. Below 768px, prose is 15px/1.75 and headings are 24px/22px/18px. Other renderers retain their own typography.
+- Shared research-header brand: `font-serif text-[22px] font-semibold`; Home page title: `font-serif text-3xl font-medium`.
 - Section heading: `text-[17px] leading-6 font-medium`.
 - Dialog title: `text-lg font-semibold`.
 - Form label: `Label` + `text-sm font-medium`.
 - Helper copy: `text-xs text-muted-foreground` or `text-sm text-muted-foreground`.
 - Table small text: `text-[11px] leading-[1.625]`; table headers use `font-semibold`.
-- Do not use negative letter spacing or viewport-driven font sizing.
+- Keep controls and reading prose in the system sans-serif stack and code in monospace. Serif styling applies to the research brand, selected page headings, and assistant paper headings. Restrained negative tracking is permitted on those headings; do not use viewport-driven body sizing.
 
 ### Radius
 
-- Global base: `--radius: 0.5rem`.
-- Small buttons, tabs, and toolbar buttons: `rounded-md`, approximately `6px`.
-- Inputs, shared menu items, and navigation items: `rounded-lg`, `8px`.
-- Cards / viewer panels: `rounded-lg`; viewer radius is `8px`.
-- Dialog: `rounded-xl`, `12px`; shared DropdownMenu / Select content: `rounded-[15px]` around `8px` items with `6px` padding and a `1px` border.
-- Composer: `rounded-2xl`, `16px`.
-- Pills, drag handles, and status dots: `rounded-full`.
-- Nested corners follow the inset: outer radius approximately equals inner radius plus padding and border. For example, Notebook figure cards use `16px` around an `8px` image inset by `8px`; flush-clipped images inherit their container radius.
+- Shared base radius: `--radius: 0.625rem` (10px); shadcn radius utilities derive from it.
+- Layout shells are transparent and square; independent Home/Library panels are 24px, conversation and Settings/tool sheets 26px, workspace sidebar 22px, local reading paper 14px, and previews 20px. The composer outer/inner radii are 28px/18px.
+- The shared module header is a pill on wide layouts and a 24px compact frame on narrow layouts.
+- Below 768px, main content/conversation panels use 20px, assistant paper 12px, and the composer 22px. Settings/tool shells become edge-to-edge; their inset content uses 14px.
+- Shared menu items, buttons, tabs, and dialog primitives keep their component-specific utility
+  contracts. Named research materials own their surface radius; avoid conflicting utility classes
+  that silently override those material rules.
+- Nested corners follow the inset; avoid clipping focus indicators and resize targets.
 
 ### Background and Elevation
 
-- Page root: `bg-background text-foreground` on Home and generic shells; workspace shell surfaces use `bg-bg-10`.
-- Standard card: `bg-card text-card-foreground border shadow-sm`.
-- Large viewer panel: `bg-card rounded-lg shadow-sm`; a single ring shadow may replace an explicit border.
-- Shared control hover / open: `bg-muted text-foreground`; content-level active surfaces may use `bg-accent text-accent-foreground` where specified.
-- Weak container: `bg-muted/50`.
-- Inline code / resource reference: `bg-accent/50 text-primary rounded-md px-1.5 py-0.5 font-mono text-sm`.
-- Workspace shell surfaces use `bg-bg-10`; white workspace surfaces use `bg-bg-000`.
-- Sidebar row hover/active states use `hover:bg-bg-300` and active `bg-bg-300`.
-- Session action menu items use `data-[highlighted]:bg-bg-200 data-[highlighted]:text-text-000`; destructive highlights use `data-[highlighted]:bg-danger-900`.
-- Do not use large brand-color surfaces. Deep green is reserved for links, focus, status dots, active states, and primary actions.
+- Research page roots use `research-page`; layout shells remain transparent, while their independently frosted panels use `research-glass`.
+- Dense tables and previews use `research-reading-surface`; local assistant, Home, and Settings/tool paper uses `--research-paper`. Cards and generic content keep `bg-card` unless their named material owns the fill.
+- Menus and generic portals stay opaque. Glass is limited to major structural sheets;
+  do not add blur to every row, card, or floating menu.
+- Shared hover/open surfaces continue to use `bg-muted text-foreground`; named selected surfaces
+  use `bg-accent text-accent-foreground` or `bg-bg-300`.
+- Home project/recent columns each use an 88% pale `research-home-sheet` within the glass content panel. Their lists use divided rows and whitespace without an additional nested card.
+- Inline code/resource references preserve their semantic token styling and opaque host surface.
+- Blue-gray is reserved for primary actions, links, focus, and selection. Status colors communicate
+  real state and keep their existing meaning.
 
 ### Shadows
 
-- Dropdown: `shadow-md`; light value is `0 2px 8px rgb(0 0 0 / 0.08)`.
-- Dialog: `shadow-lg`; medium form dialog uses `0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1)`.
-- Large settings dialog: `shadow-md` plus a 1px ring, `0 1px 2px rgb(0 0 0 / 0.06), 0 2px 8px rgb(0 0 0 / 0.08)`.
-- Composer / viewer: `shadow-sm` plus a 1px ring, `0 0 0 1px rgb(10 10 10 / 0.06), 0 4px 24px rgb(10 10 10 / 0.04)`.
-- Workspace card surfaces use `shadow-card`; composer forms use `shadow-card-opaque`; session menus use `shadow-menu`; rename and delete dialogs use `shadow-dialog`. Borderless in-transcript document sheets use `shadow-sheet` (the ringless card elevation, since a 1px ring shadow reads as a border).
-- Do not stack more than two shadow layers. Prefer background, border opacity, and spacing for hierarchy.
+- Shared menus, dialogs, cards, and sheets use the existing `shadow-menu`, `shadow-dialog`,
+  `shadow-card`, `shadow-card-opaque`, and `shadow-sheet` aliases.
+- Each independent glass sheet uses `--research-glass-shadow`; the composer uses
+  `--research-composer-shadow`. Canonical values are in the two CSS files listed above.
+- Use one elevation owner per surface. Local paper has its own restrained shadow; avoid adding
+  extra card shadows around its rows. Transparent layout shells have no shadow.
 
 ### Focus / Disabled
 
 - All focusable controls use `focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50`.
-- Inputs may add `focus-visible:border-ring/50`; the light focus border target is `rgb(134 182 239)`.
+- Inputs may add `focus-visible:border-ring/50`; use the theme's ring token and verify the composited focus contrast.
 - Disabled controls use `disabled:pointer-events-none disabled:opacity-50`; shared buttons also use `touch-manipulation`.
 - **Exception — a disabled control that must explain _why_:** a natively `disabled` element receives no pointer events, so a `Tooltip` on it never opens. When the disabled state needs an on-hover explanation (e.g. the agent-framework Uninstall button when the runtime is not app-managed or is the active backend), render it as `aria-disabled` + `opacity-50 cursor-not-allowed` with a neutralized `onClick` instead of the native `disabled` attribute, so it keeps the greyed look yet stays hoverable as the tooltip trigger. Reserve this for standing (non-transient) reasons; transient busy states (in-flight install/detect) still use native `disabled` with no tooltip.
 - Sidebar buttons and icon triggers may use `cursor-pointer`; decorative row wrappers provide hover/active styling only and must not imply a click target outside the nested button.
@@ -371,13 +359,13 @@ colors communicate a successful or failed probe/migration result.
 
 ### Motion
 
-- Menu, option, and navigation hover highlights update immediately; do not animate their background or foreground colors.
+- Menu and option highlights update immediately. Research module/sidebar links may use short color transitions from their owning component; they must respect reduced motion.
 - Inline action reveal: `transition-opacity duration-150`, default `opacity-0`, then `opacity-100` on hover or focus-visible.
 - Keep purposeful transforms and dialog entry/exit motion, with reduced-motion support.
 - Session row action reveal uses `transition-opacity duration-200 ease-out`; its hover colors update immediately.
 - Dialog open: `data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95`.
 - Dialog close: `data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95`.
-- Overlay: `fade-in-0 / fade-out-0`; the light scrim is `rgb(0 0 0 / 0.5)`.
+- Overlay: `fade-in-0 / fade-out-0`; generic dialogs retain their existing scrim. Settings blurs the workspace behind the panel with `blur(28px) saturate(0.7)` while leaving panel text and controls sharp. Its light backdrop uses `rgb(71 93 112 / 0.28)`, with `rgb(0 0 0 / 0.55)` in dark mode. Closing Settings removes the overlay and restores the workspace. Reduced-transparency and forced-colors modes disable this blur.
 - Transform motion is limited to dialogs, sheets, collapsible content, and subtle button feedback, and must respect `motion-reduce`.
 - Brand loading indicators may use fixed-geometry transform and opacity motion for orbiting or gathering particles; they must become static under `prefers-reduced-motion`, and the full-canvas startup logo is capped at 30 drawn frames per second.
 
@@ -385,9 +373,11 @@ colors communicate a successful or failed probe/migration result.
 
 ### App Shell
 
-- Root node: `min-h-svh bg-background text-foreground`.
-- Home container: `mx-auto max-w-[1080px] px-8 py-7 pb-16`.
-- Workspace: `flex h-svh min-w-0 bg-bg-10 text-foreground overflow-hidden`.
+- Research roots: `research-page` with a viewport-height flex column, `min-h-0`, and contained overflow.
+- Place the shared floating `ResearchWorkbenchHeader` above the transparent Home, Library, or Workspace layout shell. Keep Windows titlebar safety/drag regions outside this content layout.
+- Windows native caption controls use a transparent `#00000000` background so the full-width titlebar and modal scrims remain continuous beneath minimize/maximize/close. Symbol colors still follow the active theme, and the native controls retain their DPI/zoom reservation and window behavior.
+- The desktop header has a maximum width of 740px, a 62px minimum height, and 20px top/24px bottom spacing. Shells have no padding; default side/bottom margins are 28px, changing to 36px/30px at 1440px and up, 16px below 1100px, and 10px/12px below 768px. Home/Library panel gutters are 18px, reduced to 12px below 1100px. Workspace side panels reserve 16px beside resize handles so the background remains visible between sheets.
+- Module navigation becomes a full-width second row below `md`, with three equal grid columns, icons above labels, and wrapping 12px text. Wider layouts retain the inline module row. This is a layout adaptation, not a new navigation model.
 - Main content column: `min-w-0 flex-1 overflow-hidden`.
 - Use `ScrollArea` for scrollable content. Do not create multiple nested scroll containers in the same direction.
 - The App Shell presentation owner selects the only root presentation allowed to be interactive.
@@ -446,9 +436,9 @@ colors communicate a successful or failed probe/migration result.
 
 ### Card / Panel
 
-- Home list rows do not need a heavy outer card; the row itself uses `rounded-lg hover:bg-accent`.
+- Home project/recent columns use `research-home-sheet research-reading-surface`, with the named sheet rule applying 88% paper, 24px padding (16px below 768px), and a 14px radius. Their nested `research-home-list` has no extra border/shadow; rows use `research-home-row` with fine separators and a muted primary hover.
 - Standard card: `rounded-lg border bg-card p-4 shadow-sm`.
-- Workspace viewer: `m-2 rounded-lg bg-card shadow-sm overflow-hidden`.
+- Workspace viewer uses `research-preview-surface`: an opaque reading surface and fine semantic border within the existing resize layout.
 - Output resource card: `h-20 w-32 rounded-xl bg-card shadow-sm overflow-hidden`; target size is `128px x 80px` with a `12px` radius.
 - Tool row group: `rounded-xl bg-muted/50 p-1.5`.
 - Do not nest decorative cards. Use cards only for repeated items, tool panels, dialog content, and viewers.
@@ -458,7 +448,7 @@ colors communicate a successful or failed probe/migration result.
 - Use `Dialog` for regular form dialogs.
 - Use `AlertDialog` for destructive confirmations.
 - Medium `DialogContent`: `sm:max-w-[576px] max-h-[85svh] overscroll-contain rounded-xl border bg-background p-0 shadow-lg`; target size is approximately `576px x 612px`.
-- Large settings `DialogContent`: `sm:max-w-[960px] h-[min(688px,calc(100svh-2rem))] overscroll-contain rounded-xl bg-card p-0 shadow-md`.
+- Large Settings uses `research-settings-shell research-glass` with a 26px glass outer sheet and the existing 960px/688px restored-size constraints; its content uses inset 88% paper. Mobile Settings uses an opaque panel with no panel backdrop blur; the separate workspace overlay retains the Settings focus treatment.
 - Compact workspace rename/delete dialogs: `w-[min(420px,calc(100vw-2rem))] rounded-2xl bg-bg-000 p-6 text-text-000 shadow-dialog`, without header/footer dividers.
 - Header: `px-5 py-4`, with `border-b` when needed.
 - Body: `px-5 py-5`; form items use `space-y-4` or `space-y-6`.
@@ -472,7 +462,7 @@ colors communicate a successful or failed probe/migration result.
 ### DropdownMenu / Popover / Select
 
 - Use DropdownMenu for action menus, Popover for lightweight auxiliary layers, and Select for single-value selection.
-- `DropdownMenuContent`: `overscroll-contain rounded-[15px] border border-border bg-popover p-1.5 text-popover-foreground shadow-menu`; `shadow-menu` is `0 2px 8px rgb(0 0 0 / 0.08)`. Popovers may keep their domain-specific layout.
+- `DropdownMenuContent`: `overscroll-contain rounded-[15px] border border-border bg-popover p-1.5 text-popover-foreground shadow-menu`; its shadow resolves through the current theme token. Popovers may keep their domain-specific layout.
 - Menu header / label: `px-2 pt-1 pb-0.5 text-xs text-muted-foreground`.
 - Item: `h-8 rounded-lg px-2 py-1.5 text-sm`.
 - Shared item hover / keyboard highlight: `bg-muted text-foreground`; disabled items are non-interactive at `opacity-50`.
@@ -504,7 +494,7 @@ colors communicate a successful or failed probe/migration result.
 - Category label: `px-2 pt-3 text-xs text-muted-foreground`.
 - Sidebar border: `border-sidebar-border`.
 - Workspace sidebar outer slot: `z-10 flex h-full w-[220px] min-w-0 shrink-0 flex-col`.
-- Workspace rail card: `m-2 mr-0 flex min-h-0 flex-1 flex-col rounded-lg bg-rail-card-bg shadow-card`.
+- Workspace navigation uses `research-workspace-sidebar` and `research-sidebar-surface`: an independent 22px glass sheet with its own material edge and shadow. The surrounding layout is transparent. The mobile open drawer uses the opaque overlay material and disables its filter.
 - Workspace brand title uses `text-text-000`; beta and section labels use `text-text-100`.
 - `Cmd+B` on macOS and `Ctrl+B` on Windows/Linux toggle the Workspace sidebar. At mobile widths, the same shortcut toggles the navigation drawer.
 - Sessions nav uses `aria-label="Sessions"` and a scroll body `min-h-0 flex-1 overflow-y-auto py-1`.
@@ -580,7 +570,7 @@ colors communicate a successful or failed probe/migration result.
   Allow/Deny options, scopes, correlation, and submission behavior unchanged.
 
 - Outer shell: `ScrollArea className="min-w-0 flex-1"`.
-- Message scroller surface uses `bg-bg-10` with a top fade `bg-gradient-to-b from-bg-10 to-bg-10/0`.
+- Message scroller uses `research-message-scroller`. Within `research-conversation`, `--bg-10` is transparent and the composer fade is removed, leaving the glass sheet visible around messages. `[data-slot='assistant-message-surface']` supplies local 88% paper with 28px/36px padding, reduced to 16px on mobile; tables and code keep their own content surfaces.
 - Message content is centered in `mx-auto w-full max-w-4xl pb-[56px]`.
 - Selecting a Session whose persisted content is not hydrated yet replaces the transcript with a
   conversation-shaped skeleton: one right-aligned user bubble and two left-aligned Agent text
@@ -601,7 +591,7 @@ colors communicate a successful or failed probe/migration result.
   that link are not inferred and leave the preview user-only. Hidden control Messages never appear
   in the rail or preview. Do not render the rail below `md`.
 - User bubble: `ml-auto max-w-[90%] md:max-w-[min(85%,56rem)] rounded-2xl bg-bg-300 px-3.5 py-2 md:px-4 md:py-2.5 text-sm md:text-[15px] text-message-user-text`.
-- Assistant wrapper: `w-full max-w-[56rem] text-sm md:text-[15px] leading-relaxed text-text-000`.
+- Assistant wrapper retains its `w-full max-w-[56rem]` layout and compact base utilities; the scoped `.agent-markdown` rule in `research-workbench.css` supplies the effective 16px desktop/15px mobile paper typography without enlarging tool controls or metadata.
 - Message metadata uses `text-[11px] text-text-000/70 tabular-nums` below the content so timestamps and elapsed status meet WCAG contrast on workspace surfaces. The visible timestamp format is fixed to English `MMM D, h:mm AM/PM`: User Messages show `Sent ...`, completed Agent Messages show `Completed ...`, and failed Agent Messages show `Failed ...`. Terminal timestamps are persisted separately from mutable record update times. Treat the Agent footer as Turn-level metadata: render it after the last visible Message, Tool activity, Plan record, compaction record, handoff, or inline Subagent update explicitly owned by that Prompt, rather than nesting it inside the final Agent Message fragment. Agent footers keep terminal time, elapsed time, and `Calls` on one line without a separator (`Completed ... Elapsed 2m 5s Calls`). `Calls` uses a dashed underline and reveals a compact Context-window-style popover on pointer hover or keyboard focus. The popover has a proportional color bar above its token rows and a divided `Total` row below them. When an adapter reports a reliable agentic model-call count, show `1 call` or `N calls` as smaller muted text aligned to the right of the popover title; omit it rather than estimating when unavailable. Show Input, Cache, and Output when only aggregate cache data is available; split Cache into Cache read and Cache write, with distinct colors and bar segments, only when the agent reports both categories. The displayed categories are mutually exclusive and `Total` is their sum.
 - Agent loading surface is transparent and keeps `px-3 py-2` for stable transcript geometry; elapsed and status text use `text-text-000/70`, while the brand indicator uses `text-text-300`. A silent foreground prompt shows `[indicator] · Thinking` with elapsed time and the existing slow-response hint. Active tools show `[indicator] · Interacting with tools` without a timer. Permission and Plan approval waits show `[indicator] · Waiting for your approval`; pending ask-user elicitation shows `[indicator] · Waiting for your response`. User waits take precedence over visible assistant output and remain untimed until resolved. Outside those waits, visible assistant text or images hide the indicator; when the current tool transitions to a terminal state, Thinking returns with a fresh timer until the next visible output. Runtime stop, failure, disconnect, and compaction clear the transient indicator state. Historical, duplicate, and late tool events must not revive it or reorder the activity timeline.
 - User Message copy and edit actions sit immediately left of the bubble and use the standard inline-action opacity transition on row hover or keyboard focus. When editing creates multiple Branches, keep the Branch navigation persistently visible at the right end of the metadata footer below the bubble, after the sent time, with previous/next controls around a Branch icon and the current/total count. Let the footer wrap on narrow surfaces so the navigation remains the final bottom row without colliding with the sent time.
@@ -621,26 +611,27 @@ colors communicate a successful or failed probe/migration result.
 ### Agent Markdown
 
 - Markdown shell uses `.agent-markdown-root` with `max-w-full min-w-0 break-words` and `overflow-anchor: none`.
-- Streamdown prose uses compact spacing with `prose-p:my-1`, `prose-ul:my-1`, `prose-ol:my-1`, `prose-li:my-0.5`, and `prose-headings:my-2`.
+- Streamdown retains its compact default prose spacing outside conversation paper. Inside assistant paper, paragraph/list margins are 0.85em, list-item margins 0.35em, and serif heading margins 1.15em/0.55em; the first child has no top margin. Code uses 13px/1.6.
 - Assistant Session Message links always show the local globe mark. Only domains admitted by the effective Network Allowed domains policy may replace it with a lazy, no-referrer favicon from `https://<hostname>/favicon.ico`; URL paths on the same hostname share one source so Chromium can coalesce requests and reuse its HTTP cache. Hover and keyboard focus reveal only the locally composed title, hostname, and URL summary. An admitted HTTPS source may open in the in-app preview after activation; an unadmitted source stays on the external-link safety path and never creates the remote preview iframe. This treatment is opt-in from `WorkspaceMessageItem`; Settings, update notes, and file previews keep the plain Agent Markdown link.
 - Rich blocks (code, table, mermaid) keep a `my-[1.1em]` vertical rhythm against surrounding prose, bumped to `mt-[0.9em]` when directly following a heading or paragraph. The rhythm lives on the block elements themselves — Streamdown's per-block wrapper is `display: contents` in streaming sessions, so self `first:mt-0 last:mb-0` would zero every margin there; message edges are zeroed by container-level selectors that cover both the direct-child and contents-wrapped structures.
 - Streamdown tables render bare in the prose flow: the wrapper carries no border, background, radius, or padding, and Streamdown's own scroll-viewport chrome (`rounded-md border bg-background`) is neutralized, so the cell grid itself is the only frame.
 - Table cells: `border border-border-200 bg-bg-000 px-3 py-2 text-left align-top break-normal`; table headers add `bg-sd-table-head font-semibold` (a lighter tint than the cell surface).
 - Code block is a single rounded surface: `rounded-xl border border-border-200 bg-sd-code-bg` with no header bar and no inner frame; Streamdown's body chrome (`p-4 border bg-background`) and the header label are suppressed. The pre uses compact equal padding (`p-2.5`) and a left-aligned `2ch + 0.5ch` line-number gutter (matched via the generated `counter(line)` class attribute — line spans carry no `.line` class).
 - Mermaid blocks use the code block's outer frame (`rounded-xl border border-border-200 bg-bg-000`); the label row and Streamdown's viewport chrome are suppressed, content insets by `m-2.5`.
-- Block actions (copy / download / fullscreen) float inside the top-right corner, equidistant (`right-2 top-2`) from the block's top and right edges, as a borderless chip: `rounded-lg bg-sd-code-actions-bg` (no border, no shadow). The chip is `opacity-0` at rest and fades in on block `:hover` / `:focus-within` (instant under `prefers-reduced-motion`); individual `size-7` buttons use `text-sd-muted` with a `bg-sd-code-actions-hover text-sd-ink` hover. `--sd-code-bg` rides the app's warm inset-surface token (`var(--bg-200)`, flips per theme automatically) so code blocks share the tool-panel / table-header family; `--sd-code-actions-bg` and `--sd-code-actions-hover` are same-hue steps that flip per theme in the `:root` / `.dark` token blocks.
+- Block actions (copy / download / fullscreen) float inside the top-right corner, equidistant (`right-2 top-2`) from the block's top and right edges, as a borderless chip: `rounded-lg bg-sd-code-actions-bg` (no border, no shadow). The chip is `opacity-0` at rest and fades in on block `:hover` / `:focus-within` (instant under `prefers-reduced-motion`); individual `size-7` buttons use `text-sd-muted` with a `bg-sd-code-actions-hover text-sd-ink` hover. `--sd-code-bg` rides the app's theme-owned inset-surface token (`var(--bg-200)`, flips per theme automatically) so code blocks share the tool-panel / table-header family; `--sd-code-actions-bg` and `--sd-code-actions-hover` are same-hue steps that flip per theme in the `:root` / `.dark` token blocks.
 - A monochrome language icon is prepended to each code block's action chip by `install-streamdown.ts` (`installCodeLanguageBadges`, MutationObserver-based, same pattern as the other Streamdown DOM adapters); the language label rides on the badge's native `title` attribute. Icons come from `language-icons.ts`, a bundled map of simple-icons (CC0) path data keyed by slug with fence-language aliases; unmapped languages fall back to a generic stroke code glyph. Blocks without a language get no badge.
 - Inline code in prose uses the Streamdown inline code token.
 
 ### Composer
 
-- Outer shell: `mx-auto w-full max-w-[520px] px-6 pb-4`.
-- Panel: `rounded-2xl bg-card px-3 py-2 shadow-sm`; target size is approximately `502px x 92px`.
+- The composer occupies its existing layout lane within the conversation; it is visually elevated without covering the final message.
+- `research-composer-dock` separates it from the transcript; `research-composer` owns the 32%–20% translucent outer fill, bright edge, 28px radius, 10px/12px padding, and composer shadow. `research-composer-field` provides the 74% pale inner input surface with an 18px radius and 4px/12px padding.
+- Approved Notebook variant A uses `research-composer-strip` as the first row inside that same form. Notebook, task/plan/bookmark entries, and queue disclosure share the single glass outer frame with the draft and send controls; the row has only an inset bottom separator and no independent background, outline, radius, shadow, or external gap. All toolbar buttons retain `type="button"` so opening a tool does not submit the draft.
 - Text area: `min-h-10 max-h-[200px] resize-none bg-transparent px-0 py-1.5 text-[15px] leading-6 outline-none`.
 - Toolbar: `flex h-8 items-center gap-1`.
 - Icon buttons: `Button variant="ghost" size="icon"`, `size-8`.
-- Workspace composer shell: `px-4 pb-2`; center content in `mx-auto w-full max-w-4xl`, then use `px-1 md:px-3` so the composer text track aligns with the message content after the form's own `px-3`.
-- Workspace composer form: `relative z-10 flex flex-col gap-2 rounded-2xl bg-bg-000 px-3 py-2 shadow-card-opaque`.
+- Workspace composer shell remains constrained to `max-w-4xl` inside the conversation. Preserve its horizontal relationship with the message track when applying the material form's 12px horizontal inset (8px on mobile).
+- Workspace composer form: `research-composer relative z-10 flex flex-col gap-2 border`. Keep its `aria-hidden`/`inert` blocking behavior and reserved lane geometry.
 - When a runnable Specialist is bound, keep the composer at its normal height and use a two-pixel
   edge in the exact color of that Specialist's avatar tile. When the selection changes, fade only
   that edge from transparent to opaque; do not add a multicolor gradient, glow, or geometry motion.
@@ -716,12 +707,12 @@ colors communicate a successful or failed probe/migration result.
 
 ### Resource Viewer / File Library
 
-- Right viewer area: `border-l border-border/20`; the light split line is `rgba(31 31 30 / 0.2)`.
-- Viewer container: `m-2 rounded-lg bg-card shadow-sm overflow-hidden`; target size is approximately `655px x 644px`.
+- Right viewer geometry remains owned by the resizable Workspace panel layout.
+- Viewer container uses `research-preview-surface`; its opaque surface and semantic border separate it from the glass shell.
 - Viewer header: `h-9 px-3 flex items-center gap-2`.
 - Viewer toolbar buttons: `Button variant="ghost" size="icon"`, `size-7 rounded-md`.
 - Image / document preview area: `flex-1 min-h-0 overflow-auto bg-card`.
-- Empty preview panel shell and scroll body use `bg-bg-10`.
+- The preview shell uses the opaque reading material; preserve renderer-specific backgrounds and PDF page colors inside it.
 - CSV/TSV previews use the first record as column headers and explicitly disclose that convention,
   including for files without headers. Byte-limited reads and parser row limits independently make
   the total unknown; show only the previewed row/column range in that case. Show an exact total only
@@ -735,16 +726,16 @@ colors communicate a successful or failed probe/migration result.
 
 ### Home
 
-- Root: `min-h-svh bg-background text-foreground`.
-- Container: `mx-auto max-w-[1080px] px-8 py-7 pb-16`.
-- Header: `flex items-center justify-between`.
+- Root/header: `research-page` and the shared `ResearchWorkbenchHeader`.
+- `research-home-shell` is a transparent layout holding an independent glass project sidebar at `xl` and a scrolling glass `research-home-content` panel. Keep the overview/header transparent within its sheet, and give each project/recent column its own 88% `research-home-sheet`. The inner content is capped at 1440px; retain its responsive padding.
+- Project and recent-session columns are a single column at compact widths and two columns from `lg`. The overview title and actions can wrap.
 - Language and theme preferences live in Settings > General > Appearance; omit their shortcuts
   from the Home header. The Settings gear opens Settings directly.
-- Brand title: display `EconoMind`, `text-[26px] leading-none font-medium`.
-- Global search: expose a `Search` ghost icon action in the header; it opens the same shared dialog as
+- Brand title: display `EconoMind` using the shared research header's serif treatment.
+- Global search: expose a `Search` icon action beside the Home overview controls; it opens the same shared dialog as
   `Cmd/Ctrl+K` and does not maintain a second search state.
 - Account menu: `Button variant="ghost" size="icon"`, `size-9 rounded-lg`.
-- Main create button: `Button variant="outline" size="sm"` or `Button size="sm"`; the compact button is `h-8 px-3 text-xs rounded-md`.
+- Main create button uses the shared primary `Button` with a 40px hit area and responsive label; retain its accessible name when the narrow layout shows only the icon.
 - List title: `text-[17px] leading-6 font-medium`.
 - Projects title: use `GalleryVerticalEnd`; activity counters sit beside each Project name and split
   `running` from `waiting on you` rather than presenting one ambiguous total.
@@ -778,9 +769,9 @@ colors communicate a successful or failed probe/migration result.
   intermittent left-to-right light sweep over the card title, with both title and loader static under
   reduced motion. Waiting keeps its amber pulse, while Completed uses a static green check in both
   the Session update card and message center.
-- Session update cards and the Projects / Recent sessions containers use `shadow-card` without an
-  additional border, so its built-in hairline ring matches the New project button instead of
-  stacking into a heavier outline.
+- Session updates retain stateful cards with semantic borders. Projects / Recent sessions each
+  occupy a local 88% `research-home-sheet`; inside it, `research-home-list` uses divided rows without
+  a second card boundary or shadow.
 - Recent sessions: the secondary line is always the owning Project name, never a prompt preview or a
   repeat of the Session title. Once the Session catalog is complete, if the entire Recent sessions
   list is empty, each Project row also shows its artifact count from a complete Project Files index;
@@ -798,18 +789,18 @@ colors communicate a successful or failed probe/migration result.
   (including the dot produced by lowercasing `İ`). `ß` is not expanded to `ss`. Full-width numeric queries
   follow the same Session-number lookup as ASCII digits. This policy applies to the local Session
   title catalog, not the separate Artifact filename search.
-- List row: `h-10 rounded-lg px-3 hover:bg-accent hover:text-accent-foreground`.
+- Project/recent list row: `research-home-row`; preserve its content-driven height, multiline secondary metadata, and accessible nested action targets.
 - Inline more actions: default `opacity-0`, then `opacity-100` on hover or focus-visible.
 
 ### Onboarding
 
 - Root: `h-svh overflow-y-auto bg-bg-10 text-text-000`.
 - Container: `mx-auto min-h-full w-full max-w-[1040px] px-4 py-5 sm:px-8 sm:py-7`.
-- Brand: reuse the exact Home treatment, `font-serif text-[26px] font-medium leading-none tracking-[-0.02em] text-text-000`; do not recolor it with `primary`.
+- Brand: retain the onboarding serif treatment, `font-serif text-[26px] font-medium leading-none tracking-[-0.02em] text-text-000`; do not recolor it with `primary`.
 - Main layout: one column with compact spacing below `md`; at `md` and wider use `mt-12 grid grid-cols-[240px_minmax(0,1fr)] gap-10`. The left column is unframed introduction/progress, and the right column is the only visible work card.
 - Work surface: one shadcn `Card`, `min-h-[420px] gap-0 rounded-lg bg-bg-000 py-0 shadow-card ring-1 ring-border-200`; do not nest visual cards inside it.
 - Current step uses `bg-primary text-primary-foreground`; completed and inactive labels remain neutral.
-- Commands use shadcn `Button`; primary commands inherit the shared deep-green `primary` variant.
+- Commands use shadcn `Button`; primary commands inherit the current theme's `primary` variant.
 - ProviderForm field guidance uses the shared `FieldHelp` component next to the field label. It accepts only `content: ReactNode`; field types and copy mappings remain owned by the form.
 - `FieldHelp` uses a neutral shadcn `Button variant="ghost" size="icon-xs"`, overridden to `size-[18px] rounded-full bg-transparent text-muted-foreground/50`. Hover, keyboard focus, and open states use `bg-muted text-foreground`; it uses Lucide `CircleHelp` and never uses `primary`.
 - Provider type, Base URL, API key, and Supported models descriptions live only in the shared shadcn `Tooltip` (`max-w-[280px] px-3 py-2 text-xs leading-5 whitespace-normal`); do not render helper copy below those controls. Validation errors remain inline below their inputs.
@@ -817,8 +808,8 @@ colors communicate a successful or failed probe/migration result.
 
 ### Workspace
 
-- Root: `flex h-svh min-w-0 overflow-hidden bg-bg-10 text-foreground`.
-- Root shell: `h-screen overflow-hidden bg-bg-10 p-[10px] text-[13px] leading-normal text-text-000`.
+- Root: `research-page` with a viewport-height flex column and the shared module header.
+- Main shell: transparent `research-workspace-shell`; its sidebar and conversation own independent `research-glass` sheets. Retain the existing panel model, collapse state, preview routing, and resize controls.
 - Left navigation: collapsed state is an icon rail; expanded state uses `Sidebar`.
 - Top tabs: `h-11 px-2`, active tab `h-8 rounded-md bg-accent`.
 - Activity stream: `ScrollArea className="min-w-0 flex-1"`.
@@ -828,14 +819,14 @@ colors communicate a successful or failed probe/migration result.
   keyboard focus, and drag. Mouse resize targets extend 10px to either side of the divider;
   collapsed dividers stay hidden and disabled. Keep the one-pixel layout footprint.
   Arrow-key resizing must work on first opening and after collapsing and reopening either panel.
-- Right card: `m-2 rounded-lg bg-card shadow-sm`.
+- Right preview uses `research-preview-surface`, with opaque content and a fine border.
 - An open Notebook Variables view shares the Preview with the Notebook and manual kernel terminal
   when the Notebook surface is at least `55rem` wide, using a fixed 40% right column. Below that
   container width it collapses to the focused Variables view; resizing back preserves the user's
   open intent. The outer Preview remains the only horizontal resize control.
-- Conversation panel shell: `bg-bg-10 p-2 pl-4`.
-- Composer area uses a top fade `bg-gradient-to-t from-bg-10 to-bg-10/0`.
-- Message scroller and preview panel both use `bg-bg-10`.
+- Conversation panel uses `research-conversation research-glass`, with contained overflow and responsive insets. Its scroller stays transparent around local assistant paper instead of becoming one solid white rectangle.
+- The composer fade is removed; assistant prose uses 88% paper while tables, code, and file renderers retain their designated readable surfaces. Preserve visible atmosphere between independent panels and around paper without allowing it to obscure text.
+- Existing panel collapse/resizing and native fullscreen remain the available focus tools. No new focus-mode switch or automated reading-centered layout is introduced.
 
 #### Composer skill selector
 
@@ -846,17 +837,35 @@ colors communicate a successful or failed probe/migration result.
 - Selecting inserts an inline **skill chip**: `inline-flex items-center px-1.5 py-0.5 mx-0.5 bg-accent text-accent-foreground rounded text-sm font-medium select-all`, `contenteditable="false"`, label `/<Name>`, carrying `data-mention-type="skill" data-skill-id`. Backspace deletes the whole chip; chips are atomic to caret motion.
 - On send, chips serialize to `/<Name>` inline in the visible message, and their skill ids are carried as `forcedSkillIds`: the agent prompt is prefixed with a steering nudge naming the skills. Main Agent can select only Skills currently enabled for Main; the main process rejects stale or forged disabled Skill ids. A Specialist sees its exact assigned scope and may force-load an assigned Skill that is disabled for Main for that turn only (the message text the user sees is unchanged).
 
+### Literature Library and Research Tools
+
+- Transparent `research-library-shell` separates the existing collection sidebar and
+  `research-library-content`, each using independent glass. The standalone library and screening
+  flow share the same materials; their dense reference content retains local reading surfaces.
+- `research-library-table`, `research-library-reference-list`, and
+  `research-library-reading-pane` keep dense metadata and reference text on opaque reading surfaces.
+  The catalog scrolls at short viewport heights; the results table retains a 16rem minimum height
+  so its own scrollable rows remain usable below the header and filters.
+  Preserve existing column visibility, selection, import/export, filtering, and attachment behavior.
+- The optional reading pane follows the existing responsive visibility rules; do not introduce a
+  third fixed-width column when the viewport cannot contain it.
+- PDF content keeps its original colors and proportions. Native viewer controls and annotations
+  retain their semantic colors and behavior.
+- Bibliometrics uses `research-tool-shell`, `research-tool-toolbar`, and
+  `research-tool-content`, sharing a glass outer sheet and inset 88% paper while retaining chart categories,
+  calculation logic, and export actions.
+
 ### Settings
 
-- Use a large `Dialog`; the restored panel is `h-[min(688px,calc(100vh-2rem))] w-[min(960px,calc(100vw-2rem))] rounded-xl border border-border bg-card shadow-dialog`. Maximize uses `inset-4`, filling the viewport with a stable 16px margin and never shrinking the restored panel.
-- Settings consumes the global semantic palette: background `#FAFAF8`, card/popover `#FFFFFF`, muted/secondary `#ECECEA`, border/input `#DEDEDA`, foreground `#202321`, and muted foreground `#646762`. Do not scope token overrides to the dialog or use `body:has(...)`; Radix portals inherit these root tokens directly.
-- Left navigation: `w-48 shrink-0 border-r border-border bg-background`, divided into a `min-h-0 flex-1 overflow-y-auto` destination list and a fixed auxiliary footer. The destination list uses `p-3` and labeled groups (for example Capabilities and Workspace); each group has a `text-xs font-medium text-muted-foreground` heading over its rows. The single **Remote** destination belongs to Workspace after **Storage** and before **Usage**; **Archived** is the final Workspace destination rather than a pinned or singleton group. The footer keeps only the external **Feedback** action, separated from destinations by `border-t border-border` and padded with `px-3 py-2`.
+- Use a large `Dialog`; the restored panel retains `h-[min(688px,calc(100vh-2rem))] w-[min(960px,calc(100vw-2rem))]`, while `research-settings-shell research-glass` owns its 26px radius, border, fill, and shadow. Maximize uses `inset-4`, filling the viewport with a stable 16px margin and never shrinking the restored panel.
+- Settings consumes the global semantic palette and named research materials. `research-settings-shell` uses glass, `research-settings-sidebar` the tinted support material (opaque on mobile), and `research-settings-content` inset 88% reading paper. Use only the shared glass-scoped text roles for contrast; do not introduce dialog-specific semantic palettes or `body:has(...)`. Radix portals inherit root tokens directly.
+- Left navigation: `research-settings-sidebar`, approximately `w-48` on desktop and a contained drawer on mobile, divided into a `min-h-0 flex-1 overflow-y-auto` destination list and a fixed auxiliary footer. The destination list uses `p-3` and labeled groups (for example Capabilities and Workspace); each group has a `text-xs font-medium text-muted-foreground` heading over its rows. The single **Remote** destination belongs to Workspace after **Storage** and before **Usage**; **Archived** is the final Workspace destination rather than a pinned or singleton group. The footer keeps only the external **Feedback** action, separated from destinations by `border-t border-border` and padded with `px-3 py-2`.
 - Nav item: `h-8 w-full rounded-lg px-2 text-sm gap-2 hover:bg-muted`, with a `size-4` leading icon (`text-muted-foreground`) and a truncating label.
-- Active: `bg-muted text-foreground font-medium`; the neutral selection keeps deep green reserved for primary actions, focus, links, enabled switches, and success.
+- Active: `bg-muted text-foreground font-medium`; reserve `primary` for actions, focus, links, and enabled switches. Success remains a separate semantic status role.
 - Content header: `h-12 border-b border-border px-3`, a space-between row. Left cluster: back / forward `size-7` icon buttons (`ArrowLeft` / `ArrowRight`, `disabled:opacity-40`), a `h-4 w-px bg-border` divider, then either a breadcrumb or a plain `h2 text-sm font-semibold` title. Right cluster: a maximize / restore `size-7` toggle (`Maximize2` / `Minimize2`) and a `size-7` close (`X`); both use `hover:bg-muted hover:text-foreground`.
 - Workspace navigation places a `ChartNoAxesCombined` **Usage** panel immediately above **General**. Electron and Web read the SQLite Session Usage projection without opening Session JSON. The renderer reuses that projection for 10 minutes across panel switches; reopening Usage after expiry reloads it, while the visible refresh action always reloads it on demand. If that projection cannot be loaded, the panel shows a retryable error instead of calculating potentially incomplete totals from the currently hydrated Sessions. The projection duplicates provider-reported per-turn Usage from authoritative Session JSON and is not a separately editable UI ledger. Summary periods use local calendar boundaries, while the full-width heatmap and **Daily token usage** Input / Cache / Output bars show the latest 30 local days without horizontal scrolling. The daily chart states its 30-day total and uses rounded 100% / 50% / 0 axis marks with compact `k` / `M` / `B` labels. Conversation graphs are authoritative over their flat active-Branch compatibility view, and all graph branches contribute actual incurred token cost. Token totals include reported conversation and auxiliary usage. A fixed note explains that only reported usage is included and that older Sessions or some providers may not report usage; the page does not estimate missing tokens or display a per-run coverage ratio. Total Session / Project / Run / Artifact values are cumulative through now, while New Session / Project / Run / Artifact values are scoped to the selected period and vertically paired with their corresponding totals. New Artifact records persist `createdAt`; historical records without it fall back to the timestamp of their first associated message. Archived Sessions and Projects remain included. Individually deleting a Session removes its Usage contribution, while deleting a Project retains that Project's metadata and the Usage facts of Sessions not previously deleted individually so historical Project and global totals remain cumulative.
 - Breadcrumb: a clickable root segment (`text-muted-foreground hover:text-foreground`), a muted `/` separator, and the truncated current page label in `text-foreground`, all at `text-sm font-semibold`.
-- Right content column uses `bg-card`; its content area scrolls independently (`min-h-0 flex-1 overflow-y-auto`). Panels pad with `p-5`, and maximize mode constrains inner content to `max-w-[880px]`.
+- Right content column uses `research-settings-content research-reading-surface`; the named content rule applies 88% paper, 10px outer margin, and an 18px radius (4px/14px on mobile). Its content area scrolls independently (`min-h-0 flex-1 overflow-y-auto`). Panels pad with `p-5`, and maximize mode constrains inner content to `max-w-[880px]`.
 - First-level groups use `SettingsSection`: `text-base font-semibold` title, optional `text-[13px] leading-5 text-muted-foreground` description, and a hairline separator between groups. Do not wrap ordinary sections in cards.
 - General begins with **About**, keeping app identity, version/update controls, Help Center, and release history easy to find before the preference flow. The identity/update row uses `SettingsRow`; Help Center and Release notes are full-width, divided `ExternalTextLink` rows with inline lucide icons and a trailing `ArrowUpRight`. On devices with hover support, a fine primary pointer, and no coarse pointer, each resource title rests vertically centered while its supporting description is transparent; pointer hover or keyboard focus reveals the description and changes the leading icon from muted foreground to `primary`, using transform and opacity only. Touch and coarse-pointer surfaces keep the description visible, including hybrid devices that also report hover support and a fine primary pointer. Both resources open in the system browser through the shared external-link policy; Settings never embeds a documentation browser.
 - Preference label/control pairs use `SettingsRow`: a two-column grid with the label and optional description on the left and a stable `12rem` to `20rem` control column on the right. Create and edit forms use one consistent stacked field rhythm instead: a visible `text-sm font-medium` label above a full-width Input, Textarea, or Select, followed by helper or error text. Cards remain for repeated objects, install/status surfaces, paths, errors, and drop zones.

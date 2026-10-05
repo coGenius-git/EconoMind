@@ -95,7 +95,9 @@ const WindowsDesktopFrame = ({ children }: { children: ReactNode }): React.JSX.E
     const style = getComputedStyle(header)
     void window.api.window
       .updateTitleBar?.({
-        color: colorToHex(style.backgroundColor),
+        // Native caption controls sit above renderer overlays. A transparent plate lets the
+        // full-width title bar and modal scrims provide one continuous background beneath them.
+        color: '#00000000',
         symbolColor: colorToHex(style.color)
       })
       .catch((error: unknown) => console.error('Title bar appearance update failed', error))

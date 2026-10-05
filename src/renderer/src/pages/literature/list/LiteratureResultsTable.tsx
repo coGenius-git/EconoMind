@@ -78,7 +78,7 @@ export function LiteratureResultsTable({
     [t]
   )
   return (
-    <div className="isolate flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border-300/80 bg-bg-000">
+    <div className="research-library-table research-reading-surface isolate flex min-h-64 flex-1 flex-col overflow-hidden rounded-xl border border-border-300/80">
       <div className="relative min-h-0 flex-1 overflow-hidden">
         <LiteratureTableScrollArea
           viewportRef={tableScrollRef}

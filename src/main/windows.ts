@@ -229,7 +229,10 @@ const createMainWindow = (
     minHeight: 720,
     title: 'EconoMind',
     ...(process.platform === 'win32'
-      ? { titleBarStyle: 'hidden', titleBarOverlay: { height: WINDOWS_TITLEBAR_HEIGHT } }
+      ? {
+          titleBarStyle: 'hidden',
+          titleBarOverlay: { height: WINDOWS_TITLEBAR_HEIGHT, color: '#00000000' }
+        }
       : {}),
     webPreferences: { webviewTag: true }
   })

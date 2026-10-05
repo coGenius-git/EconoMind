@@ -950,7 +950,7 @@ const PreviewPanelSurface = ({
       <aside
         id="right-panel"
         className={cn(
-          'relative flex h-full min-w-0 w-full flex-col overflow-hidden bg-bg-10 py-[0.7px]',
+          'research-preview-surface relative flex h-full min-w-0 w-full flex-col overflow-hidden py-[0.7px]',
           className
         )}
       >

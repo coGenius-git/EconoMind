@@ -1585,7 +1585,7 @@ const WorkspaceMessageScrollerImpl = ({
             onChange={onScrollFollowingChange}
           />
         ) : null}
-        <MessageScroller className="relative min-h-0 flex-1 bg-bg-10">
+        <MessageScroller className="research-message-scroller relative min-h-0 flex-1">
           <AnnotationMessageReveal
             target={
               annotationScrollTarget?.sessionId === currentSessionId

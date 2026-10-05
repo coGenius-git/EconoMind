@@ -27,7 +27,10 @@ export function LiteratureReferenceList({
 }: Props): React.JSX.Element {
   const { t } = useTranslation()
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto" data-slot="literature-reference-list">
+    <div
+      className="research-library-reference-list research-reading-surface min-h-0 flex-1 overflow-y-auto"
+      data-slot="literature-reference-list"
+    >
       <div className="flex items-center gap-3 border-b border-border px-4 py-3 text-xs text-muted-foreground">
         {selectPage}
         <span>{t('Select all references')}</span>
@@ -42,8 +45,8 @@ export function LiteratureReferenceList({
             <li
               key={entry.id}
               className={cn(
-                'group relative grid grid-cols-[1rem_minmax(0,1fr)_2rem] items-start gap-3 px-4 py-5 transition-colors hover:bg-muted/50',
-                entry.id === selectedId && 'bg-primary/7'
+                'group relative grid grid-cols-[1rem_minmax(0,1fr)_2rem] items-start gap-3 border-l-2 border-transparent px-4 py-5 transition-colors duration-150 motion-reduce:transition-none hover:bg-muted/50',
+                entry.id === selectedId && 'border-primary bg-primary/7'
               )}
             >
               <div className="relative z-10 pt-1">{renderCheckbox(entry)}</div>

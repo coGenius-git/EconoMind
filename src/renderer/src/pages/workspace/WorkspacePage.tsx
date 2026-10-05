@@ -1034,7 +1034,9 @@ const WorkspacePage = ({
   const openNewConversation = useCallback((): void => {
     if (!isSessionPersistenceReady) return
 
-    // The draft effect saves the outgoing doc/attachments and restores the new-conversation state.
+    // New starts with a blank draft even when already on the starter page. Session drafts are
+    // still saved by the navigation effect before the destination draft is restored.
+    composer.lifecycle.clearDraft(newConversationDraftKey)
     setAttachmentError(null)
     setNewConversationPermissionProfile(defaultPermissionProfile)
     setNewConversationAutoReviewEnabled(false)
@@ -1048,8 +1050,10 @@ const WorkspacePage = ({
     clearSelection()
   }, [
     clearSelection,
+    composer.lifecycle,
     defaultPermissionProfile,
     isSessionPersistenceReady,
+    newConversationDraftKey,
     resetNewConversationConfiguration,
     resetNewConversationDelegation,
     sessionController.actions,
@@ -1440,7 +1444,7 @@ const WorkspacePage = ({
     <main
       ref={previewFocusFallbackRef}
       tabIndex={-1}
-      className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-background text-[13px] leading-normal text-foreground"
+      className="research-page flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-background text-[13px] leading-normal text-foreground"
     >
       <ResearchWorkbenchHeader
         active="analysis"
@@ -1451,7 +1455,7 @@ const WorkspacePage = ({
         onAnalysis={() => undefined}
         onSettings={openSettings}
       />
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className="research-workspace-shell min-h-0 flex-1 overflow-hidden">
         <BookmarksProvider
           projectId={bookmarkSession?.projectId}
           sessionId={bookmarkSession?.id}

@@ -82,13 +82,15 @@ export function LiteratureLibraryHeader({
   return (
     <div
       className={
-        selectedCollection?.smart ? 'hidden' : 'flex flex-wrap items-end justify-between gap-4'
+        selectedCollection?.smart
+          ? 'hidden'
+          : 'research-library-header flex shrink-0 flex-wrap items-end justify-between gap-4'
       }
     >
       <div className="min-w-0 flex-1">
         <div className="flex w-fit max-w-full min-w-0 items-center gap-1.5">
           <h2
-            className="min-w-0 truncate text-2xl font-semibold tracking-tight"
+            className="min-w-0 truncate font-serif text-2xl font-semibold tracking-tight lg:text-[28px]"
             title={selectedProject?.name ?? selectedCollection?.name}
           >
             {section === 'inbox'

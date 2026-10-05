@@ -1268,7 +1268,7 @@ const ConversationPanel = ({
         canAttach={canEditDraft && !isUploadingAttachments && !ordinaryComposerBlocked}
         onFiles={onStageAttachmentFiles}
         data-testid="workspace-file-drop-zone"
-        className="relative flex h-full min-w-0 flex-col overflow-hidden bg-bg-10 p-[6px] pl-4 max-md:p-0"
+        className="research-conversation research-glass relative flex h-full min-w-0 flex-col overflow-hidden"
         data-session-id={activeSession?.id ?? ''}
         data-agent-running={activeSession?.status === 'running' ? 'true' : 'false'}
       >
@@ -1401,7 +1401,7 @@ const ConversationPanel = ({
           </WorkspaceMessageEditStateProvider>
         )}
 
-        <div className="relative shrink-0">
+        <div className="research-composer-dock relative shrink-0">
           <div
             aria-hidden="true"
             data-testid="composer-surface-fade"
@@ -1594,89 +1594,12 @@ const ConversationPanel = ({
                   />
                 ) : null}
 
-                {/* Keep guidance above this joined strip/composer dock: the negative margin below
-                    tucks the strip behind the composer, so a notice between them would overlap.
-                    Switching between a compact job bar and Notebook chrome remounts this layer so a
-                    Notebook that becomes available after jobs still receives its entrance animation. */}
-                {notebookReference ||
-                messageQueue.items.length > 0 ||
-                backgroundTasksVisible ||
-                hasSubagents ||
-                hasBookmarkEntry ||
-                (activeBranchPlan ? isPlanProgressVisible(activeBranchPlan) : false) ? (
-                  <div
-                    aria-hidden={ordinaryComposerBlocked || undefined}
-                    inert={ordinaryComposerBlocked || undefined}
-                    key={
-                      notebookReference
-                        ? `notebook-${notebookReference.sessionId}`
-                        : messageQueue.items.length > 0
-                          ? 'message-queue'
-                          : 'jobs'
-                    }
-                    className={cn(
-                      'flex px-2',
-                      notebookReference || messageQueue.items.length > 0 || hasBookmarkEntry
-                        ? 'relative -mb-8 min-h-[68px] items-start rounded-2xl bg-bg-200 pt-1 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-200 motion-safe:ease-out'
-                        : 'mb-2 min-h-9 items-center rounded-lg border border-border-200 bg-bg-000 shadow-card',
-                      ordinaryComposerBlocked && 'invisible pointer-events-none'
-                    )}
-                  >
-                    {activeSession &&
-                    activeBranchPlan &&
-                    isPlanProgressVisible(activeBranchPlan) ? (
-                      <PlanProgressChip
-                        projection={activeBranchPlan}
-                        onOpen={() => {
-                          usePreviewWorkbenchStore
-                            .getState()
-                            .upsertAndActivateItem(
-                              createSessionPlanPreviewItem(
-                                activeSession.id,
-                                activeSession.projectId,
-                                activeBranchPlan.artifactVersionId
-                              )
-                            )
-                        }}
-                      />
-                    ) : null}
-                    <SubagentsBar session={activeSession} permissions={pendingPermissions} />
-                    {activeSession ? <BookmarksPopover /> : null}
-                    {notebookReference ? (
-                      <button
-                        type="button"
-                        className="flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[12px] font-normal text-text-100 transition-colors duration-200 ease-out hover:bg-bg-300 hover:text-text-000"
-                        aria-label={t('Open notebook')}
-                        aria-controls="right-panel"
-                        onClick={() => onOpenNotebook(notebookReference)}
-                      >
-                        <BookOpen className="size-3.5" strokeWidth={2} aria-hidden="true" />
-                        {t('Notebook')}
-                      </button>
-                    ) : null}
-                    <div className="flex-1" />
-                    {backgroundTasksVisible && activeSession ? (
-                      <BackgroundTasksChip
-                        summary={backgroundTasks.summary}
-                        now={backgroundTasks.now}
-                        expanded={backgroundTasksExpanded}
-                        onToggle={() => setBackgroundTasksExpanded((expanded) => !expanded)}
-                      />
-                    ) : null}
-                    <ComposerMessageQueueTrigger
-                      items={messageQueue.items}
-                      expanded={messageQueueExpanded}
-                      onExpandedChange={setMessageQueueExpanded}
-                    />
-                  </div>
-                ) : null}
-
                 <div className="relative">
                   <div
                     aria-hidden="true"
                     data-testid="composer-card-backdrop"
                     className={cn(
-                      'relative -mb-8 rounded-2xl bg-bg-200 pb-8',
+                      'relative',
                       (packageLocked ||
                         hasPendingPermission ||
                         pendingElicitation ||
@@ -1929,13 +1852,93 @@ const ConversationPanel = ({
                         data-testid="ordinary-composer-form"
                         inert={ordinaryComposerBlocked || undefined}
                         className={cn(
-                          'relative z-10 flex flex-col gap-2 rounded-2xl border border-border-200 bg-bg-000 px-3 py-2',
+                          'research-composer relative z-10 flex flex-col gap-2 border',
                           ordinaryComposerBlocked && 'invisible pointer-events-none'
                         )}
                         data-specialist-color={specialistComposerColor}
                         onSubmit={(event) => event.preventDefault()}
                         {...annotationDrop.props}
                       >
+                        {/* Keep Notebook and task controls inside the same glass composer frame.
+                    Switching between a compact job bar and Notebook chrome remounts this layer so a
+                    Notebook that becomes available after jobs still receives its entrance animation. */}
+                        {notebookReference ||
+                        messageQueue.items.length > 0 ||
+                        backgroundTasksVisible ||
+                        hasSubagents ||
+                        hasBookmarkEntry ||
+                        (activeBranchPlan ? isPlanProgressVisible(activeBranchPlan) : false) ? (
+                          <div
+                            data-testid="composer-context-strip"
+                            aria-hidden={ordinaryComposerBlocked || undefined}
+                            inert={ordinaryComposerBlocked || undefined}
+                            key={
+                              notebookReference
+                                ? `notebook-${notebookReference.sessionId}`
+                                : messageQueue.items.length > 0
+                                  ? 'message-queue'
+                                  : 'jobs'
+                            }
+                            className={cn(
+                              'research-composer-strip relative flex min-h-9 items-center',
+                              notebookReference || messageQueue.items.length > 0 || hasBookmarkEntry
+                                ? 'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-200 motion-safe:ease-out'
+                                : undefined,
+                              ordinaryComposerBlocked && 'invisible pointer-events-none'
+                            )}
+                          >
+                            {activeSession &&
+                            activeBranchPlan &&
+                            isPlanProgressVisible(activeBranchPlan) ? (
+                              <PlanProgressChip
+                                projection={activeBranchPlan}
+                                onOpen={() => {
+                                  usePreviewWorkbenchStore
+                                    .getState()
+                                    .upsertAndActivateItem(
+                                      createSessionPlanPreviewItem(
+                                        activeSession.id,
+                                        activeSession.projectId,
+                                        activeBranchPlan.artifactVersionId
+                                      )
+                                    )
+                                }}
+                              />
+                            ) : null}
+                            <SubagentsBar
+                              session={activeSession}
+                              permissions={pendingPermissions}
+                            />
+                            {activeSession ? <BookmarksPopover /> : null}
+                            {notebookReference ? (
+                              <button
+                                type="button"
+                                className="flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[12px] font-normal text-text-100 transition-colors duration-200 ease-out hover:bg-bg-300 hover:text-text-000"
+                                aria-label={t('Open notebook')}
+                                aria-controls="right-panel"
+                                onClick={() => onOpenNotebook(notebookReference)}
+                              >
+                                <BookOpen className="size-3.5" strokeWidth={2} aria-hidden="true" />
+                                {t('Notebook')}
+                              </button>
+                            ) : null}
+                            <div className="flex-1" />
+                            {backgroundTasksVisible && activeSession ? (
+                              <BackgroundTasksChip
+                                summary={backgroundTasks.summary}
+                                now={backgroundTasks.now}
+                                expanded={backgroundTasksExpanded}
+                                onToggle={() => setBackgroundTasksExpanded((expanded) => !expanded)}
+                              />
+                            ) : null}
+                            <ComposerMessageQueueTrigger
+                              items={messageQueue.items}
+                              expanded={messageQueueExpanded}
+                              onExpandedChange={setMessageQueueExpanded}
+                            />
+                          </div>
+                        ) : null}
+
                         {annotationDrop.over ? (
                           <div className="rounded-md border border-primary px-2 py-1 text-xs text-text-200">
                             {t('Add to main conversation')}
@@ -2415,7 +2418,7 @@ const ConversationPanel = ({
                             </div>
                           ) : null}
 
-                          <div className="relative min-w-0 flex-1">
+                          <div className="research-composer-field relative min-w-0 flex-1">
                             {/* Draft editing waits for persistence hydration to avoid targeting the wrong session. */}
                             <ComposerEditor
                               doc={draftDoc}

@@ -1,6 +1,7 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @import './agent-markdown.css';
+@import './research-workbench.css';
 
 /* Explicit source root so utility scanning is independent of the Vite root — the localhost web
    build (vite.web.config.ts) roots at src/renderer/web and would otherwise miss these files. */
@@ -358,24 +359,24 @@ html[data-windows-titlebar] .windows-app-content :is(.min-h-svh, .min-h-screen) 
 
 :root {
   color-scheme: light;
-  --radius: 0.5rem;
+  --radius: 0.625rem;
   /* Light-theme elevation (referenced by the shadow-* utilities via @theme inline). */
-  --shadow-card-value: 0 0 0 1px rgb(32 35 33 / 0.1);
-  --shadow-card-opaque-value: 0 0 0 1px rgb(10 10 10 / 0.08), 0 8px 28px rgb(10 10 10 / 0.1);
-  --shadow-menu-value: 0 2px 8px rgb(0 0 0 / 0.08);
-  --shadow-dialog-value: 0 8px 32px rgb(10 10 10 / 12%);
+  --shadow-card-value: 0 0 0 1px rgb(52 78 101 / 0.1), 0 3px 12px rgb(52 78 101 / 0.04);
+  --shadow-card-opaque-value: 0 0 0 1px rgb(52 78 101 / 0.1), 0 8px 28px rgb(52 78 101 / 0.1);
+  --shadow-menu-value: 0 4px 20px rgb(32 45 58 / 0.12);
+  --shadow-dialog-value: 0 24px 80px rgb(32 45 58 / 0.18), 0 0 0 1px rgb(255 255 255 / 0.8);
   /* Ringless variant of the card elevation for surfaces that must not read as bordered. */
-  --shadow-sheet-value: 0 4px 24px rgb(10 10 10 / 0.04);
+  --shadow-sheet-value: 0 8px 28px rgb(52 78 101 / 0.06);
   --bg-10: var(--background);
   --bg-000: hsl(0 0% 100%);
-  --bg-200: #f1f4f1;
-  --bg-300: #e8f0ed;
-  --bg-400: #dce8e3;
-  --border-ink-channel: 60 2% 12%;
+  --bg-200: #edf2f6;
+  --bg-300: #e4ecf3;
+  --bg-400: #d5dfe7;
+  --border-ink-channel: 209 29% 24%;
   --text-000: var(--foreground);
   --text-100: var(--muted-foreground);
-  --text-200: hsl(43 3% 52%);
-  --text-300: #69716c;
+  --text-200: #5f7181;
+  --text-300: #566879;
   --rail-card-bg: 0 0% 100%;
   --danger-000: hsl(0 45% 38%);
   --danger-900: hsl(0 55% 95%);
@@ -396,8 +397,8 @@ html[data-windows-titlebar] .windows-app-content :is(.min-h-svh, .min-h-screen) 
   --syntax-string: hsl(140 52% 32%);
   --syntax-number: hsl(280 48% 48%);
   --action-panel-toggle: hsl(0 0% 42%);
-  --surface-control-hover: hsl(38 20% 90%);
-  --message-user-text: hsl(0 0% 12%);
+  --surface-control-hover: #e4ecf3;
+  --message-user-text: #202d3a;
   /* Green pill for composer artifact/upload `@` mention chips, distinct from the blue skill chip. */
   --mention-chip: hsl(110 42% 90%);
   --mention-chip-foreground: hsl(140 55% 30%);
@@ -408,20 +409,20 @@ html[data-windows-titlebar] .windows-app-content :is(.min-h-svh, .min-h-screen) 
   --path-chip: hsl(43 3% 32%);
   --path-chip-foreground: hsl(60 14% 96%);
   --always-black: 0 0% 0%;
-  --background: #fafaf8;
-  --foreground: #202321;
-  --card: #ffffff;
-  --card-foreground: #202321;
-  --popover: #ffffff;
-  --popover-foreground: #202321;
-  --primary: oklch(0.47 0.105 184);
-  --primary-foreground: oklch(0.985 0.008 180);
-  --secondary: #ececea;
-  --secondary-foreground: #202321;
-  --muted: #ececea;
-  --muted-foreground: #646762;
-  --accent: #e6f0ed;
-  --accent-foreground: #176b60;
+  --background: #e8eef2;
+  --foreground: #202d3a;
+  --card: #fbfcfd;
+  --card-foreground: #202d3a;
+  --popover: #fbfcfd;
+  --popover-foreground: #202d3a;
+  --primary: #344e65;
+  --primary-foreground: #ffffff;
+  --secondary: #e4ecf3;
+  --secondary-foreground: #202d3a;
+  --muted: #edf2f6;
+  --muted-foreground: #566879;
+  --accent: #e4ecf3;
+  --accent-foreground: #344e65;
   --destructive: oklch(0.58 0.22 25);
   --chart-1: rgb(109 167 236);
   --chart-2: rgb(88 176 133);
@@ -431,9 +432,9 @@ html[data-windows-titlebar] .windows-app-content :is(.min-h-svh, .min-h-screen) 
   --session-running: oklch(0.51 0.15 255);
   --session-running-shimmer: rgb(255 255 255 / 78%);
   --session-waiting: oklch(0.62 0.16 68);
-  --border: #dededa;
-  --input: #dededa;
-  --ring: oklch(0.58 0.11 184);
+  --border: #d2dce4;
+  --input: #b8c6d1;
+  --ring: #496980;
 }
 
 /* Dark theme: warm, low-chroma dark surfaces that keep the app's paper feel rather than a cold
