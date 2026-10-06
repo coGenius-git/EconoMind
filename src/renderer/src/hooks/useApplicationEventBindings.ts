@@ -26,6 +26,7 @@ import { usePreviewWorkbenchStore } from '@/stores/preview-workbench-store'
 import { useSessionJobStore } from '@/stores/session-job-store'
 import { useSessionStore } from '@/stores/session-store'
 import { useSettingsStore } from '@/stores/settings-store'
+import { useProductTourStore } from '@/stores/product-tour-store'
 import { useSkillImportStore } from '@/stores/skill-import-store'
 import { useUpdateStore } from '@/stores/update-store'
 
@@ -273,7 +274,8 @@ const useApplicationEventBindings = ({
   useEffect(
     () =>
       window.api.window?.onSettingsNavigation?.((request) => {
-        if (request.kind === 'session') openPermissionSession(request.id)
+        if (request.kind === 'product-tour') useProductTourStore.getState().requestTour()
+        else if (request.kind === 'session') openPermissionSession(request.id)
         else if (request.kind === 'project')
           useNavigationStore.getState().openProject(request.id, 'user')
         else if (request.kind === 'literature')

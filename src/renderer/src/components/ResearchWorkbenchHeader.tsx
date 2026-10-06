@@ -32,21 +32,24 @@ export function ResearchWorkbenchHeader({
       icon: House,
       onClick: onHome,
       active: active === 'home',
-      page: undefined
+      page: undefined,
+      tourTarget: 'home'
     },
     {
       label: t('Library'),
       icon: BookOpenText,
       onClick: onLibrary,
       page: 'library' as const,
-      active: active === 'library'
+      active: active === 'library',
+      tourTarget: 'library'
     },
     {
       label: t('Research workspace'),
       icon: LineChart,
       onClick: onAnalysis,
       page: 'workspace' as const,
-      active: active === 'analysis'
+      active: active === 'analysis',
+      tourTarget: 'workspace'
     }
   ]
   return (
@@ -63,9 +66,10 @@ export function ResearchWorkbenchHeader({
         aria-label={t('Workbench modules')}
         className="research-module-nav order-3 w-full min-w-0 items-center gap-1 md:order-none md:mx-auto md:w-auto"
       >
-        {links.map(({ label, icon: Icon, onClick, active, page }) => (
+        {links.map(({ label, icon: Icon, onClick, active, page, tourTarget }) => (
           <button
             key={label}
+            data-product-tour={tourTarget}
             type="button"
             onClick={onClick}
             onPointerEnter={() => page && void preloadWorkbenchPage(page)}
@@ -90,6 +94,7 @@ export function ResearchWorkbenchHeader({
           size="icon"
           className="rounded-full text-muted-foreground hover:text-foreground"
           aria-label={settingsLabel ?? t('Settings')}
+          data-product-tour="settings"
           onClick={onSettings}
         >
           <Settings className="size-4" aria-hidden="true" />

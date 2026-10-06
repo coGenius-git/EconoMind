@@ -101,7 +101,8 @@ export const createSettingsWindowController = (
           'customize-skill',
           'customize-specialist',
           'wsl-support',
-          'wsl-create-project'
+          'wsl-create-project',
+          'product-tour'
         ].includes(request.kind) ||
         typeof request.id !== 'string' ||
         !request.id ||

@@ -1,0 +1,99 @@
+// @vitest-environment jsdom
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+
+import { i18next } from '@/i18n'
+import { useNavigationStore } from '@/stores/navigation-store'
+import { PRODUCT_TOUR_STORAGE_KEY, useProductTourStore } from '@/stores/product-tour-store'
+import { createInitialSettingsState, useSettingsStore } from '@/stores/settings-store'
+import { ProductTour } from './ProductTour'
+
+beforeEach(async () => {
+  localStorage.clear()
+  await i18next.changeLanguage('en')
+  useSettingsStore.setState(createInitialSettingsState())
+  useNavigationStore.setState({ view: 'home' })
+  useProductTourStore.setState({
+    requested: false,
+    active: false,
+    stepIndex: 0,
+    dismissedFor: undefined
+  })
+})
+
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
+
+it('waits for saved setup and the ready home surface before starting automatically', () => {
+  const { rerender } = render(<ProductTour ready={false} />)
+  expect(screen.queryByRole('dialog')).toBeNull()
+  act(() => useSettingsStore.setState({ onboardingCompletedAt: 42 }))
+  expect(screen.queryByRole('dialog')).toBeNull()
+  act(() => useNavigationStore.setState({ view: 'workspace' }))
+  rerender(<ProductTour ready />)
+  expect(screen.queryByRole('dialog')).toBeNull()
+  act(() => useNavigationStore.setState({ view: 'home' }))
+  expect(screen.getByRole('dialog', { name: 'New user guide' })).toBeTruthy()
+})
+
+it('advances and goes back, and remembers skipping across renderer remounts', () => {
+  useSettingsStore.setState({ onboardingCompletedAt: 42 })
+  const { unmount } = render(<ProductTour ready />)
+  expect(
+    (screen.getByRole('button', { name: 'Previous step' }) as HTMLButtonElement).disabled
+  ).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: 'Next step' }))
+  expect(screen.getByRole('heading', { name: 'Start with a project' })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Previous step' }))
+  expect(screen.getByRole('heading', { name: 'Your research home' })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Skip guide' }))
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(localStorage.getItem(PRODUCT_TOUR_STORAGE_KEY)).toBe('42')
+  unmount()
+  useProductTourStore.setState({ dismissedFor: undefined })
+  render(<ProductTour ready />)
+  expect(screen.queryByRole('dialog')).toBeNull()
+})
+
+it('finishes the guide and replays from the first step without resetting configuration', () => {
+  useSettingsStore.setState({ onboardingCompletedAt: 42, notificationsEnabled: false })
+  const settings = useSettingsStore.getState()
+  const goHome = vi
+    .spyOn(useNavigationStore.getState(), 'goHome')
+    .mockImplementation(() => undefined)
+  render(<ProductTour ready />)
+  while (screen.queryByRole('button', { name: 'Next step' })) {
+    fireEvent.click(screen.getByRole('button', { name: 'Next step' }))
+  }
+  expect(screen.getByRole('heading', { name: 'Make the workspace yours' })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Finish guide' }))
+  expect(screen.queryByRole('dialog')).toBeNull()
+  act(() => useProductTourStore.getState().requestTour())
+  expect(goHome).toHaveBeenCalledWith('user')
+  expect(screen.getByRole('heading', { name: 'Your research home' })).toBeTruthy()
+  expect(useSettingsStore.getState()).toBe(settings)
+})
+
+it('keeps dismissal effective in this session when device storage is unavailable', () => {
+  useSettingsStore.setState({ onboardingCompletedAt: 42 })
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new Error('Storage disabled')
+  })
+  const { rerender } = render(<ProductTour ready />)
+  fireEvent.click(screen.getByRole('button', { name: 'Skip guide' }))
+  rerender(<ProductTour ready={false} />)
+  rerender(<ProductTour ready />)
+  expect(screen.queryByRole('dialog')).toBeNull()
+})
+
+it('dismisses with Escape and displays the Chinese guide', async () => {
+  await i18next.changeLanguage('zh-Hans')
+  useSettingsStore.setState({ onboardingCompletedAt: 42 })
+  render(<ProductTour ready />)
+  expect(screen.getByRole('dialog', { name: '新手引导' })).toBeTruthy()
+  fireEvent.keyDown(screen.getByRole('button', { name: '下一步' }), { key: 'Escape' })
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(localStorage.getItem(PRODUCT_TOUR_STORAGE_KEY)).toBe('42')
+})

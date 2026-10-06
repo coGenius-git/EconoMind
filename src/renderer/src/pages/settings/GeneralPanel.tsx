@@ -76,9 +76,10 @@ const logFailureCopy = (category: LogWriteFailureCategory | null, t: TFunction):
 
 // General app settings. Hosts the Diagnostics (log file) tools and the community/connect links. The log
 // file stays on this device and is never transmitted by the app.
-const GeneralPanel = (): React.JSX.Element => {
+const GeneralPanel = ({ onStartTour }: { onStartTour?: () => void }): React.JSX.Element => {
   const { t } = useTranslation()
   const isMac = window.api.platform === 'darwin'
+  const onboardingCompletedAt = useSettingsStore((state) => state.onboardingCompletedAt)
   const [logStatus, setLogStatus] = useState<LogFileStatus | null>(null)
   const [isCheckingLog, setIsCheckingLog] = useState(true)
   const [logStatusError, setLogStatusError] = useState<string>()
@@ -297,6 +298,26 @@ const GeneralPanel = (): React.JSX.Element => {
           )}
         >
           <LanguageSelect />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t('New user guide')}>
+        <SettingsRow
+          data-settings-anchor="general.productTour"
+          label={t('Get to know EconoMind')}
+          description={t(
+            'Take a step-by-step tour of the main areas. Your configuration and research data stay as they are.'
+          )}
+          className="pt-0"
+        >
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onStartTour}
+            disabled={!onStartTour || onboardingCompletedAt === undefined}
+          >
+            {t('Restart new user guide')}
+          </Button>
         </SettingsRow>
       </SettingsSection>
 

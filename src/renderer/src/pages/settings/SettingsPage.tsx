@@ -61,6 +61,8 @@ import type { SessionCatalogRecovery } from '@/lib/session-persistence/session-p
 import { preloadComputeHosts } from '@/stores/compute-store'
 import { useMemoryStore } from '@/stores/memory-store'
 import { useNavigationStore } from '@/stores/navigation-store'
+import { useProductTourStore } from '@/stores/product-tour-store'
+import { requestSettingsWindowWorkflow } from './settings-window-workflow'
 import { useProjectStore } from '@/stores/project-store'
 import { useSessionStore } from '@/stores/session-store'
 import {
@@ -1727,7 +1729,18 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
                     ) : activePanel === 'usage' ? (
                       <TokenUsagePanel sessions={sessions} projects={projects} />
                     ) : activePanel === 'general' ? (
-                      <GeneralPanel />
+                      <GeneralPanel
+                        onStartTour={() =>
+                          requestLeave(() => {
+                            if (
+                              requestSettingsWindowWorkflow({ kind: 'product-tour', id: 'restart' })
+                            )
+                              return
+                            onClose()
+                            useProductTourStore.getState().requestTour()
+                          })
+                        }
+                      />
                     ) : activePanel === 'agent' ? (
                       <AgentPanel
                         title={t('Agent framework')}

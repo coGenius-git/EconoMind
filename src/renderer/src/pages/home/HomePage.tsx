@@ -784,6 +784,7 @@ const HomePage = ({
                     size="icon"
                     className="size-10 rounded-full border border-border/70 bg-card text-text-100"
                     onClick={onOpenGlobalSearch}
+                    data-product-tour="search"
                     aria-label={t('Search')}
                     title={t('Search (Cmd/Ctrl+K)')}
                   >
@@ -796,6 +797,7 @@ const HomePage = ({
                     className="h-10 gap-2 rounded-xl px-4 text-sm shadow-sm"
                     onClick={openCreateDialog}
                     aria-label={t('New project')}
+                    data-product-tour="new-project"
                   >
                     <Plus className="size-3.5" strokeWidth={2} aria-hidden="true" />
                     <span className="hidden sm:inline">{t('New project')}</span>
@@ -963,6 +965,7 @@ const HomePage = ({
                 <section
                   className="research-home-sheet research-reading-surface min-w-0"
                   aria-label={t('Projects')}
+                  data-product-tour="projects"
                 >
                   <h2 className={sectionHeadingClassName}>
                     <GalleryVerticalEnd
@@ -1226,6 +1229,7 @@ const HomePage = ({
                 <section
                   className="research-home-sheet research-reading-surface min-w-0"
                   aria-label={t('Recent sessions')}
+                  data-product-tour="recent-sessions"
                 >
                   <h2 className={sectionHeadingClassName}>
                     <Clock className="size-4 text-text-100" strokeWidth={2} aria-hidden="true" />
