@@ -1,6 +1,8 @@
 import { chromium, type BrowserContext, type Page } from 'playwright'
 import { join } from 'node:path'
 import { resolveDataRoot } from '../../storage-root'
+import { cnkiArticleUrl, CnkiPdfDownloadError, readCnkiPdf } from './cnki-pdf-download'
+import type { LiteratureFullTextProgress } from '../../../shared/literature'
 
 // CNKI is driven by a real browser through Playwright rather than Electron's own window. The
 // embedded WebContents could not render CNKI's sign-in - registration and third-party login came up
@@ -12,10 +14,6 @@ const CNKI_SEARCH_URL = 'https://kns.cnki.net/kns8s/defaultresult/index'
 const NAVIGATION_TIMEOUT_MS = 45_000
 const SIGN_IN_WAIT_TIMEOUT_MS = 10 * 60_000
 const POLL_INTERVAL_MS = 1_000
-const PAGE_READY_TIMEOUT_MS = 15_000
-// How long the window stays open after the verification page is left behind, so the user can see
-// the result and finish any sign-in before it closes itself.
-const SIGN_IN_GRACE_MS = 30_000
 
 const profileDirectory = (): string => join(resolveDataRoot(), 'literature', 'cnki-browser-profile')
 
@@ -58,21 +56,20 @@ const BROWSER_CHANNELS = ['msedge', 'chrome'] as const
 async function launchContext(): Promise<BrowserContext> {
   if (context) return context
   // The profile remembers the last window position, so it is stated on every launch.
-  const args = ['--disable-blink-features=AutomationControlled', '--window-position=120,120']
+  const args = ['--window-position=120,120']
   let failure: unknown
   for (const channel of [...BROWSER_CHANNELS, undefined]) {
     try {
       const opened = await chromium.launchPersistentContext(profileDirectory(), {
         ...(channel ? { channel } : {}),
         headless: false,
+        acceptDownloads: true,
         args,
         viewport: { width: 1280, height: 900 },
         locale: 'zh-CN'
       })
-      // CNKI's bot check keys on automation markers, so they are cleared before any page script
-      // runs.
-      await opened.addInitScript(() => {
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+      opened.once('close', () => {
+        if (context === opened) context = null
       })
       context = opened
       return opened
@@ -97,14 +94,21 @@ async function closeContext(): Promise<void> {
 
 export type CnkiSignInState = { signedIn: boolean; message: string }
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+async function openCnkiPage(url: string): Promise<Page> {
+  const opened = await launchContext()
+  const page = opened.pages()[0] ?? (await opened.newPage())
+  await navigateBestEffort(page, url)
+  return page
+}
 
 // Opens a visible Chromium window on the CNKI sign-in page and resolves once the user closes it.
 async function openCnkiSignInInternal(): Promise<CnkiSignInState> {
   let opened: BrowserContext
+  let target: Page
   try {
     signInWindowOpen = true
-    opened = await launchContext()
+    target = await openCnkiPage(PROBE_URL)
+    opened = context!
   } catch (error) {
     signInWindowOpen = false
     return {
@@ -112,25 +116,13 @@ async function openCnkiSignInInternal(): Promise<CnkiSignInState> {
       message: `Unable to start the browser: ${error instanceof Error ? error.message : String(error)}`
     }
   }
-  // A persistent context can report no pages for a moment after launch. Reading that as "the user
-  // closed every tab" shut the window down as soon as it opened, before the captcha could be
-  // solved, so the first page is awaited before anything else happens.
-  let page: Page | undefined
-  const pageDeadline = Date.now() + PAGE_READY_TIMEOUT_MS
-  while (!page && Date.now() < pageDeadline) {
-    page = opened.pages()[0]
-    if (!page) await sleep(200)
-  }
-  const target = page ?? (await opened.newPage())
   // Open the search page, not the login page: CNKI answers an untrusted session with a slider
   // captcha there, and sliding it once is what makes later unattended searches work. Signing in,
   // if it is needed at all, happens on the way.
-  await navigateBestEffort(target, PROBE_URL)
   if (!target.url().includes('cnki.net')) await navigateBestEffort(target, CNKI_HOME_URL)
   // The browser itself is the authority on when the user is done: closing the window closes the
   // context. Polling the page list misread a moment without pages as "user finished", which shut
   // the window down mid-captcha.
-  let passedAt: number | null = null
   await new Promise<void>((resolve) => {
     const finish = (): void => {
       clearInterval(ticker)
@@ -142,15 +134,6 @@ async function openCnkiSignInInternal(): Promise<CnkiSignInState> {
         if (target.isClosed()) {
           finish()
           return
-        }
-        if (passedAt === null) {
-          const url = target.url()
-          const onVerification = /verify|captcha|checkcode/i.test(url)
-          if (url.includes('cnki.net') && !onVerification) passedAt = Date.now()
-        } else if (Date.now() - passedAt > SIGN_IN_GRACE_MS) {
-          // The check was passed a while ago and the window is still open: the session is in place,
-          // so stop holding the profile and let the app continue.
-          finish()
         }
       })()
     }, POLL_INTERVAL_MS)
@@ -184,7 +167,6 @@ async function signOutCnkiInternal(): Promise<CnkiSignInState> {
 // reliable question is whether CNKI keeps you on a page that requires an account: when there is no
 // session it redirects to its login or verification flow instead.
 const LOGIN_REDIRECT_PATTERN = /login|passport|verify|sso|signin|checkcode/i
-const SIGNED_OUT_TEXT = /(请)?登录|注册|登录\/注册/
 // A signed-in page shows the account name and a way out; either is enough once no redirect fired.
 const SIGNED_IN_TEXT = /退出|注销|安全退出|我的知网|个人中心|机构馆/
 
@@ -204,15 +186,17 @@ async function readCnkiSignInStateInternal(): Promise<CnkiSignInState> {
   if (signInWindowOpen)
     return { signedIn: false, message: 'The CNKI sign-in window is still open.' }
   try {
-    const opened = await launchContext()
-    const page = await opened.newPage()
-    await navigateBestEffort(page, PROBE_URL)
+    const page = await openCnkiPage(PROBE_URL)
     await page.waitForTimeout(2_000)
     const probe = (await page.evaluate(TEXT_PROBE)) as TextProbe
     await page.close()
     await closeContext()
     const redirected = LOGIN_REDIRECT_PATTERN.test(probe.url)
-    const detail = `url=${probe.url} title=${probe.title} text=${probe.text.slice(0, 200)}`
+    if (!/^https:\/\/(?:[^/]+\.)?cnki\.net\//iu.test(probe.url))
+      return {
+        signedIn: false,
+        message: 'CNKI could not be reached. Check the network connection and retry.'
+      }
     if (redirected) {
       // The verification page is not a failure to report but a step the user takes once: passing
       // it in the visible browser is what lets later searches run unattended.
@@ -220,17 +204,14 @@ async function readCnkiSignInStateInternal(): Promise<CnkiSignInState> {
       return {
         signedIn: false,
         message: verification
-          ? `CNKI asked for a security check (slider captcha). Open the CNKI window, complete the check there, close the window, then search again. ${detail}`
-          : `No CNKI sign-in detected (redirected to login). ${detail}`
+          ? 'CNKI asked for a security check. Complete it in the browser window, close the window, then search again.'
+          : 'CNKI requires sign-in. Sign in in the browser window, then close it.'
       }
     }
     if (SIGNED_IN_TEXT.test(probe.text))
-      return { signedIn: true, message: `A CNKI session is available. ${detail}` }
-    if (SIGNED_OUT_TEXT.test(probe.text))
-      return { signedIn: false, message: `No CNKI sign-in detected. ${detail}` }
-    // Nothing matched either way: report what the page actually said so the check can be corrected
-    // from a real session instead of guessed at.
-    return { signedIn: true, message: `CNKI kept the search page open. ${detail}` }
+      return { signedIn: true, message: 'A CNKI session is available.' }
+    // Public result pages can be available without an account.
+    return { signedIn: true, message: 'CNKI public search is available.' }
   } catch (error) {
     await closeContext()
     return {
@@ -253,6 +234,7 @@ export type CnkiScrapeResult = {
   }>
   selector: string | null
   blocked: boolean
+  networkError?: boolean
   detail: string
 }
 
@@ -261,12 +243,17 @@ const RESULT_SELECTORS = [
   '.result-table-list tr',
   '.result-item',
   '.list-item',
-  '#gridTable tr'
+  '#gridTable tr',
+  '.result-list li',
+  '.article-list li'
 ]
-const WAIT_SELECTOR =
-  'table.result-table-list, .result-table-list, .result-item, .list-item, #gridTable'
-const BLOCKED_PATTERN =
-  /login|passport|verify|captcha|signin|checkcode|登录|验证码|安全验证|访问受限|非法请求/iu
+const RESULT_TITLE_SELECTOR =
+  'td.name a.fz14, td.name a, .title a, a.title, a.fz14, .doc-title a, a[href*="/kcms/" i], a[href*="/kcms2/" i]'
+// Generic .list-item also matches CNKI's hidden filter controls before the result table. Wait
+// specifically for a visible row with a paper link, rather than the first generic list element.
+const WAIT_SELECTOR = RESULT_SELECTORS.map(
+  (selector) => `${selector}:has(${RESULT_TITLE_SELECTOR}):visible`
+).join(', ')
 
 const EXTRACT_SCRIPT = `(() => {
   const selectors = ${JSON.stringify(RESULT_SELECTORS)}
@@ -278,24 +265,25 @@ const EXTRACT_SCRIPT = `(() => {
   if (!match) return { selector: null, rows: [] }
   const rows = []
   for (const node of match.nodes) {
-    const link = node.querySelector('a')
+    const link = node.querySelector(${JSON.stringify(RESULT_TITLE_SELECTOR)})
+    if (!link) continue
     const cells = Array.from(node.querySelectorAll('td')).map((cell) => cell.innerText.trim())
     const text = (node.innerText || '').replace(/\\s+/g, ' ').trim()
-    const title = (link && link.innerText.trim()) || cells[1] || text.slice(0, 300)
+    const title = (link.textContent || '').trim()
     if (!title || title.length < 2) continue
     rows.push({
       title,
       href: link ? link.href : '',
-      authors: cells[2] || '',
-      venue: cells[3] || '',
-      date: cells[4] || cells[5] || '',
+      authors: (() => { const cell = node.querySelector('td.author, .author, .authors'); if (!cell) return cells[2] || ''; const authors = Array.from(cell.querySelectorAll('a')).map(a => (a.textContent || '').trim()).filter(Boolean); return authors.length ? authors.join(';') : (cell.textContent || '').trim() })(),
+      venue: (node.querySelector('td.source, .source, .venue')?.textContent || cells[3] || '').trim(),
+      date: (node.querySelector('td.date, .date, .year')?.textContent || cells[4] || cells[5] || '').trim(),
       text
     })
   }
   return { selector: match.selector, rows }
 })()`
 
-// Loads the result page once in a hidden Chromium and walks through up to maxPages pages, reading
+// Loads the result page in a visible Chromium and walks through up to maxPages pages, reading
 // each list straight out of the DOM. Paging stays inside one session: reloading per page would
 // multiply the navigation cost by the page count.
 async function scrapeCnkiSearchInternal(url: string, maxPages: number): Promise<CnkiScrapeResult> {
@@ -307,21 +295,34 @@ async function scrapeCnkiSearchInternal(url: string, maxPages: number): Promise<
       detail: 'the CNKI sign-in window is still open'
     }
   try {
-    const opened = await launchContext()
-    const target = (await opened.newPage()) as Page
-    await navigateBestEffort(target, url)
+    const target = await openCnkiPage(url)
+    if (!/^https:\/\/(?:[^/]+\.)?cnki\.net\//iu.test(target.url())) {
+      await closeContext()
+      return {
+        rows: [],
+        selector: null,
+        blocked: false,
+        networkError: true,
+        detail: 'CNKI could not be reached. Check the network or proxy settings and retry.'
+      }
+    }
     const found = await target
       .waitForSelector(WAIT_SELECTOR, { timeout: RESULT_WAIT_MS })
       .then(() => true)
       .catch(() => false)
     if (!found) {
-      const detail = `url=${target.url()} title=${await target.title()}`
-      await target.close()
-      await closeContext()
+      const probe = (await target.evaluate(TEXT_PROBE)) as TextProbe
+      const blocked =
+        LOGIN_REDIRECT_PATTERN.test(probe.url) ||
+        /请完成安全验证|验证码|访问受限|非法请求/u.test(probe.text)
+      const detail = blocked
+        ? 'Complete the CNKI security check or sign-in in the browser window, then search again.'
+        : 'CNKI did not show a recognized result list. Export references from CNKI and import the file here.'
+      if (!blocked) await closeContext()
       return {
         rows: [],
         selector: null,
-        blocked: BLOCKED_PATTERN.test(detail),
+        blocked,
         detail
       }
     }
@@ -330,7 +331,8 @@ async function scrapeCnkiSearchInternal(url: string, maxPages: number): Promise<
       rows: CnkiScrapeResult['rows']
     }
     const rows = [...first.rows]
-    const detail = `url=${target.url()} title=${await target.title()}`
+    let previous = first.rows.map((row) => row.href || row.title).join('|')
+    const detail = 'CNKI search completed.'
     // Collect the following pages in the same session until the list runs out or the page budget
     // is spent.
     for (let step = 1; step < maxPages; step += 1) {
@@ -352,6 +354,9 @@ async function scrapeCnkiSearchInternal(url: string, maxPages: number): Promise<
         rows: CnkiScrapeResult['rows']
       } | null
       if (!next || !next.rows.length) break
+      const fingerprint = next.rows.map((row) => row.href || row.title).join('|')
+      if (fingerprint === previous) break
+      previous = fingerprint
       rows.push(...next.rows)
     }
     await target.close()
@@ -359,7 +364,7 @@ async function scrapeCnkiSearchInternal(url: string, maxPages: number): Promise<
     return {
       rows,
       selector: first.selector,
-      blocked: BLOCKED_PATTERN.test(detail),
+      blocked: false,
       detail
     }
   } catch (error) {
@@ -368,6 +373,7 @@ async function scrapeCnkiSearchInternal(url: string, maxPages: number): Promise<
       rows: [],
       selector: null,
       blocked: false,
+      networkError: true,
       detail: error instanceof Error ? error.message : String(error)
     }
   }
@@ -383,5 +389,25 @@ export const readCnkiSignInState = (): Promise<CnkiSignInState> =>
   withProfile(readCnkiSignInStateInternal)
 export const scrapeCnkiSearch = (url: string, maxPages: number): Promise<CnkiScrapeResult> =>
   withProfile(() => scrapeCnkiSearchInternal(url, maxPages))
+
+export const downloadCnkiPdf = (
+  url: string,
+  maxBytes: number,
+  onProgress?: (progress: LiteratureFullTextProgress) => void
+): Promise<Buffer> =>
+  withProfile(async () => {
+    cnkiArticleUrl(url)
+    let preserveWindow = false
+    try {
+      return await readCnkiPdf(await launchContext(), url, maxBytes, onProgress)
+    } catch (error) {
+      preserveWindow =
+        error instanceof CnkiPdfDownloadError &&
+        ['access-required', 'verification-required'].includes(error.reason)
+      throw error
+    } finally {
+      if (!preserveWindow) await closeContext()
+    }
+  })
 
 export { CNKI_HOME_URL, CNKI_SEARCH_URL }

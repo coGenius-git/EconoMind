@@ -4,11 +4,11 @@ import {
   DISCOVERY_DEFAULT_LIMIT,
   DISCOVERY_DOCUMENT_TYPES,
   DISCOVERY_RESULT_LIMIT,
-  DISCOVERY_SEARCH_SOURCE_IDS,
-  DISCOVERY_SOURCE_TIERS,
+  OPENALEX_DISCOVERY_SOURCE_TIERS,
   type DiscoveryCandidate,
   type DiscoveryDocumentType,
   type DiscoveryImportResult,
+  type DiscoveryQuery,
   type DiscoveryScreenResult,
   type DiscoverySourceId,
   type DiscoverySourceStatus,
@@ -25,6 +25,8 @@ export type DiscoveryFormState = {
   minCitations: string
   limit: number
   sources: DiscoverySourceId[]
+  language: NonNullable<DiscoveryQuery['language']> | ''
+  sort: NonNullable<DiscoveryQuery['sort']>
 }
 
 export const emptyDiscoveryForm: DiscoveryFormState = {
@@ -36,7 +38,9 @@ export const emptyDiscoveryForm: DiscoveryFormState = {
   sourceTiers: [],
   minCitations: '',
   limit: DISCOVERY_DEFAULT_LIMIT,
-  sources: [...DISCOVERY_SEARCH_SOURCE_IDS]
+  sources: ['openalex'],
+  language: '',
+  sort: 'relevance'
 }
 
 function parseYear(value: string): number | null {
@@ -119,7 +123,25 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
     setImportResult(undefined)
     setScreenResult(undefined)
     if (!form.topic.trim()) {
-      setError(t('Enter a review topic before searching.'))
+      setError(t('Enter search terms before searching.'))
+      return
+    }
+    const yearFrom = parseYear(form.yearFrom)
+    const yearTo = parseYear(form.yearTo)
+    if (
+      (form.yearFrom.trim() && (!yearFrom || yearFrom < 1000)) ||
+      (form.yearTo.trim() && (!yearTo || yearTo < 1000))
+    ) {
+      setError(t('Enter a four-digit publication year.'))
+      return
+    }
+    if (yearFrom !== null && yearTo !== null && yearFrom > yearTo) {
+      setError(t('Publication year from must not exceed publication year to.'))
+      return
+    }
+    const minCitations = parseCount(form.minCitations)
+    if (form.minCitations.trim() && (minCitations === null || minCitations > 10_000_000)) {
+      setError(t('Enter a non-negative citation count.'))
       return
     }
     setSearching(true)
@@ -127,23 +149,49 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
       const result = await window.api.literature.discoverySearch({
         topic: form.topic.trim(),
         keywords: keywords(),
-        yearFrom: parseYear(form.yearFrom),
-        yearTo: parseYear(form.yearTo),
+        yearFrom,
+        yearTo,
         documentTypes: form.documentTypes.filter((type) => DISCOVERY_DOCUMENT_TYPES.includes(type)),
-        sourceTiers: form.sourceTiers.filter((tier) => DISCOVERY_SOURCE_TIERS.includes(tier)),
-        minCitations: parseCount(form.minCitations),
+        sourceTiers: form.sourceTiers.filter((tier) =>
+          OPENALEX_DISCOVERY_SOURCE_TIERS.some((supported) => supported === tier)
+        ),
+        minCitations,
+        language: form.language || null,
+        sort: form.sort,
         limit: Math.min(DISCOVERY_RESULT_LIMIT, Math.max(1, Math.trunc(form.limit) || 1)),
-        sources: form.sources.length ? form.sources : ['openalex']
+        sources: ['openalex']
       })
       setCandidates(result.candidates)
       setStatuses(result.statuses)
-      setWarnings(result.warnings)
+      const providerMessages = new Set(
+        result.statuses.map((status) => status.message).filter(Boolean)
+      )
+      const warnings = result.warnings.filter((warning) => !providerMessages.has(warning))
+      for (const status of result.statuses) {
+        if (status.source === 'openalex' && status.failureCode === 'rate-limited') {
+          warnings.push(
+            status.rateLimitReason === 'daily-budget'
+              ? status.requiresApiKey
+                ? t(
+                    'OpenAlex daily budget is exhausted. Configure a free OpenAlex API key to use your own budget, or wait for the reset.'
+                  )
+                : t(
+                    'OpenAlex daily budget is exhausted. Wait for the reset or update your API key.'
+                  )
+              : t(
+                  'OpenAlex is temporarily rate limited. Automatic retries did not succeed. Try again after the waiting period.'
+                )
+          )
+          if (status.retryAt)
+            warnings.push(
+              t('Retry after {{time}}.', { time: new Date(status.retryAt).toLocaleString() })
+            )
+        } else if (status.message) warnings.push(status.message)
+      }
+      setWarnings(warnings)
       setSelected(new Set())
-      if (!result.candidates.length)
-        setNotice(
-          result.statuses.find((status) => status.message)?.message ??
-            t('No records matched this query.')
-        )
+      if (!result.candidates.length && !providerMessages.size)
+        setNotice(t('No records matched this query.'))
     } catch (searchError) {
       setError(searchError instanceof Error ? searchError.message : t('The search failed.'))
       setCandidates([])
@@ -193,11 +241,11 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
   )
 
   const importSelected = useCallback(
-    async (duplicatePolicy: 'reuse' | 'separate'): Promise<void> => {
+    async (duplicatePolicy: 'reuse' | 'separate'): Promise<DiscoveryImportResult | undefined> => {
       const chosen = candidates.filter((candidate) => selected.has(candidate.key))
       if (!chosen.length) {
         setError(t('Select at least one record to import.'))
-        return
+        return undefined
       }
       setImporting(true)
       setError(undefined)
@@ -209,8 +257,10 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
         })
         setImportResult(result)
         setNotice(`${t('Imported records')}: ${result.importedCount}`)
+        return result
       } catch (importError) {
         setError(importError instanceof Error ? importError.message : t('The import failed.'))
+        return undefined
       } finally {
         setImporting(false)
       }
@@ -329,7 +379,9 @@ export type LiteratureDiscoveryController = Readonly<{
   search: () => Promise<void>
   signInCnki: () => Promise<void>
   importCnkiExport: (file: File) => Promise<void>
-  importSelected: (duplicatePolicy: 'reuse' | 'separate') => Promise<void>
+  importSelected: (
+    duplicatePolicy: 'reuse' | 'separate'
+  ) => Promise<DiscoveryImportResult | undefined>
   screenImported: (criteria: {
     mode: 'all' | 'any' | 'custom'
     items: string[]

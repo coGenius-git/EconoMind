@@ -181,21 +181,36 @@ export async function composeResearchCatalog({
     onProgress,
     _resolveProxy,
     signal
-  ) =>
-    downloadFullText(
-      url,
-      maxBytes,
-      onProgress,
-      async (target) => {
-        const environment = parseSystemProxyRules(await session.defaultSession.resolveProxy(target))
-        return environment.HTTPS_PROXY ?? environment.ALL_PROXY
-      },
-      signal
-    )
+  ) => {
+    const download = async (): Promise<Buffer> => {
+      const targetUrl = new URL(url)
+      if (
+        targetUrl.origin === 'https://content.openalex.org' &&
+        /^\/works\/W\d+\.pdf$/u.test(targetUrl.pathname)
+      ) {
+        const key = tryDecryptKey((await settingsService.getConnectors())?.openAlexApiKeyRef)
+        if (key) targetUrl.searchParams.set('api_key', key)
+      }
+      return downloadFullText(
+        targetUrl.href,
+        maxBytes,
+        onProgress,
+        async (target) => {
+          const environment = parseSystemProxyRules(
+            await session.defaultSession.resolveProxy(target)
+          )
+          return environment.HTTPS_PROXY ?? environment.ALL_PROXY
+        },
+        signal
+      )
+    }
+    return download()
+  }
   const literatureFullTextFinder = new LiteratureFullTextFinder({
     catalog: literatureCatalog,
     content: contentRepository,
     download: downloadLiteraturePdf,
+    fetch: netFetchStandard,
     openAlexKey: async () =>
       tryDecryptKey((await settingsService.getConnectors())?.openAlexApiKeyRef),
     contactEmail: async () => (await settingsService.getConnectors())?.contactEmail
@@ -237,6 +252,7 @@ export async function composeResearchCatalog({
   const literatureDiscovery = await composeLiteratureDiscovery({
     settingsService,
     literatureCatalog,
+    literatureFullTextFinder,
     modules
   })
   const tagCleanupLog = createLogger('tags:cleanup')

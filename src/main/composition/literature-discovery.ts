@@ -3,11 +3,14 @@ import type { ApplicationModuleBuilder } from '../application-runtime'
 import { RestrictedInferenceRunner } from '../acp/restricted-inference-runner'
 import { LiteratureDiscovery } from '../literature/discovery/discovery-service'
 import type { CnkiSignInState } from '../literature/discovery/cnki-browser'
+import { downloadCnkiPdf } from '../literature/discovery/cnki-browser'
 import type { LiteratureCatalog } from '../literature/catalog'
 import { createScreeningModel } from '../literature/screening-model'
 import { tryDecryptKey } from '../settings/crypto'
 import type { SettingsService } from '../settings/service'
 import { resolveConfigRoot } from '../storage-root'
+import type { LiteratureFullTextFinder } from '../literature/full-text-finder'
+import { netFetchStandard } from '../skills/net-fetch'
 
 // OpenAlex is queried through its API. CNKI is driven by a standalone Chromium that the user
 // signs in to once; the profile lives under the data root and is reused for later searches.
@@ -22,10 +25,12 @@ export type LiteratureDiscoveryCapability = {
 export async function composeLiteratureDiscovery({
   settingsService,
   literatureCatalog,
+  literatureFullTextFinder,
   modules
 }: {
   settingsService: SettingsService
   literatureCatalog: LiteratureCatalog
+  literatureFullTextFinder: LiteratureFullTextFinder
   modules: ApplicationModuleBuilder
 }): Promise<LiteratureDiscoveryCapability> {
   const inference = new RestrictedInferenceRunner({
@@ -38,6 +43,37 @@ export async function composeLiteratureDiscovery({
     importItems: (inputs, collectionId, duplicatePolicy) =>
       literatureCatalog.importItems(inputs, collectionId ?? undefined, duplicatePolicy),
     get: (itemId) => literatureCatalog.get(itemId),
+    fetch: netFetchStandard,
+    acquirePdf: (itemId, candidate) =>
+      candidate.source === 'cnki'
+        ? literatureFullTextFinder.acquire(
+            itemId,
+            candidate.url
+              ? [
+                  {
+                    url: candidate.url,
+                    provider: 'cnki',
+                    source: 'CNKI',
+                    sourceUrl: candidate.url
+                  }
+                ]
+              : [],
+            downloadCnkiPdf
+          )
+        : literatureFullTextFinder.acquire(
+            itemId,
+            [
+              ...new Set([
+                ...(candidate.openAccessPdfUrls ?? []),
+                ...(candidate.openAccessPdfUrl ? [candidate.openAccessPdfUrl] : [])
+              ])
+            ].map((url) => ({
+              url,
+              provider: 'openalex',
+              source: 'OpenAlex',
+              sourceUrl: candidate.url || undefined
+            }))
+          ),
     model: async () => {
       const target = await settingsService.captureActiveExplicitAgentBackendTarget()
       return createScreeningModel(inference, target)

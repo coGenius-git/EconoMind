@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { searchOpenAlex } from './openalex-provider'
+import { createOpenAlexSearch, searchOpenAlex } from './openalex-provider'
 import type { DiscoveryQuery } from '../../../shared/literature-discovery'
 
 const query = (patch: Partial<DiscoveryQuery> = {}): DiscoveryQuery => ({
@@ -24,7 +24,8 @@ const work = (overrides: Record<string, unknown> = {}): Record<string, unknown> 
   cited_by_count: 12,
   abstract_inverted_index: { Green: [0], finance: [1], matters: [2] },
   primary_location: { source: { display_name: 'Journal of Finance', is_in_doaj: false } },
-  open_access: { is_oa: false, oa_url: null },
+  best_oa_location: { is_oa: true, pdf_url: 'https://example.org/paper.pdf' },
+  open_access: { is_oa: true, oa_url: 'https://example.org/paper' },
   authorships: [{ author: { display_name: 'Ada Lovelace' } }],
   ...overrides
 })
@@ -36,6 +37,146 @@ const jsonResponse = (payload: unknown, status = 200): Response =>
   })
 
 describe('searchOpenAlex', () => {
+  it('uses OpenAlex work types, language and sorting without ignoring other types', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ results: [work({ type: 'preprint' })] })
+    )
+    const result = await searchOpenAlex(
+      query({ documentTypes: ['preprint'], language: 'en', sort: 'citations' }),
+      { fetch: fetcher }
+    )
+    const url = new URL(String(fetcher.mock.calls[0][0]))
+    expect(url.searchParams.get('filter')).toContain('type:preprint')
+    expect(url.searchParams.get('filter')).toContain('language:en')
+    expect(url.searchParams.get('sort')).toBe('cited_by_count:desc')
+    expect(result.candidates[0]?.documentType).toBe('preprint')
+    const otherFetch = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ results: [work({ type: 'other' })] })
+    )
+    await searchOpenAlex(query({ documentTypes: ['conference', 'other'], sort: 'newest' }), {
+      fetch: otherFetch
+    })
+    const otherUrl = new URL(String(otherFetch.mock.calls[0][0]))
+    expect(otherUrl.searchParams.get('filter')).toContain('type:conference-paper|other')
+    expect(otherUrl.searchParams.get('sort')).toBe('publication_date:desc')
+  })
+  it('retries a transient 429 after the server delay', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('', { status: 429, headers: { 'retry-after': '1' } }))
+      .mockResolvedValueOnce(jsonResponse({ results: [work()] }))
+    const sleep = vi.fn(async () => undefined)
+    const result = await searchOpenAlex(query(), { fetch: fetcher, sleep })
+    expect(result.status.ok).toBe(true)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(sleep).toHaveBeenCalledWith(1000, undefined)
+  })
+
+  it('does not retry exhausted daily budgets and respects cooldown across different queries', async () => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ message: 'Insufficient budget.' }), {
+          status: 429,
+          headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '3600' }
+        })
+    )
+    const search = createOpenAlexSearch({ fetch: fetcher })
+    const result = await search(query())
+    expect(result.status).toMatchObject({ rateLimitReason: 'daily-budget', requiresApiKey: true })
+    expect(result.status.retryAt).toBeGreaterThan(Date.now())
+    await search(query({ topic: 'another query' }))
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
+  it('a newly saved key can retry immediately and successful repeated searches reuse the cache', async () => {
+    let key = ''
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response('', { status: 429, headers: { 'x-ratelimit-remaining': '0' } })
+      )
+      .mockResolvedValueOnce(jsonResponse({ results: [work()] }))
+    const search = createOpenAlexSearch({ fetch: fetcher, apiKey: async () => key || undefined })
+    await search(query())
+    key = 'private-test-key'
+    const result = await search(query())
+    expect(result.status.ok).toBe(true)
+    result.candidates[0].title = 'caller mutation'
+    expect((await search(query())).candidates[0].title).toBe('Green finance and firm value')
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps preceding pages when a later page exhausts the budget', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          meta: { count: 500 },
+          results: Array.from({ length: 100 }, (_, i) => work({ id: `W${i}` }))
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response('', { status: 429, headers: { 'x-ratelimit-remaining': '0' } })
+      )
+    const result = await searchOpenAlex(query({ limit: 200 }), { fetch: fetcher })
+    expect(result.candidates).toHaveLength(100)
+    expect(result.status).toMatchObject({
+      matched: 500,
+      returned: 100,
+      failureCode: 'rate-limited'
+    })
+  })
+  it('uses cached PDF URLs only with a configured key and keeps the key out of candidates', async () => {
+    const fetcher = vi.fn(async () =>
+      jsonResponse({
+        results: [
+          work({
+            best_oa_location: null,
+            open_access: null,
+            content_urls: { pdf: 'https://content.openalex.org/works/W1.pdf' }
+          })
+        ]
+      })
+    )
+    expect((await searchOpenAlex(query(), { fetch: fetcher })).candidates).toEqual([])
+    const result = await searchOpenAlex(query(), {
+      fetch: fetcher,
+      apiKey: async () => 'private-test-key'
+    })
+    expect(result.candidates[0]?.openAccessPdfUrl).toBe('https://content.openalex.org/works/W1.pdf')
+    expect(JSON.stringify(result.candidates)).not.toContain('private-test-key')
+  })
+  it('prefers actual PDF locations over a landing page and retains alternate PDF sources', async () => {
+    const result = await searchOpenAlex(query(), {
+      fetch: vi.fn(async () =>
+        jsonResponse({
+          results: [
+            work({
+              best_oa_location: {
+                is_oa: true,
+                pdf_url: null,
+                landing_page_url: 'https://repository.example/record'
+              },
+              open_access: { is_oa: true, oa_url: 'https://repository.example/record' },
+              locations: [
+                { is_oa: true, pdf_url: 'https://journal.example/paper.pdf' },
+                { is_oa: true, pdf_url: 'https://repository.example/paper.pdf' }
+              ]
+            })
+          ]
+        })
+      )
+    })
+    expect(result.candidates[0]?.openAccessPdfUrl).toBe('https://journal.example/paper.pdf')
+    expect(result.candidates[0]).toMatchObject({
+      openAccessPdfUrls: [
+        'https://journal.example/paper.pdf',
+        'https://repository.example/paper.pdf',
+        'https://repository.example/record'
+      ]
+    })
+  })
+
   it('fetches a 200-record query in pages within the API limit', async () => {
     const fetcher = vi.fn(async (url: RequestInfo | URL) => {
       const parameters = new URL(String(url)).searchParams
@@ -125,6 +266,32 @@ describe('searchOpenAlex', () => {
     })
     expect(unreachable.status).toMatchObject({ ok: false, failureCode: 'unavailable' })
     expect(unreachable.status.message).toContain('OpenAlex')
+  })
+
+  it('keeps only records whose full text is reachable', async () => {
+    const results = [
+      work({ id: 'https://openalex.org/W1', title: 'With a PDF' }),
+      work({
+        id: 'https://openalex.org/W2',
+        title: 'Without any full text',
+        best_oa_location: null,
+        open_access: { is_oa: false, oa_url: null }
+      }),
+      work({
+        id: 'https://openalex.org/W3',
+        title: 'With an open-access link only',
+        best_oa_location: null,
+        open_access: { is_oa: true, oa_url: 'https://example.org/landing' }
+      })
+    ]
+    const fetcher = vi.fn(async () => jsonResponse({ meta: { count: 3 }, results }))
+    const result = await searchOpenAlex(query({ limit: 10 }), { fetch: fetcher as typeof fetch })
+
+    expect(result.candidates.map((entry) => entry.title)).toEqual([
+      'With a PDF',
+      'With an open-access link only'
+    ])
+    expect(result.candidates[0]?.openAccessPdfUrl).toBe('https://example.org/paper.pdf')
   })
 
   it('stops at the requested limit', async () => {

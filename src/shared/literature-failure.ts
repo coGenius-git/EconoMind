@@ -25,6 +25,7 @@ export const literatureFailureSchema = z
       'pmc',
       'arxiv',
       'catalog',
+      'cnki',
       'provider'
     ]),
     retryable: z.boolean()
