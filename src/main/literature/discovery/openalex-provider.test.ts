@@ -24,7 +24,8 @@ const work = (overrides: Record<string, unknown> = {}): Record<string, unknown> 
   cited_by_count: 12,
   abstract_inverted_index: { Green: [0], finance: [1], matters: [2] },
   primary_location: { source: { display_name: 'Journal of Finance', is_in_doaj: false } },
-  open_access: { is_oa: false, oa_url: null },
+  best_oa_location: { is_oa: true, pdf_url: 'https://example.org/paper.pdf' },
+  open_access: { is_oa: true, oa_url: 'https://example.org/paper' },
   authorships: [{ author: { display_name: 'Ada Lovelace' } }],
   ...overrides
 })
@@ -125,6 +126,32 @@ describe('searchOpenAlex', () => {
     })
     expect(unreachable.status).toMatchObject({ ok: false, failureCode: 'unavailable' })
     expect(unreachable.status.message).toContain('OpenAlex')
+  })
+
+  it('keeps only records whose full text is reachable', async () => {
+    const results = [
+      work({ id: 'https://openalex.org/W1', title: 'With a PDF' }),
+      work({
+        id: 'https://openalex.org/W2',
+        title: 'Without any full text',
+        best_oa_location: null,
+        open_access: { is_oa: false, oa_url: null }
+      }),
+      work({
+        id: 'https://openalex.org/W3',
+        title: 'With an open-access link only',
+        best_oa_location: null,
+        open_access: { is_oa: true, oa_url: 'https://example.org/landing' }
+      })
+    ]
+    const fetcher = vi.fn(async () => jsonResponse({ meta: { count: 3 }, results }))
+    const result = await searchOpenAlex(query({ limit: 10 }), { fetch: fetcher as typeof fetch })
+
+    expect(result.candidates.map((entry) => entry.title)).toEqual([
+      'With a PDF',
+      'With an open-access link only'
+    ])
+    expect(result.candidates[0]?.openAccessPdfUrl).toBe('https://example.org/paper.pdf')
   })
 
   it('stops at the requested limit', async () => {

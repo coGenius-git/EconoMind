@@ -6781,6 +6781,7 @@
     "Open source page": "ソースページを開く",
     "Imported records live in your library: open one there to look for its open-access full text.": "取り込んだ文献はライブラリにあります。ライブラリで開くとオープンアクセスの全文を検索できます。",
     "Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.": "代替手段：CNKI で選択した文献を RefWorks または EndNote ファイルとして書き出し、そのファイルをここに取り込んでください。",
-    "(Close the tab when you are done.)": "（完了したらタブを閉じてください）"
+    "(Close the tab when you are done.)": "（完了したらタブを閉じてください）",
+    "OpenAlex results include only records whose full text can be retrieved.": "OpenAlex は全文を取得できる文献のみを返します。"
   }
 }

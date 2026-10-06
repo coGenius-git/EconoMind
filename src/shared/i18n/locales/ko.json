@@ -6779,6 +6779,7 @@
     "Open source page": "출처 페이지 열기",
     "Imported records live in your library: open one there to look for its open-access full text.": "가져온 문헌은 라이브러리에 있습니다. 라이브러리에서 열면 오픈 액세스 전문을 찾을 수 있습니다.",
     "Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.": "대체 방법: CNKI에서 선택한 문헌을 RefWorks 또는 EndNote 파일로 내보낸 뒤, 그 파일을 이곳에서 가져오세요.",
-    "(Close the tab when you are done.)": "(완료되면 탭을 닫아 주세요.)"
+    "(Close the tab when you are done.)": "(완료되면 탭을 닫아 주세요.)",
+    "OpenAlex results include only records whose full text can be retrieved.": "OpenAlex는 전문을 받을 수 있는 문헌만 반환합니다."
   }
 }
