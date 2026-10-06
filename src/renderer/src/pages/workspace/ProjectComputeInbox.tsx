@@ -238,7 +238,7 @@ const ProjectComputeInbox = (): React.JSX.Element => {
 
   return (
     <section
-      className="@container/compute flex h-full min-h-0 flex-col bg-bg-10"
+      className="research-preview-tool-surface @container/compute flex h-full min-h-0 flex-col bg-bg-10"
       aria-labelledby="project-compute-title"
     >
       <header className="border-b border-border-200 px-6 py-4">

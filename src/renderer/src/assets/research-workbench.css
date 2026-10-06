@@ -214,10 +214,6 @@
     padding-right: 16px;
   }
 
-  .research-workspace-shell [id='right-panel'] > div {
-    padding-left: 16px;
-  }
-
   .research-workspace-shell
     > div
     > [data-slot='resizable-panel-group']
@@ -327,6 +323,17 @@
 
   .research-library-reading-pane {
     margin: 12px;
+  }
+
+  .research-preview-surface {
+    padding: 14px;
+    gap: 10px;
+  }
+
+  .research-preview-tool-surface {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
   }
 
   .research-settings-shell,

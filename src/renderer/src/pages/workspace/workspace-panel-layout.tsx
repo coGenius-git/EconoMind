@@ -22,9 +22,9 @@ const SIDEBAR_PANEL_DEFAULT_SIZE_CSS = `${SIDEBAR_PANEL_DEFAULT_SIZE}%`
 const SIDEBAR_PANEL_MIN_OPEN_SIZE = 16
 const SIDEBAR_TOGGLE_RIGHT_INSET = 38
 
-const PREVIEW_PANEL_DEFAULT_SIZE = 40
-const PREVIEW_PANEL_DEFAULT_SIZE_CSS = `${PREVIEW_PANEL_DEFAULT_SIZE}%`
 const PREVIEW_PANEL_MIN_OPEN_SIZE = 30
+const PREVIEW_PANEL_DEFAULT_SIZE = PREVIEW_PANEL_MIN_OPEN_SIZE
+const PREVIEW_PANEL_DEFAULT_SIZE_CSS = `${PREVIEW_PANEL_DEFAULT_SIZE}%`
 // Match the visible divider and its hit area to the resize library's hover/drag region.
 const WORKSPACE_RESIZE_HANDLE_CLASS_NAME =
   'z-20 after:w-5 before:top-0 before:h-full before:translate-y-0 before:bg-text-200 hover:before:opacity-100 focus-visible:before:opacity-100 data-[separator=hover]:before:opacity-100 data-[separator=active]:before:opacity-100 transition-opacity duration-200 ease-out'
@@ -483,10 +483,10 @@ const useWorkspacePanelLayout = (
           ref={previewToggleRef}
           type="button"
           data-testid="workspace-preview-toggle"
-          className={`absolute right-2 top-0 z-40 flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg ${
+          className={`absolute z-40 flex shrink-0 cursor-pointer items-center justify-center rounded-[10px] ${
             previewPort.state === 'collapsed'
-              ? 'bg-transparent shadow-none text-action-panel-toggle hover:bg-surface-control-hover'
-              : 'bg-primary/20 shadow-card backdrop-blur text-action-panel-toggle'
+              ? 'right-2 top-0 size-7 bg-transparent shadow-none text-action-panel-toggle hover:bg-surface-control-hover'
+              : 'right-[15px] top-[15px] size-8 bg-bg-300 shadow-none text-action-panel-toggle hover:bg-surface-control-hover'
           }`}
           aria-label={
             previewPort.state === 'collapsed'

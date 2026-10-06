@@ -522,7 +522,10 @@ const ProjectFilesViewContent = ({
     : undefined
 
   return (
-    <div data-testid="files-view" className="flex h-full min-h-0 w-full flex-col bg-bg-10">
+    <div
+      data-testid="files-view"
+      className="research-preview-tool-surface flex h-full min-h-0 w-full flex-col bg-bg-10"
+    >
       {grantedRootMutationError ? (
         <div
           className="m-2 shrink-0 max-h-[40%] overflow-y-auto"
@@ -547,13 +550,7 @@ const ProjectFilesViewContent = ({
           />
         </div>
       ) : null}
-      <div
-        className={cn(
-          'flex shrink-0 items-center justify-between gap-3 px-4 pb-2',
-          // In the expanded modal the toolbar's top gap matches its distance to the search row.
-          isFilesExpanded ? 'pt-2' : 'pt-1'
-        )}
-      >
+      <div className="flex shrink-0 items-center justify-between gap-3 px-4 py-3">
         <ProjectFilesFilterMenu
           label={
             isLocalMode

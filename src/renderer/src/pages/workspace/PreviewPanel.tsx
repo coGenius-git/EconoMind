@@ -100,7 +100,7 @@ const PreviewActiveContent = ({
 }
 
 const previewTabClassName =
-  'group flex h-8 max-w-[160px] shrink-0 items-center gap-1.5 rounded-md pl-2 pr-1 text-[12px] transition-colors'
+  'group flex h-8 max-w-[160px] shrink-0 items-center gap-1.5 rounded-[10px] pl-2 pr-1 text-[12px] transition-colors'
 
 const getPreviewTabId = (itemId: string): string => `preview-tab-${encodeURIComponent(itemId)}`
 const getPreviewPanelId = (itemId: string): string => `preview-panel-${encodeURIComponent(itemId)}`
@@ -376,9 +376,9 @@ const PreviewTab = ({
               aria-hidden="true"
             />
           ) : tab.toolKind === 'files' ? (
-            <FolderOpen className="size-3.5 shrink-0" aria-hidden="true" />
+            <FolderOpen className="size-4 shrink-0" aria-hidden="true" />
           ) : tab.toolKind === 'compute' ? (
-            <Cpu className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+            <Cpu className="size-4 shrink-0" strokeWidth={2} aria-hidden="true" />
           ) : tab.toolKind === 'replay' ? (
             <Play className="size-3.5 shrink-0" aria-hidden="true" />
           ) : tab.toolKind === 'notebook' || tab.toolKind === 'library' ? (
@@ -528,7 +528,7 @@ const PreviewTabBar = ({
     <div
       ref={attachTabListRef}
       data-testid="preview-tab-strip"
-      className="scroll-fade-x flex min-w-0 flex-1 basis-0 shrink-0 items-center gap-1 overflow-x-auto pb-2"
+      className="scroll-fade-x flex h-8 min-w-0 flex-1 basis-0 shrink-0 items-center gap-1 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
       {/* Keep sibling close buttons outside the tablist's accessible ownership. */}
       <div
@@ -950,14 +950,14 @@ const PreviewPanelSurface = ({
       <aside
         id="right-panel"
         className={cn(
-          'research-preview-surface relative flex h-full min-w-0 w-full flex-col overflow-hidden py-[0.7px]',
+          'research-preview-surface relative flex h-full min-w-0 w-full flex-col overflow-hidden',
           className
         )}
       >
         {items.length > 0 ? (
           <div
             data-testid="preview-panel-top-bar"
-            className="flex min-w-0 w-full shrink-0 items-start pl-2 pr-14"
+            className="flex h-8 min-w-0 w-full shrink-0 items-center pr-11"
           >
             <PreviewTabBar
               tabs={items}
@@ -999,12 +999,7 @@ const PreviewPanelSurface = ({
             />
           </div>
         ) : null}
-        <div
-          className={cn(
-            'min-h-0 min-w-0 flex-1',
-            (activeItem?.type === 'file' || activeItem?.type === 'source') && 'pl-2 pr-1'
-          )}
-        >
+        <div className="min-h-0 min-w-0 flex-1">
           {!activeItem ? (
             <PreviewActiveContent
               key={activeContentKey}

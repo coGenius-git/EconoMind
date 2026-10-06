@@ -483,8 +483,8 @@ describe('PreviewPanel', () => {
     expect(chromeRow).not.toBeNull()
     expect(chromeRow?.contains(tabBar)).toBe(true)
     expect(tabBar?.parentElement).toBe(chromeRow)
-    expect(chromeRow?.className).toContain('pl-2')
-    expect(chromeRow?.className).toContain('pr-14')
+    expect(chromeRow?.className).toContain('items-center')
+    expect(chromeRow?.className).toContain('pr-11')
     expect(tabBar?.className).toContain('flex-1')
     expect(container.querySelector('[data-testid="preview-panel-toggle-slot"]')).toBeNull()
     expect(container.querySelector('[data-testid="workspace-preview-toggle"]')).toBeNull()
@@ -583,8 +583,8 @@ describe('PreviewPanel', () => {
     expect(sourcePanel?.className).toContain('rounded-md')
     expect(sourcePanel?.className).toContain('bg-bg-000')
     expect(sourcePanel?.className).toContain('shadow-card')
-    expect(sourcePanel?.parentElement?.className).toContain('pl-2')
-    expect(sourcePanel?.parentElement?.className).toContain('pr-1')
+    expect(sourcePanel?.parentElement?.className).not.toContain('pl-2')
+    expect(sourcePanel?.parentElement?.className).not.toContain('pr-1')
 
     await act(async () => {
       usePreviewWorkbenchStore.getState().activateItem('item-1')
@@ -920,8 +920,8 @@ describe('PreviewPanel', () => {
     expect(card?.className).toContain('shadow-card')
     expect(card?.className).not.toContain('border-[0.5px]')
     expect(card?.className).not.toContain('border-border-300/35')
-    expect(card?.parentElement?.className).toContain('pl-2')
-    expect(card?.parentElement?.className).toContain('pr-1')
+    expect(card?.parentElement?.className).not.toContain('pl-2')
+    expect(card?.parentElement?.className).not.toContain('pr-1')
     expect(card?.parentElement?.className).not.toContain('px-2')
     expect(header?.className).toContain('h-8')
     expect(headerFileName?.querySelector('[data-testid="file-name-head"]')?.textContent).toBe(
