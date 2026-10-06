@@ -6949,6 +6949,11 @@
     "OpenAlex daily budget is exhausted. Configure a free OpenAlex API key to use your own budget, or wait for the reset.": "Das tägliche OpenAlex-Budget ist aufgebraucht. Konfigurieren Sie einen kostenlosen API-Schlüssel für Ihr eigenes Budget oder warten Sie auf die Rücksetzung.",
     "OpenAlex daily budget is exhausted. Wait for the reset or update your API key.": "Das tägliche OpenAlex-Budget ist aufgebraucht. Warten Sie auf die Rücksetzung oder aktualisieren Sie Ihren API-Schlüssel.",
     "OpenAlex is temporarily rate limited. Automatic retries did not succeed. Try again after the waiting period.": "OpenAlex begrenzt vorübergehend Anfragen. Automatische Wiederholungen waren erfolglos. Versuchen Sie es nach der Wartezeit erneut.",
-    "Retry after {{time}}.": "Erneut versuchen nach {{time}}."
+    "Retry after {{time}}.": "Erneut versuchen nach {{time}}.",
+    "CNKI PDFs are downloaded on import using the current browser session and institutional IP permissions.": "Beim Import werden CNKI-PDFs mit der aktuellen Browsersitzung und den institutionellen IP-Berechtigungen heruntergeladen.",
+    "Connect to an authorized institutional network or sign in in the browser, then import again.": "Verbinden Sie sich mit einem berechtigten institutionellen Netzwerk oder melden Sie sich im Browser an und importieren Sie erneut.",
+    "Complete CNKI verification in the browser, then import again.": "Schließen Sie die CNKI-Verifizierung im Browser ab und importieren Sie erneut.",
+    "No valid PDF is available for this record.": "Für diesen Eintrag ist keine gültige PDF verfügbar.",
+    "PDF download failed. Try again.": "PDF-Download fehlgeschlagen. Versuchen Sie es erneut."
   }
 }

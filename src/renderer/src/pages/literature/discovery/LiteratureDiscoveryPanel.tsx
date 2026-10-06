@@ -183,22 +183,29 @@ export function LiteratureDiscoveryPanel({
             </div>
           ) : null}
           {discovery.form.sources.includes('cnki') ? (
-            <div className="flex flex-wrap items-center gap-3">
-              <Badge variant={discovery.cnkiSignedIn ? 'default' : 'secondary'}>
-                {discovery.cnkiSignedIn ? t('CNKI session ready') : t('No CNKI session')}
-              </Badge>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={discovery.signingIn}
-                onClick={() => void discovery.signInCnki()}
-              >
-                {discovery.signingIn ? <LoaderCircle className="size-4 animate-spin" /> : null}
-                {t('Sign in to CNKI')}
-              </Button>
-              <span className="text-xs text-muted-foreground">
-                {t('(Close the tab when you are done.)')}
-              </span>
+            <div className="space-y-2">
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {t(
+                  'CNKI PDFs are downloaded on import using the current browser session and institutional IP permissions.'
+                )}
+              </p>
+              <div className="flex flex-wrap items-center gap-3">
+                <Badge variant={discovery.cnkiSignedIn ? 'default' : 'secondary'}>
+                  {discovery.cnkiSignedIn ? t('CNKI session ready') : t('No CNKI session')}
+                </Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={discovery.signingIn}
+                  onClick={() => void discovery.signInCnki()}
+                >
+                  {discovery.signingIn ? <LoaderCircle className="size-4 animate-spin" /> : null}
+                  {t('Sign in to CNKI')}
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  {t('(Close the tab when you are done.)')}
+                </span>
+              </div>
             </div>
           ) : null}
           {discovery.form.sources.includes('cnki') && !discovery.cnkiSignedIn ? (
@@ -420,6 +427,21 @@ export function LiteratureDiscoveryPanel({
                             discovery.candidates.find((candidate) => candidate.key === entry.key)
                               ?.title
                           }
+                          {entry.reason ? (
+                            <span className="ml-2">
+                              {entry.reason === 'access-required'
+                                ? t(
+                                    'Connect to an authorized institutional network or sign in in the browser, then import again.'
+                                  )
+                                : entry.reason === 'verification-required'
+                                  ? t(
+                                      'Complete CNKI verification in the browser, then import again.'
+                                    )
+                                  : entry.reason === 'pdf-unavailable'
+                                    ? t('No valid PDF is available for this record.')
+                                    : t('PDF download failed. Try again.')}
+                            </span>
+                          ) : null}
                         </li>
                       ))}
                   </ul>

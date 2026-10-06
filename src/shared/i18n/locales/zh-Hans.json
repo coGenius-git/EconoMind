@@ -6790,6 +6790,11 @@
     "OpenAlex daily budget is exhausted. Configure a free OpenAlex API key to use your own budget, or wait for the reset.": "OpenAlex 今日额度已用完。请配置免费的 OpenAlex API Key 使用个人额度，或等待额度重置。",
     "OpenAlex daily budget is exhausted. Wait for the reset or update your API key.": "OpenAlex 今日额度已用完。请等待额度重置或更新 API Key。",
     "OpenAlex is temporarily rate limited. Automatic retries did not succeed. Try again after the waiting period.": "OpenAlex 暂时限制请求频率，自动重试未成功。请在等待时间结束后重试。",
-    "Retry after {{time}}.": "可在 {{time}} 后重试。"
+    "Retry after {{time}}.": "可在 {{time}} 后重试。",
+    "CNKI PDFs are downloaded on import using the current browser session and institutional IP permissions.": "导入时将使用当前浏览器会话和机构 IP 权限下载知网 PDF。",
+    "Connect to an authorized institutional network or sign in in the browser, then import again.": "请连接有权限的机构网络或在浏览器中登录，再重新导入。",
+    "Complete CNKI verification in the browser, then import again.": "请在浏览器中完成知网安全验证，再重新导入。",
+    "No valid PDF is available for this record.": "此记录未获取到有效 PDF。",
+    "PDF download failed. Try again.": "PDF 下载失败，请重试。"
   }
 }

@@ -9,6 +9,44 @@ import { literatureItemInputSchema, type LiteratureItemView } from '../../shared
 import { LiteratureFullTextFinder, type LiteratureFullTextFinderOptions } from './full-text-finder'
 import { FullTextRateLimitError } from './full-text-download'
 
+it('archives a browser-session CNKI PDF with the supplied downloader and never uses an anonymous fallback', async () => {
+  const { finder, options, item } = setup()
+  const browserDownload = vi.fn(async () => Buffer.from('%PDF-1.7\nbrowser PDF'))
+  expect(
+    await finder.acquire(
+      item.id,
+      [
+        {
+          provider: 'cnki',
+          source: 'CNKI',
+          url: 'https://kns.cnki.net/kcms2/article/abstract?id=1'
+        }
+      ],
+      browserDownload
+    )
+  ).toBe('downloaded')
+  expect(browserDownload).toHaveBeenCalledOnce()
+  expect(options.download).not.toHaveBeenCalled()
+  expect(options.catalog.attachContent).toHaveBeenCalledWith(
+    expect.objectContaining({ provenance: expect.objectContaining({ provider: 'cnki' }) })
+  )
+  browserDownload.mockRejectedValueOnce(new Error('access required'))
+  await expect(
+    finder.acquire(
+      item.id,
+      [
+        {
+          provider: 'cnki',
+          source: 'CNKI',
+          url: 'https://kns.cnki.net/kcms2/article/abstract?id=1'
+        }
+      ],
+      browserDownload
+    )
+  ).rejects.toThrow('access required')
+  expect(options.fetch).not.toHaveBeenCalled()
+})
+
 const setup = (): {
   finder: LiteratureFullTextFinder
   options: LiteratureFullTextFinderOptions

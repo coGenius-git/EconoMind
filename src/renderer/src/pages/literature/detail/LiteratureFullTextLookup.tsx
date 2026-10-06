@@ -219,7 +219,9 @@ export const LiteratureFullTextLookup = ({
     !result.candidates.length &&
     (europeUnavailable || openAlexUnavailable || unpaywallUnavailable || pmcUnavailable)
   const failed = error || incomplete
-  const sourceStatus = (provider: LiteratureFullTextCandidate['provider']): string => {
+  const sourceStatus = (
+    provider: Exclude<LiteratureFullTextCandidate['provider'], 'cnki'>
+  ): string => {
     if (provider === 'arxiv')
       return hasArxiv ? t('Direct PDF link') : t('arXiv identifier required')
     if (missingIdentifiers || !hasBiomedicalIdentifier) return t('Needs identifiers')
@@ -239,7 +241,8 @@ export const LiteratureFullTextLookup = ({
     openalex: t('OpenAlex'),
     unpaywall: t('Unpaywall'),
     pmc: t('PubMed Central'),
-    arxiv: t('arXiv')
+    arxiv: t('arXiv'),
+    cnki: t('CNKI')
   }
   const versions = {
     published: t('Published version'),

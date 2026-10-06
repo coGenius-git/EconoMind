@@ -6790,6 +6790,11 @@
     "OpenAlex daily budget is exhausted. Configure a free OpenAlex API key to use your own budget, or wait for the reset.": "OpenAlex の日次予算を使い切りました。無料の API キーを設定して個人の予算を使うか、リセットをお待ちください。",
     "OpenAlex daily budget is exhausted. Wait for the reset or update your API key.": "OpenAlex の日次予算を使い切りました。リセットを待つか API キーを更新してください。",
     "OpenAlex is temporarily rate limited. Automatic retries did not succeed. Try again after the waiting period.": "OpenAlex で一時的なレート制限が発生し、自動再試行に失敗しました。待機期間後に再試行してください。",
-    "Retry after {{time}}.": "{{time}} 以降に再試行できます。"
+    "Retry after {{time}}.": "{{time}} 以降に再試行できます。",
+    "CNKI PDFs are downloaded on import using the current browser session and institutional IP permissions.": "取り込み時に現在のブラウザーセッションと機関 IP の権限を使って CNKI の PDF をダウンロードします。",
+    "Connect to an authorized institutional network or sign in in the browser, then import again.": "権限のある機関ネットワークに接続するかブラウザーでログインしてから、再度取り込んでください。",
+    "Complete CNKI verification in the browser, then import again.": "ブラウザーで CNKI の認証を完了してから、再度取り込んでください。",
+    "No valid PDF is available for this record.": "このレコードの有効な PDF を取得できません。",
+    "PDF download failed. Try again.": "PDF のダウンロードに失敗しました。再試行してください。"
   }
 }

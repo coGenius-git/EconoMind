@@ -6788,6 +6788,11 @@
     "OpenAlex daily budget is exhausted. Configure a free OpenAlex API key to use your own budget, or wait for the reset.": "OpenAlex 일일 한도를 소진했습니다. 무료 API 키를 설정하여 개인 한도를 사용하거나 초기화를 기다리세요.",
     "OpenAlex daily budget is exhausted. Wait for the reset or update your API key.": "OpenAlex 일일 한도를 소진했습니다. 초기화를 기다리거나 API 키를 업데이트하세요.",
     "OpenAlex is temporarily rate limited. Automatic retries did not succeed. Try again after the waiting period.": "OpenAlex 요청이 일시적으로 제한되어 자동 재시도가 실패했습니다. 대기 시간이 지난 후 다시 시도하세요.",
-    "Retry after {{time}}.": "{{time}} 이후 다시 시도하세요。"
+    "Retry after {{time}}.": "{{time}} 이후 다시 시도하세요。",
+    "CNKI PDFs are downloaded on import using the current browser session and institutional IP permissions.": "가져올 때 현재 브라우저 세션과 기관 IP 권한을 사용하여 CNKI PDF를 다운로드합니다.",
+    "Connect to an authorized institutional network or sign in in the browser, then import again.": "접근 권한이 있는 기관 네트워크에 연결하거나 브라우저에서 로그인한 후 다시 가져오세요.",
+    "Complete CNKI verification in the browser, then import again.": "브라우저에서 CNKI 인증을 완료한 후 다시 가져오세요.",
+    "No valid PDF is available for this record.": "이 기록에 유효한 PDF가 없습니다。",
+    "PDF download failed. Try again.": "PDF 다운로드에 실패했습니다. 다시 시도하세요."
   }
 }

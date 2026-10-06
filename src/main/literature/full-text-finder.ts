@@ -91,7 +91,8 @@ class LiteratureFullTextFinder {
 
   async acquire(
     itemId: string,
-    preferred: Candidate[] = []
+    preferred: Candidate[] = [],
+    sessionDownload?: typeof downloadFullText
   ): Promise<'downloaded' | 'existing' | 'not-found'> {
     const item = await this.options.catalog.get(itemId)
     if (!item) throw new Error('Literature Item is unavailable.')
@@ -118,7 +119,7 @@ class LiteratureFullTextFinder {
             revision: item.metadataRevision,
             expires: Date.now() + 15 * 60_000
           })
-          const result = await this.attach(item, id)
+          const result = await this.attach(item, id, sessionDownload)
           if (
             result.mode === 'attach' ||
             (result.mode === 'transfer' && result.transfer?.status === 'succeeded')
@@ -134,6 +135,10 @@ class LiteratureFullTextFinder {
       return false
     }
     if (await attempt(preferred)) return 'downloaded'
+    if (sessionDownload) {
+      if (failure) throw failure
+      return 'not-found'
+    }
     if (await attempt((await this.search(item)).candidates)) return 'downloaded'
     if (failure) throw failure
     return 'not-found'
@@ -397,7 +402,8 @@ class LiteratureFullTextFinder {
 
   private async attach(
     item: LiteratureItemView,
-    candidateId: string
+    candidateId: string,
+    download = this.options.download ?? downloadFullText
   ): Promise<LiteratureFullTextResult> {
     const selected = this.candidates.get(candidateId)
     if (
@@ -421,24 +427,16 @@ class LiteratureFullTextFinder {
     this.transfers.set(item.id, task)
     let directory: string | undefined
     try {
-      let bytes = await (this.options.download ?? downloadFullText)(
-        selected.candidate.url,
-        MAX_AUTO_EXTRACT_PDF_BYTES,
-        (value) => {
-          task.snapshot.progress = value
-        }
-      )
+      let bytes = await download(selected.candidate.url, MAX_AUTO_EXTRACT_PDF_BYTES, (value) => {
+        task.snapshot.progress = value
+      })
       if (bytes.subarray(0, 5).toString('ascii') !== '%PDF-') {
         const links = findPdfLinks(bytes, selected.candidate.url)
         for (const url of links) {
           try {
-            const document = await (this.options.download ?? downloadFullText)(
-              url,
-              MAX_AUTO_EXTRACT_PDF_BYTES,
-              (value) => {
-                task.snapshot.progress = value
-              }
-            )
+            const document = await download(url, MAX_AUTO_EXTRACT_PDF_BYTES, (value) => {
+              task.snapshot.progress = value
+            })
             if (document.subarray(0, 5).toString('ascii') === '%PDF-') {
               bytes = document
               break

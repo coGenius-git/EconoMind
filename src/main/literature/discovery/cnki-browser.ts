@@ -1,6 +1,8 @@
 import { chromium, type BrowserContext, type Page } from 'playwright'
 import { join } from 'node:path'
 import { resolveDataRoot } from '../../storage-root'
+import { cnkiArticleUrl, CnkiPdfDownloadError, readCnkiPdf } from './cnki-pdf-download'
+import type { LiteratureFullTextProgress } from '../../../shared/literature'
 
 // CNKI is driven by a real browser through Playwright rather than Electron's own window. The
 // embedded WebContents could not render CNKI's sign-in - registration and third-party login came up
@@ -61,6 +63,7 @@ async function launchContext(): Promise<BrowserContext> {
       const opened = await chromium.launchPersistentContext(profileDirectory(), {
         ...(channel ? { channel } : {}),
         headless: false,
+        acceptDownloads: true,
         args,
         viewport: { width: 1280, height: 900 },
         locale: 'zh-CN'
@@ -386,5 +389,25 @@ export const readCnkiSignInState = (): Promise<CnkiSignInState> =>
   withProfile(readCnkiSignInStateInternal)
 export const scrapeCnkiSearch = (url: string, maxPages: number): Promise<CnkiScrapeResult> =>
   withProfile(() => scrapeCnkiSearchInternal(url, maxPages))
+
+export const downloadCnkiPdf = (
+  url: string,
+  maxBytes: number,
+  onProgress?: (progress: LiteratureFullTextProgress) => void
+): Promise<Buffer> =>
+  withProfile(async () => {
+    cnkiArticleUrl(url)
+    let preserveWindow = false
+    try {
+      return await readCnkiPdf(await launchContext(), url, maxBytes, onProgress)
+    } catch (error) {
+      preserveWindow =
+        error instanceof CnkiPdfDownloadError &&
+        ['access-required', 'verification-required'].includes(error.reason)
+      throw error
+    } finally {
+      if (!preserveWindow) await closeContext()
+    }
+  })
 
 export { CNKI_HOME_URL, CNKI_SEARCH_URL }

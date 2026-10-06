@@ -20,6 +20,7 @@ import {
 } from './cnki-browser'
 import { searchCnki } from './cnki-provider'
 import { parseCnkiRecords } from './cnki-records'
+import { CnkiPdfDownloadError } from './cnki-pdf-download'
 import { createOpenAlexSearch, type DiscoveryProviderResult } from './openalex-provider'
 import { screenRecords, type RecordScreeningModel } from './record-screening'
 
@@ -181,8 +182,7 @@ export class LiteratureDiscovery {
       const targets = new Map<string, DiscoveryCandidate>()
       for (const entry of imported) {
         const candidate = request.candidates.find((candidate) => candidate.key === entry.key)
-        if (candidate?.source === 'openalex' && !targets.has(entry.itemId))
-          targets.set(entry.itemId, candidate)
+        if (candidate && !targets.has(entry.itemId)) targets.set(entry.itemId, candidate)
       }
       const pending = [...targets]
       let index = 0
@@ -191,12 +191,14 @@ export class LiteratureDiscovery {
           while (index < pending.length) {
             const [itemId, candidate] = pending[index++]!
             let status: NonNullable<DiscoveryImportResult['fullText']>[number]['status']
+            let reason: NonNullable<DiscoveryImportResult['fullText']>[number]['reason']
             try {
               status = await this.options.acquirePdf!(itemId, candidate)
-            } catch {
+            } catch (error) {
               status = 'failed'
+              if (error instanceof CnkiPdfDownloadError) reason = error.reason
             }
-            fullText.push({ key: candidate.key, itemId, status })
+            fullText.push({ key: candidate.key, itemId, status, ...(reason ? { reason } : {}) })
           }
         })
       )

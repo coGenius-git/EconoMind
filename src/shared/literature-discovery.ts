@@ -143,7 +143,15 @@ export const discoveryImportResultSchema = z
         z.object({
           key: z.string().trim().min(1).max(512),
           itemId: z.string().trim().min(1).max(512),
-          status: z.enum(['downloaded', 'existing', 'not-found', 'failed'])
+          status: z.enum(['downloaded', 'existing', 'not-found', 'failed']),
+          reason: z
+            .enum([
+              'access-required',
+              'verification-required',
+              'pdf-unavailable',
+              'download-failed'
+            ])
+            .optional()
         })
       )
       .max(DISCOVERY_RESULT_LIMIT)
