@@ -93,7 +93,7 @@ const startRenderer = (): void => {
   )
   rendererRoot.render(
     <StrictMode>
-      {standaloneSettings ? content : <WindowsTitleBar>{content}</WindowsTitleBar>}
+      <WindowsTitleBar settings={standaloneSettings}>{content}</WindowsTitleBar>
     </StrictMode>
   )
   performance.mark('open-science:renderer-render-scheduled')

@@ -7,8 +7,6 @@ import {
   dialogCloseButtonClassName,
   dialogDescriptionClassName,
   dialogHeaderClassName,
-  dialogOverlayClassName,
-  dialogPanelClassName,
   dialogTitleClassName
 } from '@/components/ui/dialog-chrome'
 import { LiteratureDiscoveryPanel } from './LiteratureDiscoveryPanel'
@@ -35,12 +33,8 @@ export function LiteratureDiscoveryDialog({
       }}
     >
       <Dialog.Portal>
-        <Dialog.Overlay className={dialogOverlayClassName} />
-        <Dialog.Content
-          className={dialogPanelClassName(
-            'flex max-h-[calc(100dvh-2rem)] w-[min(740px,calc(100vw-2rem))] flex-col overflow-hidden p-0'
-          )}
-        >
+        <Dialog.Overlay className="research-settings-backdrop fixed inset-0 z-50 data-[state=closed]:pointer-events-none data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+        <Dialog.Content className="research-discovery-dialog research-glass fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-[min(740px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden text-foreground outline-none data-[state=closed]:pointer-events-none data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0">
           <div className={cn(dialogHeaderClassName, 'shrink-0')}>
             <div className="min-w-0">
               <Dialog.Title className={dialogTitleClassName}>{t('Search OpenAlex')}</Dialog.Title>
@@ -65,6 +59,7 @@ export function LiteratureDiscoveryDialog({
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             <LiteratureDiscoveryPanel
               collectionId={collectionId}
+              showHeader={false}
               onImported={(result) => {
                 onImported?.(result)
                 onClose()

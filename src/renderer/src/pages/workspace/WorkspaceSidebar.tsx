@@ -18,6 +18,7 @@ import {
   Search,
   Settings,
   Toolbox,
+  Users,
   X
 } from 'lucide-react'
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -86,6 +87,8 @@ type WorkspaceSidebarProps = {
   onOpenLiterature?: () => void
   isComputeOpen?: boolean
   onOpenCompute?: () => void
+  isSpecialistsOpen?: boolean
+  onOpenSpecialists?: () => void
   onOpenSession: (sessionId: string) => void
   onPreviewSession?: SessionPreviewRequest
   onRenameSession: (session: ChatSession) => void
@@ -715,6 +718,8 @@ const WorkspaceSidebarView = (props: WorkspaceSidebarViewProps): React.JSX.Eleme
     onOpenLiterature,
     isComputeOpen = false,
     onOpenCompute,
+    isSpecialistsOpen = false,
+    onOpenSpecialists,
     onPreviewSession,
     onRenameSessionTitle,
     canDownloadArtifacts,
@@ -770,13 +775,14 @@ const WorkspaceSidebarView = (props: WorkspaceSidebarViewProps): React.JSX.Eleme
       inert={mobileMode && !isMobileOpen ? true : undefined}
       data-mobile-open={isMobileOpen ? 'true' : 'false'}
       className={cn(
+        'research-workspace-sidebar',
         mobileMode
           ? 'fixed inset-y-0 left-0 z-[70] flex h-[100dvh] w-[min(86vw,320px)] min-w-0 shrink-0 flex-col bg-bg-10 transition-transform duration-200 ease-out'
           : 'z-10 flex h-full w-full min-w-0 flex-col overflow-hidden',
         mobileMode && (isMobileOpen ? 'translate-x-0' : '-translate-x-full')
       )}
     >
-      <div className="m-[0.7px] flex min-h-0 flex-1 flex-col rounded-lg bg-rail-card-bg shadow-card">
+      <div className="research-sidebar-surface research-glass flex min-h-0 flex-1 flex-col">
         <div className="px-3 pt-3">
           <div className="flex items-center">
             <button
@@ -1200,6 +1206,25 @@ const WorkspaceSidebarView = (props: WorkspaceSidebarViewProps): React.JSX.Eleme
                 <BookOpen className="size-3.5" strokeWidth={2} />
               </span>
               <span>{t('Library')}</span>
+            </button>
+          </div>
+
+          <div className="flex h-9 items-center gap-1 px-2">
+            <button
+              type="button"
+              className={cn(
+                'flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm text-text-000 hover:bg-bg-300 disabled:cursor-not-allowed disabled:opacity-50',
+                isSpecialistsOpen && 'bg-bg-300',
+                sidebarInteractiveTransitionClassName
+              )}
+              disabled={!onOpenSpecialists}
+              aria-controls="specialist-browser"
+              aria-pressed={isSpecialistsOpen}
+              data-testid="workspace-specialists-trigger"
+              onClick={onOpenSpecialists}
+            >
+              <Users className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+              <span>{t('Specialists')}</span>
             </button>
           </div>
 

@@ -358,6 +358,7 @@ type ElectronApp = {
   restoreDelegatedHandoffCleanup: (childName: string) => Promise<void>
   emitPreviewContextMenuAtCssPoint: (point: { x: number; y: number }) => Promise<void>
   showMainWindow: () => Promise<void>
+  focusMainWindow: () => Promise<void>
   restart: (options?: { resourceProfilePhase?: string }) => Promise<Page>
   restartAfterCrash: (options?: { force?: boolean }) => Promise<Page>
   restartWithCorruptHistoricalSessionFile: (projectId: string) => Promise<Page>
@@ -1141,6 +1142,17 @@ class ElectronAppHarness implements ElectronApp {
       mainWindow.show()
     })
     await expect.poll(() => this.mainWindowState()).toMatchObject({ visible: true })
+  }
+
+  async focusMainWindow(): Promise<void> {
+    await this.runningApplication.evaluate(({ BrowserWindow }) => {
+      const mainWindow = BrowserWindow.getAllWindows().find(
+        (window) => !window.webContents.getURL().includes('window=settings')
+      )
+      if (!mainWindow) throw new Error('EconoMind main window was not found.')
+      mainWindow.show()
+      mainWindow.focus()
+    })
   }
 
   async setMainWindowSize(width: number, height: number): Promise<void> {

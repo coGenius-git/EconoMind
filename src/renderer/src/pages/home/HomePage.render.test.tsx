@@ -387,7 +387,8 @@ afterEach(() => {
 })
 
 describe('HomePage package export progress', () => {
-  it('shows background progress before the GitHub action and reopens its detail', () => {
+  it('shows background progress beside Search and keeps both actions available', async () => {
+    const onOpenGlobalSearch = vi.fn()
     usePackageOperationStore.setState({
       operation: {
         id: 'export-1',
@@ -398,9 +399,13 @@ describe('HomePage package export progress', () => {
       },
       open: false
     })
-    act(() => {
+    await act(async () => {
       root.render(
-        <HomePage canDeleteProjects hasCompleteSessionCatalog onOpenGlobalSearch={vi.fn()} />
+        <HomePage
+          canDeleteProjects
+          hasCompleteSessionCatalog
+          onOpenGlobalSearch={onOpenGlobalSearch}
+        />
       )
     })
 
@@ -409,9 +414,15 @@ describe('HomePage package export progress', () => {
     )
     expect(button).not.toBeNull()
     expect(button?.closest('header')).not.toBeNull()
-    expect(button?.nextElementSibling?.classList.contains('sm:inline-flex')).toBe(true)
-    act(() => button?.click())
+    const search = container.querySelector<HTMLButtonElement>('button[aria-label="Search"]')
+    expect(search).not.toBeNull()
+    expect(search?.closest('header')).toBe(button?.closest('header'))
+    expect(button?.compareDocumentPosition(search!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+
+    await act(async () => button?.click())
     expect(usePackageOperationStore.getState().open).toBe(true)
+    await act(async () => search?.click())
+    expect(onOpenGlobalSearch).toHaveBeenCalledOnce()
   })
 })
 

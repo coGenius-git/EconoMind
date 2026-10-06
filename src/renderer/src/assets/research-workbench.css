@@ -1,0 +1,899 @@
+/* D / Frosted research workspace. Each major sheet filters the atmosphere once;
+   readable papers sit locally inside the glass rather than covering the whole workspace. */
+:root {
+  --research-atmosphere:
+    linear-gradient(rgb(230 239 246 / 0.35), rgb(230 239 246 / 0.35)),
+    url('./research-glass-atmosphere.webp');
+  --research-glass: linear-gradient(125deg, rgb(255 255 255 / 0.32), rgb(236 246 254 / 0.18));
+  --research-glass-edge: rgb(255 255 255 / 0.76);
+  --research-glass-shadow:
+    0 16px 44px rgb(27 45 64 / 0.12), 0 2px 6px rgb(29 46 61 / 0.05),
+    inset 0 1px 1px rgb(255 255 255 / 0.72), inset 0 -1px 0 rgb(255 255 255 / 0.22);
+  --research-glass-blur: 18px;
+  --research-glass-filter: blur(var(--research-glass-blur)) saturate(0.78) brightness(1.08);
+  --research-panel-tint: rgb(247 251 255 / 0.2);
+  --research-paper: rgb(251 253 255 / 0.88);
+  --research-reading: #fbfcfd;
+  --research-overlay: #edf3f7;
+  --research-composer-shadow:
+    0 10px 28px rgb(31 48 67 / 0.16), inset 0 1px 0 rgb(255 255 255 / 0.92);
+}
+
+/* Dark mode retains clear surfaces without shining the light artwork through dark text. */
+.dark {
+  --research-atmosphere: none;
+  --research-glass: linear-gradient(125deg, var(--background), var(--bg-100));
+  --research-glass-edge: var(--border);
+  --research-glass-shadow: var(--shadow-sheet-value);
+  --research-glass-blur: 0px;
+  --research-glass-filter: none;
+  --research-panel-tint: var(--background);
+  --research-paper: var(--bg-000);
+  --research-reading: var(--bg-000);
+  --research-overlay: var(--popover);
+  --research-composer-shadow: var(--shadow-card-value);
+}
+
+@layer components {
+  .research-logo-orbit {
+    width: 1024px;
+    height: 1024px;
+    opacity: 0.92;
+    background: conic-gradient(
+      from 0deg,
+      transparent 0deg 180deg,
+      #5486b500 206deg,
+      #528cb9cc 240deg,
+      #72badd 286deg,
+      #d8f2ff 310deg,
+      #fff 320deg,
+      #9fd3ea 334deg,
+      #477fabcc 348deg,
+      transparent 359deg
+    );
+    animation: research-logo-orbit 10s linear infinite;
+  }
+
+  @keyframes research-logo-orbit {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .research-settings-focus-backdrop {
+    background: rgb(71 93 112 / 0.16);
+    -webkit-backdrop-filter: blur(14px) saturate(0.78);
+    backdrop-filter: blur(14px) saturate(0.78);
+  }
+
+  .research-page {
+    background-color: #c4d0da;
+    background-image: var(--research-atmosphere);
+    background-position: center;
+    background-size: cover;
+    background-repeat: no-repeat;
+  }
+
+  .dark .research-page {
+    background-color: var(--background);
+  }
+
+  .research-glass {
+    border: 1px solid var(--research-glass-edge);
+    background: var(--research-glass);
+    box-shadow: var(--research-glass-shadow);
+    -webkit-backdrop-filter: var(--research-glass-filter);
+    backdrop-filter: var(--research-glass-filter);
+  }
+
+  /* Text stays solid and sufficiently dark even over the shaded architectural folds. */
+  :root:not(.dark) .research-glass {
+    --text-000: #172735;
+    --text-100: #243a49;
+    --text-200: #243a49;
+    --text-300: #243a49;
+    --muted-foreground: #243a49;
+  }
+
+  .research-reading-surface {
+    background: var(--research-reading);
+  }
+
+  .research-workbench-header {
+    width: min(740px, calc(100% - 48px));
+    min-height: 62px;
+    margin: 20px auto 24px;
+    padding: 0 22px;
+    border-radius: 999px;
+    gap: 6px 16px;
+    background: linear-gradient(130deg, rgb(255 255 255 / 0.32), rgb(230 243 253 / 0.22));
+  }
+
+  .dark .research-workbench-header {
+    background: var(--research-glass);
+  }
+
+  .research-brand {
+    letter-spacing: -0.04em;
+  }
+
+  .research-module-nav {
+    display: flex;
+    overflow-x: auto;
+  }
+
+  .research-module-link {
+    position: relative;
+    border-bottom: 0;
+    padding: 19px 12px;
+    gap: 7px;
+    font-size: 14px;
+  }
+
+  .research-module-link[aria-current='page']::after {
+    position: absolute;
+    right: 24%;
+    bottom: 10px;
+    left: 24%;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--primary);
+    content: '';
+  }
+
+  .research-header-actions {
+    padding-left: 12px;
+    border-left: 1px solid rgb(58 78 95 / 0.22);
+  }
+
+  /* The layout itself is transparent. Visible gutters expose unfiltered atmosphere
+     between independently frosted sheets, including while panels are resized. */
+  .research-home-shell,
+  .research-library-shell,
+  .research-workspace-shell {
+    margin: 0 28px 28px;
+    padding: 0;
+    min-width: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .research-home-shell,
+  .research-library-shell {
+    gap: 18px;
+  }
+
+  .research-home-sidebar,
+  .research-library-sidebar,
+  .research-home-content,
+  .research-library-content {
+    border-radius: 24px;
+  }
+
+  .research-home-sidebar,
+  .research-library-sidebar {
+    background: linear-gradient(140deg, rgb(255 255 255 / 0.4), rgb(238 247 254 / 0.28));
+  }
+
+  .dark .research-home-sidebar,
+  .dark .research-library-sidebar {
+    background: var(--research-glass);
+  }
+
+  .research-home-sheet {
+    padding: 24px;
+    border: 1px solid rgb(255 255 255 / 0.62);
+    border-radius: 14px;
+    background: var(--research-paper);
+    box-shadow: 0 6px 20px rgb(35 54 71 / 0.05);
+  }
+
+  .research-home-list {
+    border: 0;
+    background: transparent;
+    border-radius: 0;
+    padding: 0;
+    box-shadow: none;
+  }
+
+  .research-home-row + .research-home-row {
+    border-top: 1px solid var(--border);
+  }
+
+  .research-home-row {
+    border-radius: 8px;
+  }
+
+  .research-home-category {
+    color: var(--muted-foreground);
+  }
+
+  .research-workspace-shell [id='left-panel'] > div {
+    padding-right: 16px;
+  }
+
+  .research-workspace-shell
+    > div
+    > [data-slot='resizable-panel-group']
+    > [data-slot='resizable-handle'] {
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .research-workspace-sidebar .research-sidebar-surface {
+    --rail-card-bg: transparent;
+    overflow: hidden;
+    margin: 0;
+    border-radius: 22px;
+  }
+
+  .research-conversation {
+    --bg-10: transparent;
+    border-radius: 26px;
+    padding: 10px;
+  }
+
+  /* A visual sibling filters the atmosphere once without trapping fixed dialogs inside
+     a backdrop-filter ancestor. Conversation and preview keep their existing owners. */
+  .research-workbench-sheet {
+    position: absolute;
+    inset: 0 0 0 var(--research-conversation-left, 16%);
+    border-radius: 26px;
+    pointer-events: none;
+  }
+
+  .research-workbench-divider {
+    position: absolute;
+    top: var(--research-divider-top, 65px);
+    left: 24px;
+    right: 24px;
+    border-bottom: 1px solid rgb(255 255 255 / 0.28);
+  }
+
+  .research-workspace-layout[data-desktop] .research-conversation {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  .research-workspace-layout[data-desktop] [data-testid='conversation-header'] {
+    border-bottom-color: transparent;
+  }
+
+  .research-desktop-preview-inset {
+    padding: var(--research-preview-top, 82px) 14px 14px 0;
+  }
+
+  .research-desktop-preview-inset .research-preview-surface {
+    --bg-10: rgb(232 241 246 / 0.24);
+    background: transparent;
+    box-shadow: 0 8px 30px rgb(35 55 75 / 0.08);
+  }
+
+  .research-preview-glass {
+    display: none;
+    border-radius: inherit;
+  }
+
+  .research-desktop-preview-inset .research-preview-glass {
+    display: block;
+    background: linear-gradient(145deg, rgb(247 251 255 / 0.4), rgb(230 240 249 / 0.3));
+    -webkit-backdrop-filter: blur(20px) saturate(0.82);
+    backdrop-filter: blur(20px) saturate(0.82);
+  }
+
+  .dark .research-desktop-preview-inset .research-preview-surface {
+    --bg-10: var(--bg-000);
+  }
+
+  .dark .research-desktop-preview-inset .research-preview-glass {
+    background: var(--research-glass);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  .research-conversation [data-testid='conversation-header'] {
+    min-height: 55px;
+    border-bottom: 1px solid rgb(255 255 255 / 0.28);
+    margin-bottom: 6px;
+  }
+
+  .research-message-scroller {
+    background: transparent;
+  }
+
+  .research-conversation [data-slot='assistant-message-surface'] {
+    padding: 28px 36px;
+    border: 1px solid rgb(255 255 255 / 0.76);
+    border-radius: 14px;
+    background: var(--research-paper);
+    box-shadow: 0 7px 22px rgb(30 46 62 / 0.05);
+    line-height: 1.8;
+  }
+
+  .research-conversation [data-slot='assistant-message-surface'] h1,
+  .research-conversation [data-slot='assistant-message-surface'] h2 {
+    font-family: var(--font-serif);
+  }
+
+  .research-conversation [data-slot='user-message-bubble'] {
+    border: 1px solid rgb(255 255 255 / 0.66);
+  }
+
+  :root:not(.dark) .research-conversation [data-slot='user-message-bubble'] {
+    --bg-300: rgb(244 250 255 / 0.74);
+  }
+
+  .dark .research-conversation [data-slot='user-message-bubble'] {
+    background: var(--bg-300);
+    border-color: var(--border);
+  }
+
+  .research-conversation [data-testid='composer-surface-fade'] {
+    background: none;
+  }
+
+  .research-composer-dock {
+    padding-top: 14px;
+    padding-bottom: 8px;
+  }
+
+  .research-composer {
+    border: 1px solid var(--research-glass-edge);
+    background: linear-gradient(120deg, rgb(255 255 255 / 0.32), rgb(242 249 254 / 0.2));
+    box-shadow: var(--research-composer-shadow);
+    border-radius: 28px;
+    padding: 10px 12px;
+  }
+
+  /* Notebook/task controls share the form's glass fill and outer frame. A quiet
+     inset separator distinguishes the header without another card or backing plate. */
+  .research-composer-strip {
+    border-bottom: 1px solid rgb(255 255 255 / 0.42);
+    padding-bottom: 6px;
+  }
+
+  .research-composer-field {
+    border-radius: 18px;
+    background: rgb(249 252 255 / 0.74);
+    padding: 4px 12px;
+  }
+
+  .dark .research-composer {
+    background: var(--bg-100);
+  }
+
+  .dark .research-composer-strip {
+    border-color: var(--border);
+  }
+
+  .dark .research-composer-field {
+    background: var(--bg-000);
+  }
+
+  .research-preview-surface,
+  .research-library-reading-pane {
+    background: var(--research-reading);
+    border-radius: 20px;
+    border: 1px solid var(--research-glass-edge);
+  }
+
+  .research-library-reading-pane {
+    margin: 12px;
+  }
+
+  .research-preview-surface {
+    padding: 14px;
+    gap: 10px;
+  }
+
+  .research-preview-tool-surface {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+
+  .research-settings-shell,
+  .research-discovery-dialog,
+  .research-tool-shell {
+    border-radius: 26px;
+    overflow: hidden;
+  }
+
+  .research-settings-backdrop {
+    background: rgb(71 93 112 / 0.28);
+    -webkit-backdrop-filter: blur(28px) saturate(0.7);
+    backdrop-filter: blur(28px) saturate(0.7);
+  }
+
+  .dark .research-settings-backdrop {
+    background: rgb(0 0 0 / 0.55);
+  }
+
+  .research-settings-sidebar {
+    background: var(--research-panel-tint);
+  }
+
+  .research-settings-content,
+  .research-tool-content {
+    background: var(--research-paper);
+    margin: 10px;
+    border-radius: 18px;
+  }
+
+  .research-settings-toolbar {
+    background: transparent;
+  }
+
+  /* Native title bars expose the workspace atmosphere without adding a separate tint. */
+  .research-titlebar {
+    pointer-events: auto;
+    background: transparent;
+  }
+
+  /* Keep one viewport-aligned image beneath the title bar and the page below it. */
+  .windows-app-content.research-page,
+  .windows-app-content .research-page {
+    background-attachment: fixed;
+  }
+
+  /* Independent Settings uses the same atmosphere and glass as the main workspace. */
+  .research-settings-native {
+    background: transparent;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  .research-settings-native .research-settings-content {
+    background: var(--research-panel-tint);
+    border: 1px solid var(--research-glass-edge);
+  }
+
+  :root:not(.dark) .research-settings-native {
+    --card: rgb(247 251 255 / 0.32);
+    --bg-000: rgb(247 251 255 / 0.32);
+  }
+
+  .research-discovery-section {
+    border: 1px solid var(--research-glass-edge);
+    border-radius: 18px;
+    background: var(--research-panel-tint);
+  }
+
+  .research-discovery-results {
+    background: var(--research-paper);
+  }
+
+  /* Menus stay opaque; no extra filters are stacked over the active sheet. */
+  [data-slot='dropdown-menu-content'],
+  [data-slot='dropdown-menu-sub-content'] {
+    box-shadow: var(--shadow-menu-value);
+  }
+
+  @media (min-width: 1440px) {
+    .research-home-shell,
+    .research-library-shell,
+    .research-workspace-shell {
+      margin-inline: 36px;
+      margin-bottom: 30px;
+    }
+  }
+
+  @media (max-width: 1099px) {
+    .research-workbench-header {
+      margin-block: 14px 18px;
+      gap: 6px 12px;
+      padding-inline: 16px;
+    }
+
+    .research-home-shell,
+    .research-library-shell,
+    .research-workspace-shell {
+      margin: 0 16px 16px;
+    }
+
+    .research-home-shell,
+    .research-library-shell {
+      gap: 12px;
+    }
+  }
+
+  @media (max-width: 767px) {
+    .research-workbench-header {
+      width: calc(100% - 24px);
+      margin: 12px 12px 16px;
+      padding: 6px 14px;
+      border-radius: 24px;
+    }
+
+    .research-header-actions {
+      border-left: 0;
+      padding-left: 0;
+    }
+
+    .research-module-nav {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      overflow: visible;
+    }
+
+    .research-module-link {
+      min-width: 0;
+      flex-direction: column;
+      padding: 7px 4px 13px;
+      gap: 4px;
+      font-size: 12px;
+      line-height: 1.35;
+      white-space: normal;
+    }
+
+    .research-module-link[aria-current='page']::after {
+      bottom: 5px;
+    }
+
+    .research-home-shell,
+    .research-library-shell,
+    .research-workspace-shell {
+      margin: 0 10px 12px;
+    }
+
+    .research-home-content,
+    .research-library-content,
+    .research-conversation {
+      border-radius: 20px;
+    }
+
+    .research-conversation {
+      padding: 3px;
+    }
+
+    .research-conversation [data-slot='assistant-message-surface'] {
+      padding: 16px;
+      border-radius: 12px;
+    }
+
+    .research-home-sheet {
+      padding: 16px;
+    }
+
+    .research-composer-dock {
+      padding-top: 8px;
+      padding-bottom: 3px;
+    }
+
+    .research-composer {
+      border-radius: 22px;
+      padding: 8px;
+    }
+
+    .research-workspace-sidebar[data-mobile-open] {
+      background: var(--research-overlay);
+    }
+
+    .research-workspace-sidebar .research-sidebar-surface {
+      border-radius: 0;
+      border: 0;
+      box-shadow: none;
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+
+    .research-settings-sidebar {
+      background: var(--research-overlay);
+    }
+
+    /* A filtered fixed ancestor would trap the mobile settings drawer. */
+    .research-settings-shell,
+    .research-tool-shell {
+      border-radius: 0;
+      background: var(--research-overlay);
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+
+    .research-settings-content,
+    .research-tool-content {
+      margin: 4px;
+      border-radius: 14px;
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .research-glass,
+    .research-composer {
+      background: var(--research-overlay);
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+
+    .research-settings-backdrop {
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+  }
+
+  @supports not (backdrop-filter: blur(1px)) {
+    .research-glass,
+    .research-composer {
+      background: var(--research-overlay);
+    }
+  }
+
+  @media (forced-colors: active) {
+    .research-page {
+      background-image: none;
+    }
+
+    .research-glass,
+    .research-composer {
+      background: Canvas;
+      border-color: CanvasText;
+      box-shadow: none;
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+
+    .research-composer-strip {
+      border-color: CanvasText;
+    }
+
+    .research-settings-backdrop {
+      background: Canvas;
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+  }
+}
+
+/* Agent markdown has unlayered typography rules. Keep this equally unlayered and
+   scoped to the conversation paper; tool controls, metadata and other previews
+   retain their existing compact type. */
+.research-conversation [data-slot='assistant-message-surface'] .agent-markdown {
+  font-size: 16px;
+  line-height: 1.8;
+}
+
+.research-conversation [data-slot='assistant-message-surface'] .agent-markdown :is(h1, h2, h3) {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  line-height: 1.45;
+  margin-block: 1.15em 0.55em;
+}
+
+.research-conversation [data-slot='assistant-message-surface'] .agent-markdown h1 {
+  font-size: 28px;
+}
+
+.research-conversation [data-slot='assistant-message-surface'] .agent-markdown h2 {
+  font-size: 26px;
+}
+
+.research-conversation [data-slot='assistant-message-surface'] .agent-markdown h3 {
+  font-size: 20px;
+}
+
+.research-conversation [data-slot='assistant-message-surface'] .agent-markdown > :first-child {
+  margin-top: 0;
+}
+
+.research-conversation [data-slot='assistant-message-surface'] .agent-markdown :is(p, ul, ol) {
+  margin-block: 0.85em;
+}
+
+.research-conversation [data-slot='assistant-message-surface'] .agent-markdown li {
+  margin-block: 0.35em;
+}
+
+.research-conversation [data-slot='assistant-message-surface'] .agent-markdown pre {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+@media (max-width: 767px) {
+  .research-conversation [data-slot='assistant-message-surface'] .agent-markdown {
+    font-size: 15px;
+    line-height: 1.75;
+  }
+
+  .research-conversation [data-slot='assistant-message-surface'] .agent-markdown h1 {
+    font-size: 24px;
+  }
+
+  .research-conversation [data-slot='assistant-message-surface'] .agent-markdown h2 {
+    font-size: 22px;
+  }
+
+  .research-conversation [data-slot='assistant-message-surface'] .agent-markdown h3 {
+    font-size: 18px;
+  }
+}
+
+/* Specialist browsing remains a workspace sheet; the profile is read directly
+   from the catalog and its details stay visible while the directory is browsed. */
+@layer components {
+  .specialist-browser {
+    container-type: inline-size;
+    overscroll-behavior: contain;
+  }
+
+  .specialist-browser-inner {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    padding: 22px;
+  }
+
+  .specialist-browser-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    flex-shrink: 0;
+    margin-bottom: 18px;
+  }
+
+  .specialist-browser-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    flex-shrink: 0;
+    margin-bottom: 18px;
+  }
+
+  .specialist-browser-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 36%);
+    grid-template-rows: minmax(0, 1fr);
+    flex: 1;
+    min-height: 0;
+    gap: 20px;
+  }
+
+  .specialist-browser-directory {
+    min-height: 0;
+    overflow-y: auto;
+    padding: 3px;
+    overscroll-behavior: contain;
+  }
+
+  .specialist-browser-cards {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    padding: 0;
+    list-style: none;
+  }
+
+  .specialist-browser-card {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    min-height: 166px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--research-paper);
+    text-align: left;
+    color: var(--text-000);
+    transition:
+      border-color 150ms,
+      background-color 150ms;
+  }
+
+  .specialist-browser-card:hover {
+    border-color: var(--primary);
+  }
+
+  .specialist-browser-card[aria-pressed='true'] {
+    border-color: var(--primary);
+    box-shadow: inset 0 0 0 1px var(--primary);
+  }
+
+  .specialist-browser-card:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 3px;
+  }
+
+  .specialist-browser-detail {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+    padding: 20px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--research-paper);
+  }
+
+  .specialist-browser-detail-reading {
+    flex: 1;
+    min-height: 0;
+    margin-top: 16px;
+    overflow-y: auto;
+    padding: 2px 4px 2px 2px;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .specialist-browser-detail-action {
+    flex-shrink: 0;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+
+  .specialist-browser-example {
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-100);
+    color: var(--text-100);
+    overscroll-behavior: contain;
+  }
+
+  .specialist-browser-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 28px 20px;
+    border: 1px dashed var(--border);
+    border-radius: 12px;
+    background: var(--research-paper);
+  }
+
+  @container (max-width: 850px) {
+    .specialist-browser-cards {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .specialist-browser-card {
+      min-height: 150px;
+    }
+  }
+
+  @container (max-width: 660px) {
+    .specialist-browser-inner {
+      height: auto;
+      min-height: 100%;
+      padding: 20px;
+    }
+
+    .specialist-browser-header,
+    .specialist-browser-toolbar {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 14px;
+    }
+
+    .specialist-browser-toolbar > [role='group'] {
+      align-self: flex-start;
+    }
+
+    .specialist-browser-layout {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto;
+      flex: initial;
+      gap: 20px;
+    }
+
+    .specialist-browser-directory {
+      overflow-y: visible;
+    }
+
+    .specialist-browser-detail {
+      padding: 20px;
+    }
+
+    .specialist-browser-detail-reading {
+      max-height: 360px;
+      flex: initial;
+    }
+  }
+}

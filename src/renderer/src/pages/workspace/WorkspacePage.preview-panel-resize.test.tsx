@@ -543,15 +543,14 @@ describe('WorkspacePage preview panel resize sync', () => {
     }
   })
 
-  // Right preview edge keeps its resting border; pointer geometry is covered in Electron E2E.
-  it('keeps the always-on border divider on the right preview resize handle', async () => {
+  it('keeps the inset preview resize edge clear until interaction', async () => {
     await renderPage()
 
     const rightHandle = container.querySelector('[aria-label="Resize right panel"]')
     const leftHandle = container.querySelector('[aria-label="Resize left panel"]')
 
-    expect(rightHandle?.className).toContain('bg-border')
-    expect(rightHandle?.className).toContain('shadow-[1px_0_3px_rgba(30,28,24,0.08)]')
+    expect(rightHandle?.className).not.toContain('bg-border')
+    expect(rightHandle?.className).toContain('hover:before:opacity-100')
     expect(leftHandle?.className).not.toContain('bg-border')
     expect(leftHandle?.className).not.toContain('shadow-[1px_0_3px_rgba(30,28,24,0.08)]')
   })
@@ -1104,7 +1103,7 @@ describe('WorkspacePage preview panel resize sync', () => {
     expect(usePreviewWorkbenchStore.getState().panelState).toBe('collapsed')
   })
 
-  it('animates explicit preview open requests through panel percentage resize', async () => {
+  it('opens the preview at its minimum width through panel percentage resize', async () => {
     await renderPage()
 
     const toggleButton = getPreviewToggle()
@@ -1114,7 +1113,7 @@ describe('WorkspacePage preview panel resize sync', () => {
 
     expect(motionHarness.animate).toHaveBeenCalledWith(
       0,
-      40,
+      30,
       expect.objectContaining({
         duration: 0.22,
         ease: [0.22, 1, 0.36, 1],

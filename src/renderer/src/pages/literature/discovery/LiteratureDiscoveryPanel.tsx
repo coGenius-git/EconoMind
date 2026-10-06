@@ -40,10 +40,12 @@ const SOURCE_LABELS: Record<DiscoverySourceId, string> = {
 
 export function LiteratureDiscoveryPanel({
   collectionId,
-  onImported
+  onImported,
+  showHeader = true
 }: {
   collectionId?: string
   onImported?: (result: DiscoveryImportResult) => void
+  showHeader?: boolean
 }): React.JSX.Element {
   const { t } = useTranslation()
   const discovery = useLiteratureDiscovery(collectionId)
@@ -57,15 +59,17 @@ export function LiteratureDiscoveryPanel({
   }
 
   return (
-    <div className="flex min-w-0 flex-col gap-4 p-6">
-      <header className="space-y-1">
-        <h2 className="text-xl font-bold">{t('Search OpenAlex')}</h2>
-        <p className="text-sm text-muted-foreground">
-          {t('Search by title, abstract or full text, then import selected records.')}
-        </p>
-      </header>
+    <div className="research-discovery-panel flex min-w-0 flex-col gap-4 p-6">
+      {showHeader ? (
+        <header className="space-y-1">
+          <h2 className="text-xl font-bold">{t('Search OpenAlex')}</h2>
+          <p className="text-sm text-muted-foreground">
+            {t('Search by title, abstract or full text, then import selected records.')}
+          </p>
+        </header>
+      ) : null}
 
-      <section className="grid gap-4 rounded-xl border border-border bg-card p-5 md:grid-cols-2">
+      <section className="research-discovery-section grid gap-4 p-5 md:grid-cols-2">
         <label className="space-y-2 md:col-span-2">
           <span className="text-sm font-medium">{t('Search terms')}</span>
           <Textarea
@@ -231,7 +235,7 @@ export function LiteratureDiscoveryPanel({
       ) : null}
 
       {discovery.candidates.length ? (
-        <section className="space-y-3 rounded-xl border border-border bg-card p-5">
+        <section className="research-discovery-section research-discovery-results space-y-3 p-5">
           <div className="flex flex-wrap items-center gap-3">
             <h3 className="text-base font-bold">{t('Records')}</h3>
             <span className="text-sm text-muted-foreground">
@@ -312,7 +316,7 @@ export function LiteratureDiscoveryPanel({
       ) : null}
 
       {discovery.candidates.length ? (
-        <section className="space-y-3 rounded-xl border border-border bg-card p-5">
+        <section className="research-discovery-section space-y-3 p-5">
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-sm font-medium">{t('Duplicate policy')}</span>
             <label className="flex items-center gap-2 text-sm">
@@ -345,7 +349,7 @@ export function LiteratureDiscoveryPanel({
       ) : null}
 
       {discovery.importResult?.importedCount ? (
-        <section className="space-y-3 rounded-xl border border-border bg-card p-5">
+        <section className="research-discovery-section space-y-3 p-5">
           {discovery.importResult.fullText?.length ? (
             <>
               <p className="text-sm text-muted-foreground">

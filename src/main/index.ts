@@ -514,7 +514,7 @@ async function startElectronApp(mainEntryPath: string): Promise<void> {
       startupDiagnostics?.phase('load-startup-shell-modules')
       const [
         { createManagedPreviewProtocolBridge },
-        { configureMainWindow, createMainWindow, isMainWindow },
+        { configureMainWindow, createMainWindow, isMainWindow, isTitleBarWindow },
         { LocalePreferenceOwner },
         { registerLocalePreferenceIpc },
         { applyInterfaceScaleShortcut, installWindowShortcuts },
@@ -597,7 +597,7 @@ async function startElectronApp(mainEntryPath: string): Promise<void> {
       // composed. Install this small handler before creating the first BrowserWindow so that the
       // initial renderer call cannot race the desktop utility surface.
       registerWindowZoomIpcHandler()
-      registerWindowsTitleBarIpc({ isMainWindow })
+      registerWindowsTitleBarIpc({ isMainWindow, isTitleBarWindow })
 
       const databaseStartupLogging = createDatabaseStartupLogging(log, app.getVersion())
       const databaseStartupOwner = createDatabaseStartupOwner({

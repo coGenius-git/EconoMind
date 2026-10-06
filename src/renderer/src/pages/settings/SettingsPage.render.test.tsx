@@ -1154,7 +1154,7 @@ describe('SettingsPage layout', () => {
     // separate fixed footer action.
     const nav = document.body.querySelector('nav[aria-label="Settings"]')
     expect(nav).not.toBeNull()
-    expect(nav?.className).toContain('bg-background')
+    expect(nav?.className).toContain('research-settings-sidebar')
     expect(nav?.className).toContain('md:w-48')
     expect(nav?.className).toContain('w-[min(86vw,320px)]')
     expect(nav?.className).toContain('min-h-0')
@@ -1163,7 +1163,9 @@ describe('SettingsPage layout', () => {
     const navFooter = nav?.querySelector<HTMLElement>('[data-slot="settings-navigation-footer"]')
     expect(navScroll?.className).toContain('overflow-y-auto')
     expect(navFooter?.className).toContain('border-t')
-    expect(nav?.parentElement?.nextElementSibling?.className).toContain('bg-card')
+    expect(document.body.querySelector('[data-slot="settings-main"]')?.className).toContain(
+      'research-settings-content'
+    )
     expect(nav?.textContent).toContain('Intelligence')
     expect(nav?.textContent).toContain('Connections')
     expect(nav?.textContent).toContain('Workspace')
@@ -1199,7 +1201,7 @@ describe('SettingsPage layout', () => {
     // Model is the default active panel.
     expect(nav?.querySelector('[aria-current="page"]')?.textContent).toContain('Model')
 
-    // Browser Settings keeps its close control in the sidebar footer.
+    // Browser Settings keeps its close control in the upper-right corner.
     expect(document.body.querySelector('[aria-label="Close settings"]')).not.toBeNull()
     expect(document.body.querySelector('[aria-label="Back"]')).toBeNull()
     expect(document.body.querySelector('[aria-label="Maximize"]')).toBeNull()

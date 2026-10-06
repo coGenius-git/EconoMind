@@ -104,6 +104,33 @@ describe('Windows title bar native adapter', () => {
     expect(read({ ...event, senderFrame: {} })).toBe(false)
     expect(window.isFullScreen).toHaveBeenCalledOnce()
   })
+  it('updates a managed Settings caption without granting main-window menus', () => {
+    const { window, event } = makeOwner()
+    registerWindowsTitleBarIpc({
+      platform: 'win32',
+      isMainWindow: () => false,
+      isTitleBarWindow: (candidate) => candidate === window,
+      resolveWindow: () => window
+    })
+    mocks.handlers.get('window:update-titlebar')!(event, {
+      color: '#00000000',
+      symbolColor: '#243a49'
+    })
+    expect(window.setTitleBarOverlay).toHaveBeenCalledWith({
+      color: '#00000000',
+      symbolColor: '#243a49',
+      height: 45
+    })
+    expect(show(event)).toBeNull()
+    mocks.handlers.get('window:update-titlebar')!(
+      { ...event, senderFrame: {} },
+      {
+        color: '#00000000',
+        symbolColor: '#243a49'
+      }
+    )
+    expect(window.setTitleBarOverlay).toHaveBeenCalledOnce()
+  })
   it.each([
     { origin: { x: 400, y: 200 }, scale: 1 },
     { origin: { x: 800, y: 300 }, scale: 1.25 },
@@ -171,6 +198,23 @@ describe('Windows title bar native adapter', () => {
       height: 45
     })
     mocks.handlers.get('window:update-titlebar')!(event, { color: 'red', symbolColor: '#abcdef' })
+    expect(window.setTitleBarOverlay).toHaveBeenCalledTimes(1)
+  })
+  it('accepts a transparent native background while requiring an opaque symbol color', () => {
+    const { event, window } = install()
+    mocks.handlers.get('window:update-titlebar')!(event, {
+      color: '#00000000',
+      symbolColor: '#172735'
+    })
+    expect(window.setTitleBarOverlay).toHaveBeenCalledWith({
+      color: '#00000000',
+      symbolColor: '#172735',
+      height: 45
+    })
+    mocks.handlers.get('window:update-titlebar')!(event, {
+      color: '#00000000',
+      symbolColor: 'transparent'
+    })
     expect(window.setTitleBarOverlay).toHaveBeenCalledTimes(1)
   })
   it('rejects untrusted frames, secondary windows, invalid groups, anchors and labels', () => {

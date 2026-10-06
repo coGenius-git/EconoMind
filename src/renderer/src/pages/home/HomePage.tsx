@@ -137,30 +137,12 @@ const getRunningActivityTimestamp = (session: ChatSession, computeStartedAt?: nu
 }
 
 const sectionHeadingClassName =
-  'mb-3 flex items-center gap-2 text-[17px] font-medium leading-6 text-text-000'
+  'mb-5 flex items-center gap-2.5 text-[17px] font-medium leading-6 text-text-000'
 
-// Accent dot colors for the EconoMind research-domain categories shown on the home screen.
-const projectCategoryColor = (category: ProjectCategory): string => {
-  switch (category) {
-    case 'economics':
-      return '#9BBBF4'
-    case 'management':
-      return '#94D8C3'
-    case 'finance':
-      return '#E1B98F'
-    case 'accounting':
-      return '#C9A7E8'
-    case 'case_study':
-      return '#F4B393'
-    default:
-      return '#9EACEA'
-  }
-}
-
-const listCardClassName = 'overflow-hidden rounded-lg border border-border bg-card p-1.5'
+const listCardClassName = 'research-home-list overflow-hidden'
 
 const rowClassName =
-  'group flex w-full items-center gap-2 rounded-md px-2.5 py-3 text-left hover:bg-primary/5 sm:px-3'
+  'research-home-row group flex w-full min-w-0 items-center gap-2 px-3 py-4 text-left transition-colors hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-4'
 
 const rowActionClassName =
   'shrink-0 rounded p-0.5 text-text-300 opacity-100 transition-opacity duration-150 ease-out hover:bg-bg-400 hover:text-text-000 focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 data-[state=open]:opacity-100'
@@ -690,7 +672,7 @@ const HomePage = ({
 
   return (
     <TooltipProvider delayDuration={200}>
-      <main className="flex h-svh min-h-0 flex-col overflow-hidden bg-background text-foreground">
+      <main className="research-page flex h-svh min-h-0 flex-col overflow-hidden text-foreground">
         <ResearchWorkbenchHeader
           active="home"
           onHome={() => useNavigationStore.getState().goHome('user')}
@@ -701,16 +683,15 @@ const HomePage = ({
             else openCreateDialog()
           }}
           onSettings={openSettings}
-          settingsLabel={t('Model settings')}
           actions={<UpdateCapsule />}
         />
-        <div className="flex min-h-0 flex-1">
+        <div className="research-home-shell flex min-h-0 flex-1 overflow-hidden">
           <aside
             aria-label={t('Workspace navigation')}
-            className="hidden w-60 shrink-0 flex-col border-r border-border bg-card px-4 py-6 lg:flex"
+            className="research-home-sidebar research-glass hidden w-52 shrink-0 flex-col px-3 py-7 xl:flex 2xl:w-60 2xl:px-4"
           >
-            <p className="px-3 text-sm font-semibold">{t('Research workbench')}</p>
-            <div className="mt-6 flex items-center justify-between border-t border-border px-3 pt-6">
+            <p className="px-3 font-serif text-lg font-medium">{t('Research workbench')}</p>
+            <div className="mt-8 flex items-center justify-between px-3">
               <p className="text-xs font-medium text-muted-foreground">{t('Projects')}</p>
               <span className="text-xs tabular-nums text-muted-foreground">
                 {projectSummaries.length}
@@ -722,9 +703,10 @@ const HomePage = ({
                   type="button"
                   key={project.id}
                   onClick={() => openProject(project.id, 'user')}
-                  className="flex min-h-10 w-full items-center gap-3 rounded-md px-3 text-left text-sm hover:bg-primary/5 hover:text-primary"
+                  title={project.name}
+                  className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm text-muted-foreground transition-colors hover:bg-primary/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                 >
-                  <GalleryVerticalEnd className="size-4 shrink-0 text-primary" aria-hidden="true" />
+                  <GalleryVerticalEnd className="size-3.5 shrink-0" aria-hidden="true" />
                   <span className="truncate">{project.name}</span>
                 </button>
               ))}
@@ -734,16 +716,19 @@ const HomePage = ({
                 </p>
               ) : null}
             </div>
-            <p className="border-t border-border px-3 pt-4 text-xs text-muted-foreground">
+            <p className="border-t border-border/60 px-3 pt-4 text-xs text-muted-foreground">
               <span>EconoMind</span> <span className="ml-2">{t('Beta')}</span>
             </p>
           </aside>
-          <div data-slot="home-content-scroll" className="min-w-0 flex-1 overflow-y-auto">
-            <div className="mx-auto max-w-[1280px] px-5 py-8 pb-12 sm:px-8 lg:px-10 lg:py-10">
-              <header className="flex flex-wrap items-start justify-between gap-5">
+          <div
+            data-slot="home-content-scroll"
+            className="research-home-content research-glass min-w-0 flex-1 overflow-y-auto"
+          >
+            <div className="mx-auto max-w-[1440px] px-5 py-8 pb-12 sm:px-8 lg:px-10 lg:py-10">
+              <header className="research-home-overview flex flex-wrap items-start justify-between gap-5 border-b border-border/70 pb-7">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                    <h1 className="text-3xl font-semibold tracking-tight">
+                    <h1 className="font-serif text-3xl font-medium tracking-tight">
                       {t('Research workbench')}
                     </h1>
                     {hasCompleteSessionCatalog &&
@@ -797,7 +782,7 @@ const HomePage = ({
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="size-9 rounded-lg text-text-300"
+                    className="size-10 rounded-full border border-border/70 bg-card text-text-100"
                     onClick={onOpenGlobalSearch}
                     aria-label={t('Search')}
                     title={t('Search (Cmd/Ctrl+K)')}
@@ -808,7 +793,7 @@ const HomePage = ({
                   <Button
                     variant="default"
                     size="sm"
-                    className="h-10 gap-2 rounded-md px-4 text-sm"
+                    className="h-10 gap-2 rounded-xl px-4 text-sm shadow-sm"
                     onClick={openCreateDialog}
                     aria-label={t('New project')}
                   >
@@ -842,7 +827,7 @@ const HomePage = ({
                               // Fixed height sized to the tallest content (status row + title +
                               // two-line description, ~154px); cards without a description keep the
                               // height and mt-auto sinks the project line.
-                              className="flex h-[156px] w-full min-w-0 cursor-pointer flex-col rounded-lg border border-border bg-card pb-3 px-[18px] pt-4 text-left hover:border-primary/30 hover:bg-primary/5 focus-visible:ring-[3px] focus-visible:ring-ring/50 active:bg-bg-300 motion-reduce:transition-none"
+                              className="flex h-[156px] w-full min-w-0 cursor-pointer flex-col rounded-2xl border border-border/80 bg-card pb-3 px-[18px] pt-4 text-left transition-colors hover:border-primary/30 hover:bg-primary/5 focus-visible:ring-[3px] focus-visible:ring-ring/50 active:bg-bg-300 motion-reduce:transition-none"
                               onClick={() => openSession(session.projectId, session.id, 'user')}
                               aria-label={
                                 waitReason
@@ -971,11 +956,14 @@ const HomePage = ({
 
               <div
                 className={cn(
-                  'grid grid-cols-1 gap-7 sm:gap-8 lg:grid-cols-2',
+                  'research-home-columns grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] lg:gap-10',
                   sessionUpdates.length > 0 ? 'mt-8' : 'mt-8 sm:mt-10'
                 )}
               >
-                <section className="min-w-0" aria-label={t('Projects')}>
+                <section
+                  className="research-home-sheet research-reading-surface min-w-0"
+                  aria-label={t('Projects')}
+                >
                   <h2 className={sectionHeadingClassName}>
                     <GalleryVerticalEnd
                       className="size-4 text-text-100"
@@ -1018,21 +1006,20 @@ const HomePage = ({
                       {t('Loading…')}
                     </div>
                   ) : projectSummaries.length === 0 ? (
-                    <div className="rounded-lg border border-dashed border-border bg-card px-4 py-10 text-center text-sm text-muted-foreground">
+                    <div className="rounded-2xl border border-dashed border-border bg-card px-5 py-12 text-center text-sm leading-6 text-muted-foreground">
                       {t('No projects yet. Create one to get started.')}
                     </div>
                   ) : (
-                    <div className="space-y-3">
+                    <div className="space-y-6">
                       {projectSections.map((section) => (
                         <section
                           key={section.category}
                           aria-label={t(projectCategoryLabelKeys[section.category])}
                         >
                           {section.category !== 'general' ? (
-                            <h3 className="mb-2 flex items-center gap-2 px-1 text-sm font-medium text-text-100">
+                            <h3 className="research-home-category mb-3 flex items-center gap-2.5 px-1 text-xs font-medium tracking-wide">
                               <span
-                                className="size-2 shrink-0 rounded-full"
-                                style={{ backgroundColor: projectCategoryColor(section.category) }}
+                                className="h-3 w-0.5 shrink-0 rounded-full bg-primary/50"
                                 aria-hidden="true"
                               />
                               {t(projectCategoryLabelKeys[section.category])}
@@ -1073,11 +1060,6 @@ const HomePage = ({
                                     {project.isExample ? (
                                       <span className="shrink-0 rounded bg-bg-300 px-1.5 py-0.5 text-[10px] font-medium text-text-100">
                                         {t('Example')}
-                                      </span>
-                                    ) : null}
-                                    {project.category && project.category !== 'general' ? (
-                                      <span className="shrink-0 rounded bg-bg-300 px-1.5 py-0.5 text-[10px] font-medium text-text-100">
-                                        {t(projectCategoryLabelKeys[project.category])}
                                       </span>
                                     ) : null}
                                     {hasCompleteSessionCatalog && waitingCount > 0 ? (
@@ -1124,7 +1106,7 @@ const HomePage = ({
                                       })}
                                     </span>
                                   ) : null}
-                                  <span className="hidden w-8 shrink-0 text-right text-xs text-text-000 sm:inline">
+                                  <span className="hidden min-w-8 shrink-0 whitespace-nowrap text-right text-xs text-text-000 sm:inline">
                                     {relativeTime(lastActivityAt)}
                                   </span>
                                   <DropdownMenu>
@@ -1241,13 +1223,16 @@ const HomePage = ({
                   )}
                 </section>
 
-                <section className="min-w-0" aria-label={t('Recent sessions')}>
+                <section
+                  className="research-home-sheet research-reading-surface min-w-0"
+                  aria-label={t('Recent sessions')}
+                >
                   <h2 className={sectionHeadingClassName}>
                     <Clock className="size-4 text-text-100" strokeWidth={2} aria-hidden="true" />
                     {t('Recent sessions')}
                   </h2>
                   {recentSessions.length === 0 ? (
-                    <div className="rounded-lg border border-dashed border-border bg-card px-4 py-10 text-center text-sm text-muted-foreground">
+                    <div className="rounded-2xl border border-dashed border-border bg-card px-5 py-12 text-center text-sm leading-6 text-muted-foreground">
                       {t('Sessions you start will appear here.')}
                     </div>
                   ) : (
@@ -1264,9 +1249,9 @@ const HomePage = ({
                             className="mt-1 inline-flex size-3 shrink-0 items-center justify-center"
                             aria-hidden="true"
                           >
-                            <span className="size-[7px] rounded-full border border-text-100" />
+                            <span className="size-[5px] rounded-full bg-primary/40" />
                           </span>
-                          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                          <span className="flex min-w-0 flex-1 flex-col gap-1.5">
                             <span className="truncate text-sm font-medium text-text-000">
                               {session.title}
                             </span>
@@ -1274,7 +1259,7 @@ const HomePage = ({
                               {projectNames.get(session.projectId) ?? t('Unknown project')}
                             </span>
                           </span>
-                          <span className="shrink-0 text-xs text-text-000">
+                          <span className="shrink-0 text-xs tabular-nums text-text-100">
                             {relativeTime(session.updatedAt)}
                           </span>
                         </button>

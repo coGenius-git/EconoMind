@@ -26,6 +26,14 @@ import {
 } from './definition'
 
 export const contracts = {
+  'window.isSettingsFocused': callable<() => Promise<boolean>>()(
+    'window',
+    ['window:is-settings-focused', ELECTRON],
+    { optionalMember: true }
+  ),
+  'window.onSettingsFocusChanged': callable<
+    (listener: (focused: boolean) => void) => RemoveListener
+  >()('window', ['window:settings-focus-changed', ELECTRON_EVENT], { optionalMember: true }),
   'window.confirmSettingsClose': callable<() => Promise<void>>()(
     'window',
     ['window:confirm-settings-close', ELECTRON],

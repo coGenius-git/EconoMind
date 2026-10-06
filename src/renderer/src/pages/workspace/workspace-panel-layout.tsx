@@ -22,9 +22,9 @@ const SIDEBAR_PANEL_DEFAULT_SIZE_CSS = `${SIDEBAR_PANEL_DEFAULT_SIZE}%`
 const SIDEBAR_PANEL_MIN_OPEN_SIZE = 16
 const SIDEBAR_TOGGLE_RIGHT_INSET = 38
 
-const PREVIEW_PANEL_DEFAULT_SIZE = 40
-const PREVIEW_PANEL_DEFAULT_SIZE_CSS = `${PREVIEW_PANEL_DEFAULT_SIZE}%`
 const PREVIEW_PANEL_MIN_OPEN_SIZE = 30
+const PREVIEW_PANEL_DEFAULT_SIZE = PREVIEW_PANEL_MIN_OPEN_SIZE
+const PREVIEW_PANEL_DEFAULT_SIZE_CSS = `${PREVIEW_PANEL_DEFAULT_SIZE}%`
 // Match the visible divider and its hit area to the resize library's hover/drag region.
 const WORKSPACE_RESIZE_HANDLE_CLASS_NAME =
   'z-20 after:w-5 before:top-0 before:h-full before:translate-y-0 before:bg-text-200 hover:before:opacity-100 focus-visible:before:opacity-100 data-[separator=hover]:before:opacity-100 data-[separator=active]:before:opacity-100 transition-opacity duration-200 ease-out'
@@ -269,7 +269,8 @@ type PreviewPanelLayoutPort = {
 // Presents one layout contract to WorkspacePage across desktop and mobile surfaces.
 const useWorkspacePanelLayout = (
   previewPort: PreviewPanelLayoutPort,
-  mobileSidebarDialogRef: React.RefObject<HTMLDivElement | null>
+  mobileSidebarDialogRef: React.RefObject<HTMLDivElement | null>,
+  showPreviewPanel: boolean
 ): WorkspacePanelLayout => {
   const { t } = useTranslation()
   const [sidebarState, setSidebarState] = useState<ResizablePanelState>('open')
@@ -324,7 +325,7 @@ const useWorkspacePanelLayout = (
     previewPort.state === 'collapsed' ? PANEL_COLLAPSED_SIZE_CSS : PREVIEW_PANEL_DEFAULT_SIZE_CSS
   )
   const preview = useAnimatedResizablePanel({
-    enabled: !isMobile,
+    enabled: !isMobile && showPreviewPanel,
     panelState: previewPort.state,
     defaultOpenSize: PREVIEW_PANEL_DEFAULT_SIZE,
     minOpenSize: PREVIEW_PANEL_MIN_OPEN_SIZE,
@@ -483,10 +484,10 @@ const useWorkspacePanelLayout = (
           ref={previewToggleRef}
           type="button"
           data-testid="workspace-preview-toggle"
-          className={`absolute right-2 top-0 z-40 flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg ${
+          className={`absolute z-40 flex shrink-0 cursor-pointer items-center justify-center rounded-[10px] ${
             previewPort.state === 'collapsed'
-              ? 'bg-transparent shadow-none text-action-panel-toggle hover:bg-surface-control-hover'
-              : 'bg-primary/20 shadow-card backdrop-blur text-action-panel-toggle'
+              ? 'right-2 top-[var(--research-title-center,35.5px)] -translate-y-1/2 size-7 bg-transparent shadow-none text-action-panel-toggle hover:bg-surface-control-hover'
+              : 'right-[29px] top-[calc(var(--research-preview-top,82px)+15px)] size-8 bg-bg-300 shadow-none text-action-panel-toggle hover:bg-surface-control-hover'
           }`}
           aria-label={
             previewPort.state === 'collapsed'
@@ -511,6 +512,7 @@ const useWorkspacePanelLayout = (
 
 type WorkspacePanelLayoutProps = {
   hasPreviewItems: boolean
+  showPreviewPanel?: boolean
   isPreviewPresentationActive?: boolean
   restoredPlanResponder?: RestoredPlanResponder
   previewAnnotations?: PreviewInteractionPort
@@ -534,6 +536,7 @@ type WorkspacePanelLayoutProps = {
 // Adapts the controller to the desktop split view and mobile drawer/sheet without owning page data.
 const WorkspacePanelLayout = ({
   hasPreviewItems,
+  showPreviewPanel = true,
   isPreviewPresentationActive = true,
   restoredPlanResponder,
   previewAnnotations,
@@ -544,15 +547,84 @@ const WorkspacePanelLayout = ({
   renderConversation
 }: WorkspacePanelLayoutProps): React.JSX.Element => {
   const { t } = useTranslation()
+  const workspaceRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarDialogRef = useRef<HTMLDivElement | null>(null)
   const { isMobile, mobileSidebar, sidebar, preview } = useWorkspacePanelLayout(
     previewPort,
-    mobileSidebarDialogRef
+    mobileSidebarDialogRef,
+    showPreviewPanel
   )
+
+  // One sheet spans the conversation and preview. Measure the real header so taller session
+  // controls and window resizing keep the inset preview below its divider without remounting it.
+  useLayoutEffect(() => {
+    const workspace = workspaceRef.current
+    if (isMobile || !showPreviewPanel || !workspace || typeof ResizeObserver === 'undefined') return
+    const synchronize = (): void => {
+      const conversation = workspace.querySelector<HTMLElement>('.research-conversation')
+      const header = workspace.querySelector<HTMLElement>('[data-testid="conversation-header"]')
+      if (!conversation || !header) return
+      const origin = workspace.getBoundingClientRect()
+      workspace.style.setProperty(
+        '--research-conversation-left',
+        `${conversation.getBoundingClientRect().left - origin.left}px`
+      )
+      const dividerTop = header.getBoundingClientRect().bottom - origin.top
+      const title = (header.querySelector('h1') ?? header).getBoundingClientRect()
+      workspace.style.setProperty(
+        '--research-title-center',
+        `${title.top + title.height / 2 - origin.top}px`
+      )
+      workspace.style.setProperty('--research-divider-top', `${dividerTop}px`)
+      workspace.style.setProperty('--research-preview-top', `${dividerTop + 16}px`)
+    }
+    const observer = new ResizeObserver(synchronize)
+    const observeSurfaces = (): void => {
+      observer.disconnect()
+      observer.observe(workspace)
+      for (const surface of workspace.querySelectorAll(
+        '.research-conversation, [data-testid="conversation-header"], [data-testid="conversation-header"] h1'
+      )) {
+        observer.observe(surface)
+      }
+      synchronize()
+    }
+    observeSurfaces()
+    // Switching sessions replaces the keyed conversation; retain the mounted preview and
+    // subscribe to the replacement header instead of observing every message update.
+    const changes = new MutationObserver((records) => {
+      if (
+        records.some((record) =>
+          [...record.addedNodes, ...record.removedNodes].some(
+            (node) =>
+              node instanceof Element &&
+              (node.matches('[data-testid="conversation-header"]') ||
+                node.querySelector('[data-testid="conversation-header"]'))
+          )
+        )
+      ) {
+        observeSurfaces()
+      }
+    })
+    changes.observe(workspace, { childList: true, subtree: true })
+    return () => {
+      observer.disconnect()
+      changes.disconnect()
+    }
+  }, [isMobile, showPreviewPanel])
 
   return (
     <>
-      <div className="relative flex h-full">
+      <div
+        ref={workspaceRef}
+        className="research-workspace-layout relative flex h-full"
+        data-desktop={!isMobile || undefined}
+      >
+        {!isMobile && showPreviewPanel ? (
+          <div className="research-workbench-sheet research-glass" aria-hidden="true">
+            <div className="research-workbench-divider" />
+          </div>
+        ) : null}
         {mobileSidebar.isOpen ? (
           <button
             type="button"
@@ -628,40 +700,42 @@ const WorkspacePanelLayout = ({
             openMobileSidebar: mobileSidebar.open
           })}
 
-          {!isMobile ? (
+          {!isMobile && showPreviewPanel ? (
             <>
               <ResizableHandle
                 elementRef={preview.separatorRef}
                 aria-label={t('Resize right panel')}
                 disabled={preview.state === 'collapsed'}
                 aria-hidden={preview.state === 'collapsed'}
-                className={`${WORKSPACE_RESIZE_HANDLE_CLASS_NAME} bg-border shadow-[1px_0_3px_rgba(30,28,24,0.08)] ${
+                className={`${WORKSPACE_RESIZE_HANDLE_CLASS_NAME} before:top-[var(--research-preview-top,82px)] before:h-[calc(100%-var(--research-preview-top,82px)-14px)] ${
                   preview.state === 'collapsed' ? 'pointer-events-none opacity-0' : 'opacity-100'
                 }`}
               />
             </>
           ) : null}
-          <PreviewPanel
-            isMobile={isMobile}
-            panelRef={preview.panelRef}
-            defaultSize={preview.defaultSize}
-            minSize={preview.minSize}
-            onResize={preview.onResize}
-            restoredPlanResponder={restoredPlanResponder}
-            {...previewAnnotations}
-            onPdfContextError={onPdfContextError}
-          >
-            <MobilePreviewSheet
+          {showPreviewPanel ? (
+            <PreviewPanel
               isMobile={isMobile}
-              open={isPreviewPresentationActive && preview.state === 'open'}
-              onClose={preview.collapse}
+              panelRef={preview.panelRef}
+              defaultSize={preview.defaultSize}
+              minSize={preview.minSize}
+              onResize={preview.onResize}
               restoredPlanResponder={restoredPlanResponder}
               {...previewAnnotations}
               onPdfContextError={onPdfContextError}
-            />
-          </PreviewPanel>
+            >
+              <MobilePreviewSheet
+                isMobile={isMobile}
+                open={isPreviewPresentationActive && preview.state === 'open'}
+                onClose={preview.collapse}
+                restoredPlanResponder={restoredPlanResponder}
+                {...previewAnnotations}
+                onPdfContextError={onPdfContextError}
+              />
+            </PreviewPanel>
+          ) : null}
         </ResizablePanelGroup>
-        {!isMobile && hasPreviewItems ? preview.toggleButton : null}
+        {!isMobile && showPreviewPanel && hasPreviewItems ? preview.toggleButton : null}
         {!isMobile && sidebar.state === 'collapsed' ? sidebar.toggleButton : null}
       </div>
     </>

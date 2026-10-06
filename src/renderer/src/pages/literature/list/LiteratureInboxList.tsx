@@ -50,7 +50,7 @@ export function LiteratureInboxList({
 }): React.JSX.Element {
   const { t } = useTranslation()
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+    <div className="flex min-h-64 flex-1 flex-col overflow-hidden">
       <LiteratureSelectionBoundary store={selectionStore}>
         {(selection) => {
           const selectedCount = selection.selectedIds.size

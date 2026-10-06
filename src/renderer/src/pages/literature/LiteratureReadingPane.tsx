@@ -31,7 +31,7 @@ export function LiteratureReadingPane({
     <aside
       aria-label={t('Reference details')}
       data-slot="literature-reading-pane"
-      className="hidden min-h-0 w-[34%] min-w-80 max-w-[480px] shrink-0 overflow-y-auto border-l border-border bg-background px-6 py-7 xl:block"
+      className="research-library-reading-pane research-reading-surface hidden min-h-0 w-[34%] min-w-80 max-w-[480px] shrink-0 overflow-y-auto px-6 py-7 xl:block"
     >
       <div className="mb-5 flex items-center justify-between gap-2">
         <h2 className="text-sm font-semibold">{t('Reference details')}</h2>
@@ -56,7 +56,7 @@ export function LiteratureReadingPane({
           </Button>
         </div>
       </div>
-      <h3 className="break-words text-xl font-semibold leading-relaxed tracking-tight">
+      <h3 className="break-words font-serif text-xl font-semibold leading-relaxed tracking-tight">
         {entry.item.title}
       </h3>
       <p className="mt-3 text-sm leading-6 text-muted-foreground">{fullCreatorLabel(entry.item)}</p>

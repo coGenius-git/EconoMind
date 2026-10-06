@@ -1,4 +1,10 @@
 import { ResearchWorkbenchHeader } from '@/components/ResearchWorkbenchHeader'
+import { PanelLeft } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { ResizablePanel } from '@/components/ui/resizable'
+import { SpecialistBrowser } from '@/pages/specialists/SpecialistBrowser'
+import { previewLeaveGuards } from '@/stores/preview-leave-guard'
+import type { SpecialistSummonRequest } from './use-specialist-summon'
 import {
   LibraryReferenceActionsContext,
   LibraryPreviewNavigationContext
@@ -205,6 +211,20 @@ const WorkspacePage = ({
   const newConversationDraftKey = newConversationDraftKeyFor(scopedProjectId)
   const currentDraftKey = selectedSessionId ?? newConversationDraftKey
   const clearSelection = useSessionStore((state) => state.clearSelection)
+  const [isSpecialistsOpen, setIsSpecialistsOpen] = useState(false)
+  const [specialistSummonRequest, setSpecialistSummonRequest] = useState<SpecialistSummonRequest>()
+  const specialistSummonSequence = useRef(0)
+  const [specialistScopeProjectId, setSpecialistScopeProjectId] = useState(scopedProjectId)
+  if (specialistScopeProjectId !== scopedProjectId) {
+    setSpecialistScopeProjectId(scopedProjectId)
+    setIsSpecialistsOpen(false)
+    setSpecialistSummonRequest(undefined)
+  }
+  const consumeSpecialistSummon = useCallback((requestId: number): void => {
+    setSpecialistSummonRequest((current) =>
+      current?.requestId === requestId ? undefined : current
+    )
+  }, [])
   const setAutoReviewEnabled = useSessionStore((state) => state.setAutoReviewEnabled)
   const setFixLoopActive = useSessionStore((state) => state.setFixLoopActive)
   const previewItems = usePreviewWorkbenchStore((state) => state.items)
@@ -1033,8 +1053,12 @@ const WorkspacePage = ({
   // Keeps New as a local draft reset after persistence hydration has selected restored sessions.
   const openNewConversation = useCallback((): void => {
     if (!isSessionPersistenceReady) return
+    setIsSpecialistsOpen(false)
+    setSpecialistSummonRequest(undefined)
 
-    // The draft effect saves the outgoing doc/attachments and restores the new-conversation state.
+    // New starts with a blank draft even when already on the starter page. Session drafts are
+    // still saved by the navigation effect before the destination draft is restored.
+    composer.lifecycle.clearDraft(newConversationDraftKey)
     setAttachmentError(null)
     setNewConversationPermissionProfile(defaultPermissionProfile)
     setNewConversationAutoReviewEnabled(false)
@@ -1048,8 +1072,10 @@ const WorkspacePage = ({
     clearSelection()
   }, [
     clearSelection,
+    composer.lifecycle,
     defaultPermissionProfile,
     isSessionPersistenceReady,
+    newConversationDraftKey,
     resetNewConversationConfiguration,
     resetNewConversationDelegation,
     sessionController.actions,
@@ -1250,6 +1276,8 @@ const WorkspacePage = ({
   }
 
   const openSessionWithoutExportError = (sessionId: string): void => {
+    setIsSpecialistsOpen(false)
+    setSpecialistSummonRequest(undefined)
     sessionController.actions.clearExportError()
     openSession(sessionId)
   }
@@ -1408,6 +1436,7 @@ const WorkspacePage = ({
 
   // Opens the project file library as a stable preview workbench tool tab.
   const openFilesPreview = (): void => {
+    setIsSpecialistsOpen(false)
     if (!isSessionPersistenceReady) return
 
     usePreviewWorkbenchStore.getState().upsertAndActivateItem(createProjectFilesPreviewItem())
@@ -1418,6 +1447,7 @@ const WorkspacePage = ({
     useNavigationStore.getState().openProjectLiterature(scopedProjectId, 'user')
 
   const openComputePreview = (): void => {
+    setIsSpecialistsOpen(false)
     if (!isSessionPersistenceReady) return
     usePreviewWorkbenchStore.getState().upsertAndActivateItem(createProjectComputePreviewItem())
   }
@@ -1435,12 +1465,56 @@ const WorkspacePage = ({
 
   const canImportSessionPackage =
     isSessionPersistenceReady && Boolean(activeProject) && activeProject?.archivedAt === undefined
+  const hasNewSetupDraft = composer.lifecycle.hasWslSetupDraft(newConversationDraftKey)
+  const canSummonSpecialist = canImportSessionPackage && !hasNewSetupDraft
+  const summonDisabledReason =
+    activeProject?.archivedAt !== undefined
+      ? t('This Project is archived. Open an active Project to summon a Specialist.')
+      : hasNewSetupDraft
+        ? t('Finish or discard the setup draft before summoning a Specialist.')
+        : !isSessionPersistenceReady
+          ? t('Loading…')
+          : undefined
+
+  const openSpecialists = (): void => {
+    previewLeaveGuards.requestAll(() => {
+      useNavigationStore.getState().recordUserNavigation()
+      setIsSpecialistsOpen(true)
+    })
+  }
+  const summonSpecialist = (specialistId: string): void => {
+    if (!canSummonSpecialist) return
+    const catalog = useSpecialistStore.getState()
+    const item = catalog.items.find(
+      (candidate) => candidate.kind !== 'reviewer' && candidate.id === specialistId
+    )
+    if (
+      catalog.loadError ||
+      catalog.integrity.status !== 'ok' ||
+      !item ||
+      item.kind === 'reviewer' ||
+      !item.enabled ||
+      item.setupPending
+    )
+      return
+
+    // Restore the project's existing New draft instead of clearing it: an edited draft, its
+    // references and attachments survive; the explicit selection fills only replaceable examples.
+    setSpecialistSummonRequest({
+      requestId: ++specialistSummonSequence.current,
+      draftKey: newConversationDraftKey,
+      specialistId
+    })
+    clearSelection()
+    setIsSpecialistsOpen(false)
+    useNavigationStore.getState().recordUserNavigation()
+  }
 
   const content = (
     <main
       ref={previewFocusFallbackRef}
       tabIndex={-1}
-      className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-background text-[13px] leading-normal text-foreground"
+      className="research-page flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-background text-[13px] leading-normal text-foreground"
     >
       <ResearchWorkbenchHeader
         active="analysis"
@@ -1448,10 +1522,10 @@ const WorkspacePage = ({
         onLibrary={() =>
           useNavigationStore.getState().openProjectLiterature(scopedProjectId, 'user')
         }
-        onAnalysis={() => undefined}
+        onAnalysis={() => setIsSpecialistsOpen(false)}
         onSettings={openSettings}
       />
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className="research-workspace-shell min-h-0 flex-1 overflow-hidden">
         <BookmarksProvider
           projectId={bookmarkSession?.projectId}
           sessionId={bookmarkSession?.id}
@@ -1474,6 +1548,7 @@ const WorkspacePage = ({
             writable={bookmarksWritable}
           >
             <WorkspacePanelLayout
+              showPreviewPanel={!isSpecialistsOpen}
               hasPreviewItems={previewItems.length > 0}
               isPreviewPresentationActive={isPreviewPresentationActive}
               onPdfContextError={setAttachmentError}
@@ -1503,15 +1578,23 @@ const WorkspacePage = ({
                   canDeleteConversations={canDeleteConversations}
                   onGoHome={() => goHome('user')}
                   onNewConversation={openNewConversation}
-                  isFilesOpen={activePreviewItemId === PROJECT_FILES_PREVIEW_ID}
+                  isFilesOpen={
+                    !isSpecialistsOpen && activePreviewItemId === PROJECT_FILES_PREVIEW_ID
+                  }
                   onOpenFiles={openFilesPreview}
-                  isLibraryOpen={activePreviewItemId === PROJECT_LIBRARY_PREVIEW_ID}
+                  isLibraryOpen={
+                    !isSpecialistsOpen && activePreviewItemId === PROJECT_LIBRARY_PREVIEW_ID
+                  }
                   onOpenLiterature={openLibraryPreview}
                   isComputeOpen={
-                    canOpenProjectCompute && activePreviewItemId === PROJECT_COMPUTE_PREVIEW_ID
+                    !isSpecialistsOpen &&
+                    canOpenProjectCompute &&
+                    activePreviewItemId === PROJECT_COMPUTE_PREVIEW_ID
                   }
                   onOpenCompute={canOpenProjectCompute ? openComputePreview : undefined}
                   onOpenSession={openSessionWithoutExportError}
+                  isSpecialistsOpen={isSpecialistsOpen}
+                  onOpenSpecialists={openSpecialists}
                   onRenameSession={sessionController.actions.openEdit}
                   onRenameSessionTitle={sessionController.actions.renameTitle}
                   canDownloadArtifacts={typeof window.api?.saveSessionArtifacts === 'function'}
@@ -1566,17 +1649,23 @@ const WorkspacePage = ({
                     close()
                     openNewConversation()
                   }}
-                  isFilesOpen={activePreviewItemId === PROJECT_FILES_PREVIEW_ID}
+                  isFilesOpen={
+                    !isSpecialistsOpen && activePreviewItemId === PROJECT_FILES_PREVIEW_ID
+                  }
                   onOpenFiles={() => {
                     close()
                     openFilesPreview()
                   }}
-                  isLibraryOpen={activePreviewItemId === PROJECT_LIBRARY_PREVIEW_ID}
+                  isLibraryOpen={
+                    !isSpecialistsOpen && activePreviewItemId === PROJECT_LIBRARY_PREVIEW_ID
+                  }
                   onOpenLiterature={() => {
                     if (openLibraryPreview()) close()
                   }}
                   isComputeOpen={
-                    canOpenProjectCompute && activePreviewItemId === PROJECT_COMPUTE_PREVIEW_ID
+                    !isSpecialistsOpen &&
+                    canOpenProjectCompute &&
+                    activePreviewItemId === PROJECT_COMPUTE_PREVIEW_ID
                   }
                   onOpenCompute={
                     canOpenProjectCompute
@@ -1589,6 +1678,11 @@ const WorkspacePage = ({
                   onOpenSession={(sessionId) => {
                     close()
                     openSessionWithoutExportError(sessionId)
+                  }}
+                  isSpecialistsOpen={isSpecialistsOpen}
+                  onOpenSpecialists={() => {
+                    close()
+                    openSpecialists()
                   }}
                   onRenameSession={(session) => {
                     close()
@@ -1679,148 +1773,180 @@ const WorkspacePage = ({
                 isPreviewPanelCollapsed,
                 togglePreviewPanel: togglePreviewPanelFromLayout,
                 openMobileSidebar
-              }) => (
-                <ConversationPanel
-                  key={JSON.stringify([scopedProjectId, activeSession?.id])}
-                  submissions={conversationSubmissions}
-                  view={{
-                    activeSession,
-                    composerFocusKey: currentDraftKey,
-                    canEditDraft,
-                    persistenceBlocked: persistenceBlockedSessionIds.includes(
-                      activeSession?.id ?? ''
-                    ),
-                    actionError: visibleActionError,
-                    sideChatDisabledReason,
-                    sessionImport: {
-                      projectId: scopedProjectId,
-                      projectName: activeProject?.name ?? t('Project'),
-                      canImport: canImportSessionPackage
-                    }
-                  }}
-                  composer={composer}
-                  conversation={conversation}
-                  sideChat={sideChat}
-                  specialist={sessionController}
-                  layout={{
-                    isPreviewPanelCollapsed,
-                    togglePreviewPanel: togglePreviewPanelFromLayout,
-                    openSidebar: openMobileSidebar,
-                    onOpenLibraryMention
-                  }}
-                  permissions={{
-                    requests: visiblePermissionRequests,
-                    credentialRequests: visibleCredentialRequests,
-                    permissionProfile: activePermissionProfile,
-                    permissionProfileState: activePermissionProfileState,
-                    permissionGrants: activePermissionGrants,
-                    canChangePermissionProfile,
-                    respond: respondToVisiblePermission,
-                    changeProfile: changePermissionProfile,
-                    revokeGrant: revokeActivePermissionGrant,
-                    clearGrants: clearActivePermissionGrants
-                  }}
-                  elicitation={{
-                    requests: visibleElicitationRequests,
-                    respond: respondToElicitation
-                  }}
-                  agentControls={{
-                    ...agentControlAvailability,
-                    canChangeMemory:
-                      agentControlAvailability.canChangeMemory && isGlobalMemoryEnabled,
-                    modelConfiguration: activeAgentConfiguration,
-                    modelUnavailable: agentConfigurationUnavailable,
-                    changeModelConfiguration: changeAgentConfiguration,
-                    autoReviewEnabled: activeAutoReviewEnabled,
-                    memoryEnabled: activeMemoryEnabled,
-                    delegationEnabled: delegationControl.enabled,
-                    delegationPending: delegationControl.pending,
-                    delegationHasLiveAttempts: delegationControl.hasLiveDelegatedAttempts,
-                    canChangeDelegation:
-                      isSessionPersistenceReady &&
-                      delegationControl.frameworkSupported &&
-                      delegationControl.sessionAuthoritative,
-                    delegationDisabledReason: delegationControl.frameworkSupported
-                      ? undefined
-                      : t('The selected agent framework does not support delegated work.'),
-                    memoryDisabledReason: isGlobalMemoryEnabled
-                      ? undefined
-                      : t(
-                          'Memory is off in Settings. Turn it on to use Memory in this conversation.'
-                        ),
-                    enabledComputeHosts: computeHostAccess.enabledProviderIds,
-                    selectedComputeHosts: computeHostAccess.selectedProviderIds,
-                    toggleAutoReview: changeAutoReviewEnabled,
-                    toggleMemory: changeMemoryEnabled,
-                    toggleDelegation: delegationControl.change,
-                    setComputeHostEnabled: computeHostAccess.setHostEnabled,
-                    setComputeHostSelected: computeHostAccess.setHostSelected
-                  }}
-                  contextWindow={{
-                    usage: activeContextUsage,
-                    canCompact: canCompactContext,
-                    compactDisabledReason: compactContextDisabledReason,
-                    compact: compactActiveContext
-                  }}
-                  workflows={{
-                    artifactFinalization: {
-                      running: artifactFinalizationRetrySessionId !== undefined,
-                      request: requestArtifactFinalizationRetry
-                    },
-                    review: {
-                      disabled: isRequestReviewDisabled,
-                      running: isReviewBusy,
-                      request: requestManualReview
-                    },
-                    saveAsSkill: {
-                      disabled: !saveAsSkillAvailability.enabled,
-                      disabledReason: saveAsSkillAvailability.disabledReason,
-                      running: activeSessionSaveAsSkillRunning,
-                      request: requestSaveAsSkill
-                    },
-                    wslSetup: {
-                      start: () => startWslSetupConversation(scopedProjectId, t)
-                    }
-                  }}
-                  sessionTools={{
-                    exportDiagnostics: sessionDiagnosticsAvailable() ? openDiagnostics : undefined,
-                    togglePin: isSessionPersistenceReady
-                      ? sessionController.actions.togglePin
-                      : undefined,
-                    editSession: isSessionPersistenceReady
-                      ? (session) => {
-                          sessionInfoReturnFocusRef.current = document.activeElement as HTMLElement
-                          sessionController.actions.openEdit(session)
+              }) =>
+                isSpecialistsOpen ? (
+                  <ResizablePanel id="main-content" defaultSize="84%" minSize="30%">
+                    <div className="flex h-full min-h-0 flex-col">
+                      <div className="shrink-0 px-2 py-1 md:hidden">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={t('Open navigation')}
+                          onClick={openMobileSidebar}
+                        >
+                          <PanelLeft className="size-4" aria-hidden="true" />
+                        </Button>
+                      </div>
+                      <SpecialistBrowser
+                        projectName={activeProject?.name}
+                        canSummon={canSummonSpecialist}
+                        summonDisabledReason={summonDisabledReason}
+                        onSummon={summonSpecialist}
+                        onManage={() =>
+                          useSettingsStore.getState().openSettingsToPanel('specialists')
                         }
-                      : undefined,
-                    openSession: (sessionId) => void openForkSource(sessionId),
-                    notebookReference: activeNotebookReference,
-                    openNotebook: openNotebookPreview,
-                    openJobs: sessionController.actions.openJobList,
-                    openJob: sessionController.actions.openJob
-                  }}
-                  subagents={{
-                    unavailable: activeSession
-                      ? delegatedWorkUnavailableBySession[activeSession.id]
-                      : undefined,
-                    stop: async () => {
-                      if (!activeSession) return
-                      // Main selects the Stop scope from the durable branch, so commit the visible
-                      // selection before cancellation can overtake the coalesced background save.
-                      await saveSessionInOrder(
-                        toPersistedSession(
-                          activeSession,
-                          useSessionStore.getState().streamingMessages
+                        onBack={() => setIsSpecialistsOpen(false)}
+                      />
+                    </div>
+                  </ResizablePanel>
+                ) : (
+                  <ConversationPanel
+                    specialistSummonRequest={specialistSummonRequest}
+                    onSpecialistSummonConsumed={consumeSpecialistSummon}
+                    key={JSON.stringify([scopedProjectId, activeSession?.id])}
+                    submissions={conversationSubmissions}
+                    view={{
+                      activeSession,
+                      composerFocusKey: currentDraftKey,
+                      canEditDraft,
+                      persistenceBlocked: persistenceBlockedSessionIds.includes(
+                        activeSession?.id ?? ''
+                      ),
+                      actionError: visibleActionError,
+                      sideChatDisabledReason,
+                      sessionImport: {
+                        projectId: scopedProjectId,
+                        projectName: activeProject?.name ?? t('Project'),
+                        canImport: canImportSessionPackage
+                      }
+                    }}
+                    composer={composer}
+                    conversation={conversation}
+                    sideChat={sideChat}
+                    specialist={sessionController}
+                    layout={{
+                      isPreviewPanelCollapsed,
+                      togglePreviewPanel: togglePreviewPanelFromLayout,
+                      openSidebar: openMobileSidebar,
+                      onOpenLibraryMention
+                    }}
+                    permissions={{
+                      requests: visiblePermissionRequests,
+                      credentialRequests: visibleCredentialRequests,
+                      permissionProfile: activePermissionProfile,
+                      permissionProfileState: activePermissionProfileState,
+                      permissionGrants: activePermissionGrants,
+                      canChangePermissionProfile,
+                      respond: respondToVisiblePermission,
+                      changeProfile: changePermissionProfile,
+                      revokeGrant: revokeActivePermissionGrant,
+                      clearGrants: clearActivePermissionGrants
+                    }}
+                    elicitation={{
+                      requests: visibleElicitationRequests,
+                      respond: respondToElicitation
+                    }}
+                    agentControls={{
+                      ...agentControlAvailability,
+                      canChangeMemory:
+                        agentControlAvailability.canChangeMemory && isGlobalMemoryEnabled,
+                      modelConfiguration: activeAgentConfiguration,
+                      modelUnavailable: agentConfigurationUnavailable,
+                      changeModelConfiguration: changeAgentConfiguration,
+                      autoReviewEnabled: activeAutoReviewEnabled,
+                      memoryEnabled: activeMemoryEnabled,
+                      delegationEnabled: delegationControl.enabled,
+                      delegationPending: delegationControl.pending,
+                      delegationHasLiveAttempts: delegationControl.hasLiveDelegatedAttempts,
+                      canChangeDelegation:
+                        isSessionPersistenceReady &&
+                        delegationControl.frameworkSupported &&
+                        delegationControl.sessionAuthoritative,
+                      delegationDisabledReason: delegationControl.frameworkSupported
+                        ? undefined
+                        : t('The selected agent framework does not support delegated work.'),
+                      memoryDisabledReason: isGlobalMemoryEnabled
+                        ? undefined
+                        : t(
+                            'Memory is off in Settings. Turn it on to use Memory in this conversation.'
+                          ),
+                      enabledComputeHosts: computeHostAccess.enabledProviderIds,
+                      selectedComputeHosts: computeHostAccess.selectedProviderIds,
+                      toggleAutoReview: changeAutoReviewEnabled,
+                      toggleMemory: changeMemoryEnabled,
+                      toggleDelegation: delegationControl.change,
+                      setComputeHostEnabled: computeHostAccess.setHostEnabled,
+                      setComputeHostSelected: computeHostAccess.setHostSelected
+                    }}
+                    contextWindow={{
+                      usage: activeContextUsage,
+                      canCompact: canCompactContext,
+                      compactDisabledReason: compactContextDisabledReason,
+                      compact: compactActiveContext
+                    }}
+                    workflows={{
+                      artifactFinalization: {
+                        running: artifactFinalizationRetrySessionId !== undefined,
+                        request: requestArtifactFinalizationRetry
+                      },
+                      review: {
+                        disabled: isRequestReviewDisabled,
+                        running: isReviewBusy,
+                        request: requestManualReview
+                      },
+                      saveAsSkill: {
+                        disabled: !saveAsSkillAvailability.enabled,
+                        disabledReason: saveAsSkillAvailability.disabledReason,
+                        running: activeSessionSaveAsSkillRunning,
+                        request: requestSaveAsSkill
+                      },
+                      wslSetup: {
+                        start: () => startWslSetupConversation(scopedProjectId, t)
+                      }
+                    }}
+                    sessionTools={{
+                      exportDiagnostics: sessionDiagnosticsAvailable()
+                        ? openDiagnostics
+                        : undefined,
+                      togglePin: isSessionPersistenceReady
+                        ? sessionController.actions.togglePin
+                        : undefined,
+                      editSession: isSessionPersistenceReady
+                        ? (session) => {
+                            sessionInfoReturnFocusRef.current =
+                              document.activeElement as HTMLElement
+                            sessionController.actions.openEdit(session)
+                          }
+                        : undefined,
+                      openSession: (sessionId) => void openForkSource(sessionId),
+                      notebookReference: activeNotebookReference,
+                      openNotebook: openNotebookPreview,
+                      openJobs: sessionController.actions.openJobList,
+                      openJob: sessionController.actions.openJob
+                    }}
+                    subagents={{
+                      unavailable: activeSession
+                        ? delegatedWorkUnavailableBySession[activeSession.id]
+                        : undefined,
+                      stop: async () => {
+                        if (!activeSession) return
+                        // Main selects the Stop scope from the durable branch, so commit the visible
+                        // selection before cancellation can overtake the coalesced background save.
+                        await saveSessionInOrder(
+                          toPersistedSession(
+                            activeSession,
+                            useSessionStore.getState().streamingMessages
+                          )
                         )
-                      )
-                      await window.api.acp.cancel({
-                        sessionId: activeSession.id,
-                        scope: 'subagents'
-                      })
-                    }
-                  }}
-                />
-              )}
+                        await window.api.acp.cancel({
+                          sessionId: activeSession.id,
+                          scope: 'subagents'
+                        })
+                      }
+                    }}
+                  />
+                )
+              }
             />
 
             <EditSessionDialog

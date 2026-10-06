@@ -272,10 +272,10 @@ export function BibliometricsPanel({
       role="dialog"
       aria-label={t('Bibliometrics')}
     >
-      <div className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-2xl">
-        <div className="flex items-center justify-between gap-2 border-b border-border px-5 py-3">
+      <div className="research-tool-shell research-glass flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden">
+        <div className="research-tool-toolbar flex items-center justify-between gap-2 border-b border-border px-5 py-4">
           <div>
-            <h2 className="text-base font-semibold">{t('Bibliometrics')}</h2>
+            <h2 className="font-serif text-xl font-semibold">{t('Bibliometrics')}</h2>
             <p className="text-xs text-muted-foreground">{scopeName}</p>
           </div>
           <div className="flex items-center gap-2">
@@ -295,7 +295,7 @@ export function BibliometricsPanel({
             </button>
           </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+        <div className="research-tool-content research-reading-surface min-h-0 flex-1 overflow-y-auto p-5">
           {loading ? (
             <p className="text-sm text-muted-foreground">
               {t('Analyzing the literature library…')}

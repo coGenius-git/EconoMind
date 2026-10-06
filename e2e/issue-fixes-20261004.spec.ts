@@ -73,11 +73,28 @@ test('opens one independent Settings window while the main Library remains inter
   await page.evaluate(() => window.api.locale.setPreference({ preference: 'en' }))
   await expect(page.getByText('Getting started with EconoMind', { exact: true })).toHaveCount(0)
   const nextWindow = page.context().waitForEvent('page')
-  await page.getByRole('button', { name: 'Model settings', exact: true }).click()
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
   const settingsPage = await nextWindow
   await expect(settingsPage).toHaveURL(/window=settings/)
   const settings = settingsPage.getByRole('dialog', { name: 'Settings', exact: true })
   await expect(settings).toBeVisible()
+  const backdrop = page.locator('[data-slot="settings-window-backdrop"]')
+  if (await settingsPage.evaluate(() => window.api.platform === 'win32')) {
+    const titlebar = settingsPage.getByTestId('windows-titlebar')
+    await expect(titlebar).toBeVisible()
+    await expect(titlebar).toContainText('EconoMind — Settings')
+    expect(await titlebar.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(
+      'rgba(0, 0, 0, 0)'
+    )
+    const header = await titlebar.boundingBox()
+    const surface = await settings.locator('[data-slot="settings-surface"]').boundingBox()
+    expect(surface!.y).toBeGreaterThanOrEqual(header!.y + header!.height)
+  }
+  await expect(backdrop).toBeVisible()
+  expect(await backdrop.evaluate((element) => getComputedStyle(element).backdropFilter)).toContain(
+    'blur('
+  )
+  expect(await backdrop.evaluate((element) => getComputedStyle(element).pointerEvents)).toBe('none')
   await expect(settings.getByRole('button', { name: 'Close settings', exact: true })).toHaveCount(0)
   await expect(settings.getByRole('button', { name: 'Back', exact: true })).toHaveCount(0)
   await expect(settings.getByRole('button', { name: 'Forward', exact: true })).toHaveCount(0)
@@ -85,6 +102,8 @@ test('opens one independent Settings window while the main Library remains inter
   await settingsPage.keyboard.press('Control+k')
   await expect(settings.locator('[aria-label="Search settings"]')).toHaveCount(0)
   await expect(page.getByRole('dialog', { name: 'Settings', exact: true })).toHaveCount(0)
+  await app.focusMainWindow()
+  await expect(backdrop).toBeHidden()
   await page.getByRole('button', { name: 'Library', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Literature library', exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'All references', exact: true }).click()
@@ -93,6 +112,7 @@ test('opens one independent Settings window while the main Library remains inter
     false
   )
   await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await expect(backdrop).toBeVisible()
   expect(
     page
       .context()
@@ -133,6 +153,7 @@ test('opens one independent Settings window while the main Library remains inter
   await settingsPage.evaluate(() => window.api.window.close())
   await discard.getByRole('button', { name: 'Discard changes', exact: true }).click()
   await expect.poll(() => settingsPage.isClosed()).toBe(true)
+  await expect(backdrop).toBeHidden()
   await page.getByRole('button', { name: 'All references', exact: true }).click()
 })
 

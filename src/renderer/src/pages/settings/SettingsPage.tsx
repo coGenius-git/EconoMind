@@ -1120,7 +1120,9 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       }}
     >
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none" />
+        {!standalone ? (
+          <Dialog.Overlay className="research-settings-backdrop fixed inset-0 z-50 data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none" />
+        ) : null}
         <Dialog.Content
           data-slot="settings-dialog"
           className="pointer-events-none fixed inset-0 z-50 outline-none data-[state=closed]:animate-out motion-reduce:data-[state=closed]:animate-none"
@@ -1173,10 +1175,10 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
             data-slot="settings-surface"
             data-state={open ? 'open' : 'closed'}
             className={cn(
-              'pointer-events-auto fixed z-50 flex overflow-hidden overscroll-contain rounded-xl border border-border bg-card text-foreground shadow-dialog outline-none data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:fill-mode-forwards motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none',
+              'research-settings-shell research-glass pointer-events-auto fixed z-50 flex overflow-hidden overscroll-contain text-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:fill-mode-forwards motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none',
               standalone
-                ? 'inset-0 h-dvh w-screen rounded-none border-0 shadow-none'
-                : 'inset-0 h-[100dvh] w-screen rounded-none md:bottom-auto md:left-1/2 md:right-auto md:top-1/2 md:h-[min(688px,calc(100vh-2rem))] md:w-[min(960px,calc(100vw-2rem))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl'
+                ? 'research-settings-native inset-x-0 bottom-0 top-[var(--windows-titlebar-height,0px)] h-[calc(100dvh-var(--windows-titlebar-height,0px))] w-screen rounded-none border-0 shadow-none'
+                : 'inset-0 h-[100dvh] w-screen max-md:rounded-none md:bottom-auto md:left-1/2 md:right-auto md:top-1/2 md:h-[min(688px,calc(100vh-2rem))] md:w-[min(960px,calc(100vw-2rem))] md:-translate-x-1/2 md:-translate-y-1/2'
             )}
           >
             {/* Radix requires a Title/Description for a11y; the native window supplies the visible title. */}
@@ -1220,7 +1222,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
                   aria-hidden={isMobile && !isMobileNavOpen ? true : undefined}
                   inert={isMobile && !isMobileNavOpen ? true : undefined}
                   className={cn(
-                    'fixed inset-y-0 left-0 z-[70] flex min-h-0 w-[min(86vw,320px)] shrink-0 flex-col overflow-hidden border-r border-border bg-background transition-transform duration-200 ease-out md:static md:z-auto md:w-48 md:translate-x-0',
+                    'research-settings-sidebar fixed inset-y-0 left-0 z-[70] flex min-h-0 w-[min(86vw,320px)] shrink-0 flex-col overflow-hidden border-r border-border transition-transform duration-200 ease-out md:static md:z-auto md:w-48 md:translate-x-0',
                     isMobileNavOpen ? 'translate-x-0' : '-translate-x-full'
                   )}
                 >
@@ -1244,7 +1246,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
                                   onClick={() => {
                                     navigatePanel(id, () => setIsMobileNavOpen(false))
                                   }}
-                                  className={`flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-sm ${
+                                  className={`research-sidebar-link flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-sm transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                                     isActive
                                       ? 'bg-muted font-medium text-foreground'
                                       : 'text-muted-foreground hover:bg-muted hover:text-foreground'
@@ -1267,18 +1269,6 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
                     data-slot="settings-navigation-footer"
                     className="shrink-0 border-t border-border px-3 py-2"
                   >
-                    {!standalone ? (
-                      <Dialog.Close asChild>
-                        <Button
-                          variant="ghost"
-                          className="mb-1 h-8 w-full justify-start gap-2 px-2 text-muted-foreground"
-                          aria-label={t('Close settings')}
-                        >
-                          <X className="size-4" aria-hidden="true" />
-                          {t('Close settings')}
-                        </Button>
-                      </Dialog.Close>
-                    ) : null}
                     <a
                       href={APP.links.githubFeedback}
                       target="_blank"
@@ -1301,20 +1291,37 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
               data-slot="settings-main"
               aria-hidden={isMobile && isMobileNavOpen ? true : undefined}
               inert={isMobile && isMobileNavOpen ? true : undefined}
-              className="flex min-h-0 min-w-0 flex-1 flex-col bg-card"
+              className="research-settings-content flex min-h-0 min-w-0 flex-1 flex-col"
             >
-              {isMobile ? (
-                <Button
-                  ref={mobileNavTriggerRef}
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => setIsMobileNavOpen(true)}
-                  aria-label={t('Open settings navigation')}
-                  className="mx-3 mt-3 shrink-0 self-start text-muted-foreground"
-                >
-                  <Menu className="size-4" aria-hidden="true" />
-                </Button>
+              {isMobile || !standalone ? (
+                <div className="flex h-10 shrink-0 items-center justify-end px-3">
+                  {isMobile ? (
+                    <Button
+                      ref={mobileNavTriggerRef}
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => setIsMobileNavOpen(true)}
+                      aria-label={t('Open settings navigation')}
+                      className="mr-auto text-muted-foreground"
+                    >
+                      <Menu className="size-4" aria-hidden="true" />
+                    </Button>
+                  ) : null}
+                  {!standalone ? (
+                    <Dialog.Close asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={t('Close settings')}
+                        className="text-muted-foreground"
+                      >
+                        <X className="size-4" aria-hidden="true" />
+                      </Button>
+                    </Dialog.Close>
+                  ) : null}
+                </div>
               ) : null}
 
               {preflightFailed ? (

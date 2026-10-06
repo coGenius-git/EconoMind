@@ -12,7 +12,7 @@ const fakeWindow = (): EventEmitter & {
   focus: () => void
   restore: () => void
   close: () => void
-  webContents: { send: (...args: unknown[]) => void }
+  webContents: EventEmitter & { send: (...args: unknown[]) => void }
 } =>
   Object.assign(new EventEmitter(), {
     isDestroyed: vi.fn(() => false),
@@ -21,7 +21,7 @@ const fakeWindow = (): EventEmitter & {
     focus: vi.fn(),
     restore: vi.fn(),
     close: vi.fn(),
-    webContents: { send: vi.fn() }
+    webContents: Object.assign(new EventEmitter(), { send: vi.fn() })
   })
 it('reuses one native window for concurrent requests and only delivers its route to that renderer', async () => {
   const owner = fakeWindow()
@@ -61,6 +61,7 @@ it('rejects malformed routes and restricts navigation to the Settings sender', a
     'Invalid Settings route'
   )
   await controller.open(event)
+  vi.mocked(owner.webContents.send).mockClear()
   controller.navigateMain(event, { kind: 'project', id: 'project-1' })
   expect(owner.webContents.send).not.toHaveBeenCalled()
   controller.navigateMain({ sender: settings.webContents } as unknown as IpcMainInvokeEvent, {
@@ -96,6 +97,29 @@ it('rejects malformed routes and restricts navigation to the Settings sender', a
     } as never
   )
   expect(owner.webContents.send).not.toHaveBeenCalled()
+})
+
+it('reports Settings focus to its owner and clears it on blur, minimize, crash, and close', async () => {
+  const owner = fakeWindow()
+  const settings = fakeWindow()
+  const controller = createSettingsWindowController({
+    createWindow: async () => settings as unknown as BrowserWindow,
+    resolveWindow: () => owner as unknown as BrowserWindow
+  })
+  const event = { sender: owner.webContents } as unknown as IpcMainInvokeEvent
+  await controller.open(event)
+  expect(controller.isFocused(event)).toBe(true)
+  expect(
+    controller.isFocused({ sender: settings.webContents } as unknown as IpcMainInvokeEvent)
+  ).toBe(false)
+  expect(owner.webContents.send).toHaveBeenLastCalledWith('window:settings-focus-changed', true)
+  for (const reason of ['blur', 'minimize', 'hide', 'crash', 'closed']) {
+    settings.emit('focus')
+    if (reason === 'crash') settings.webContents.emit('render-process-gone')
+    else settings.emit(reason)
+    expect(controller.isFocused(event)).toBe(false)
+    expect(owner.webContents.send).toHaveBeenLastCalledWith('window:settings-focus-changed', false)
+  }
 })
 
 it('waits for the owning Settings renderer to confirm native close', async () => {

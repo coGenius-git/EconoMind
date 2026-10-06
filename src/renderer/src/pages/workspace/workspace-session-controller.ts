@@ -375,6 +375,7 @@ const useWorkspaceSessionController = ({
           setSessionSpecialistId(sessionId, specialistId)
           if (result?.contextReset) markSpecialistSwitchResetRequired(sessionId)
           clearPending(sessionId)
+          setReconfigureError((current) => (current?.sessionId === sessionId ? null : current))
         })
         .catch((error: unknown) => {
           console.warn('setSessionSpecialist failed', error)
@@ -525,6 +526,9 @@ const useWorkspaceSessionController = ({
   }
   useEffect(() => {
     if (!activeSession || activeSession.specialistBindingPending !== true) return
+    // Main publishes its pending marker as part of a normal switch transaction. Its active
+    // barrier owns success/failure; only mirror a durable recovery marker after that attempt ends.
+    if (barrierInFlightIds.has(activeSession.id)) return
     // The durable Session store is an external source. Mirror its restored recovery state so the
     // existing retry/choose-another interaction remains available after an application restart.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -542,7 +546,7 @@ const useWorkspaceSessionController = ({
             activeSession.specialistId
           )
     )
-  }, [activeSession, setReconfigureError, specialistItems])
+  }, [activeSession, barrierInFlightIds, setReconfigureError, specialistItems])
 
   useEffect(() => {
     if (typeof window.api?.specialist?.list !== 'function') return
