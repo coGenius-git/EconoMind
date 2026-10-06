@@ -12,7 +12,9 @@ export class CnkiPdfDownloadError extends Error {
 const LOGIN = /\/(?:login|passport|sso|signin)(?:\/|$)/iu
 const VERIFICATION = /\/(?:verify|captcha|checkcode)(?:\/|$)/iu
 const PDF_CONTROL =
-  '#pdfDown:visible, a:has-text("PDF下载"):visible, a:has-text("PDF 下载"):visible'
+  '#pdfDown:visible, a[name="pdfDown"]:visible, .btn-dlpdf > a:visible, ' +
+  '#DownLoadParts a:has-text("PDF"):visible, ' +
+  'a:has-text("PDF下载"):visible, a:has-text("PDF 下载"):visible'
 
 function cnkiUrl(raw: string): URL {
   const url = new URL(raw)
