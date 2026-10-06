@@ -6744,6 +6744,24 @@
     "Write a literature review on “[how enterprise digital transformation affects innovation performance]” using the papers I upload or specify.\n\nOrganize the review by theory, mechanisms and methods. Compare agreement, disagreement and applicability rather than listing abstracts. Explain limitations and evidence-supported directions for further research.\n\nFirst provide a literature comparison table, then a draft with citations. Trace claims to verifiable sources, distinguish abstract-only reading from verified full text, and list specific gaps requiring additional papers.": "请围绕“[企业数字化转型如何影响创新绩效]”，基于我上传或指定的文献撰写一份文献综述。\n\n请按理论视角、影响机制和研究方法组织内容，比较不同研究的共识、分歧与适用条件，避免逐篇堆砌摘要。在此基础上，说明现有研究的局限，以及有证据支持的后续研究方向。\n\n请先整理文献对比表，再完成带引用的综述草稿。具体论点应对应可核验的来源，标明仅阅读摘要或尚未核实的内容；需要补充文献时，请列出具体缺口。",
     "I want to study “[whether enterprise digital transformation promotes innovation performance]” using [annual data on Chinese listed companies from 2015 to 2025]. Develop an executable research design.\n\nDefine constructs and variable measurements, compare suitable methods, and explain identification assumptions, endogeneity risks, diagnostics and robustness analyses.\n\nIf my data are sufficient, write and run analysis code. Otherwise provide the design, a data requirements table and a code skeleton explicitly marked as not executed.": "我想研究“[企业数字化转型是否促进创新绩效]”，计划使用[中国上市公司2015—2025年的企业年度数据]。请帮我形成可执行的研究设计。\n\n请明确核心构念与变量的测量方式，比较适合这个问题的研究方法，说明识别假设、主要内生性风险，以及对应的诊断和稳健性分析。\n\n如果我提供的数据足够，请编写并运行分析代码；如果暂时缺少数据，请先给出设计方案、数据需求表和标注未运行的代码框架。",
     "Audit and prepare my uploaded [enterprise annual panel data] for research on “[enterprise digital transformation and innovation performance]”.\n\nCheck observation units, years, definitions and measurement units; diagnose duplicate keys, missing values, outliers and merge matching. Then produce appropriate descriptive statistics and charts.\n\nPreserve the original data. Save cleaned copies and provide reproducible code, a data dictionary and sample-flow records. Explain the rationale and alternatives before treatments that materially change the sample or conclusions.": "请帮我检查并整理上传的[企业年度面板数据]，为研究“[企业数字化转型与创新绩效]”做好准备。\n\n请先核对观测单位、年份范围、变量含义和计量单位，检查主键重复、缺失值、异常值，以及多张表合并时的匹配情况，再完成必要的描述统计和图表。\n\n请保留原始数据，将处理结果保存为副本，并交付清洗代码、数据字典和样本流转记录。对于会明显改变样本或结论的处理，先说明依据与备选方案。",
-    "Review my uploaded [paper draft / research proposal], focusing on the research question and contribution, theory, methods and data, interpretation and whether citations support the claims.\n\nRank findings by impact. For each finding, identify its location, evidence and actionable correction, prioritizing issues affecting the main conclusions.\n\nIf I provide data and code, verify key results against the text, tables and figures. For now provide review comments and preserve the original. Separately identify material that was not provided or could not be verified.": "请评审我上传的[论文初稿／开题报告]，重点检查研究问题与贡献、理论逻辑、方法与数据、结果解释，以及引用是否支持相应论点。\n\n请按影响程度排序，每条意见注明原文位置、具体问题、判断依据和可执行的修改建议，优先指出影响核心结论的问题。\n\n如果我提供了数据和代码，请核验关键结果与正文、表图是否一致。本次先交付评审意见，保留原稿；未提供或无法核验的内容请单独注明。"
+    "Review my uploaded [paper draft / research proposal], focusing on the research question and contribution, theory, methods and data, interpretation and whether citations support the claims.\n\nRank findings by impact. For each finding, identify its location, evidence and actionable correction, prioritizing issues affecting the main conclusions.\n\nIf I provide data and code, verify key results against the text, tables and figures. For now provide review comments and preserve the original. Separately identify material that was not provided or could not be verified.": "请评审我上传的[论文初稿／开题报告]，重点检查研究问题与贡献、理论逻辑、方法与数据、结果解释，以及引用是否支持相应论点。\n\n请按影响程度排序，每条意见注明原文位置、具体问题、判断依据和可执行的修改建议，优先指出影响核心结论的问题。\n\n如果我提供了数据和代码，请核验关键结果与正文、表图是否一致。本次先交付评审意见，保留原稿；未提供或无法核验的内容请单独注明。",
+    "Choose a Specialist for your research task.": "为你的研究任务选择一位专家。",
+    "Manage Specialists": "管理专家",
+    "Specialist details": "专家详情",
+    "Role and tasks": "职责与任务",
+    "Try starting with": "试试这样开始",
+    "Opens a new conversation in this project. Edit your task before sending.": "将在当前项目中新建对话。发送前可编辑任务。",
+    "No Specialists in this category.": "此分类中暂无专家。",
+    "Browse another category or manage your Specialists.": "浏览其他分类，或管理你的专家。",
+    "Open a project to summon a Specialist.": "打开一个项目即可召唤专家。",
+    "This Specialist is disabled. Enable it in Manage Specialists.": "此专家已停用。请在“管理专家”中启用。",
+    "This Specialist needs setup. Complete it in Manage Specialists.": "此专家需要配置。请在“管理专家”中完成配置。",
+    "Specialist data must be repaired before summoning.": "召唤前需要修复专家数据。",
+    "Specialists are unavailable here.": "此处无法使用专家。",
+    "Configured instructions": "已配置的指令",
+    "Select a Specialist to view details.": "选择一位专家查看详情。",
+    "Summon Specialist": "召唤专家",
+    "This Project is archived. Open an active Project to summon a Specialist.": "此项目已归档。请打开一个未归档的项目来召唤专家。",
+    "Finish or discard the setup draft before summoning a Specialist.": "召唤专家前，请先完成或放弃配置草稿。"
   }
 }

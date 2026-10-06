@@ -6744,6 +6744,24 @@
     "Write a literature review on “[how enterprise digital transformation affects innovation performance]” using the papers I upload or specify.\n\nOrganize the review by theory, mechanisms and methods. Compare agreement, disagreement and applicability rather than listing abstracts. Explain limitations and evidence-supported directions for further research.\n\nFirst provide a literature comparison table, then a draft with citations. Trace claims to verifiable sources, distinguish abstract-only reading from verified full text, and list specific gaps requiring additional papers.": "請圍繞「[企業數位轉型如何影響創新績效]」，基於我上傳或指定的文獻撰寫一份文獻綜述。\n\n請按理論視角、影響機制和研究方法組織內容，比較不同研究的共識、分歧與適用條件，避免逐篇堆砌摘要。在此基礎上，說明現有研究的侷限，以及有證據支持的後續研究方向。\n\n請先整理文獻對比表，再完成帶引用的綜述草稿。具體論點應對應可核驗的來源，標明僅閱讀摘要或尚未核實的內容；需要補充文獻時，請列出具體缺口。",
     "I want to study “[whether enterprise digital transformation promotes innovation performance]” using [annual data on Chinese listed companies from 2015 to 2025]. Develop an executable research design.\n\nDefine constructs and variable measurements, compare suitable methods, and explain identification assumptions, endogeneity risks, diagnostics and robustness analyses.\n\nIf my data are sufficient, write and run analysis code. Otherwise provide the design, a data requirements table and a code skeleton explicitly marked as not executed.": "我想研究「[企業數位轉型是否促進創新績效]」，計畫使用[中國上市公司2015—2025年的企業年度資料]。請幫我形成可執行的研究設計。\n\n請明確核心構念與變數的測量方式，比較適合這個問題的研究方法，說明識別假設、主要內生性風險，以及對應的診斷和穩健性分析。\n\n如果我提供的資料足夠，請編寫並執行分析程式碼；如果暫時缺少資料，請先給出設計方案、資料需求表和標註尚未執行的程式碼架構。",
     "Audit and prepare my uploaded [enterprise annual panel data] for research on “[enterprise digital transformation and innovation performance]”.\n\nCheck observation units, years, definitions and measurement units; diagnose duplicate keys, missing values, outliers and merge matching. Then produce appropriate descriptive statistics and charts.\n\nPreserve the original data. Save cleaned copies and provide reproducible code, a data dictionary and sample-flow records. Explain the rationale and alternatives before treatments that materially change the sample or conclusions.": "請幫我檢查並整理上傳的[企業年度面板資料]，為研究「[企業數位轉型與創新績效]」做好準備。\n\n請先核對觀測單位、年份範圍、變數含義和計量單位，檢查主鍵重複、缺失值、異常值，以及多張表合併時的匹配情況，再完成必要的描述統計和圖表。\n\n請保留原始資料，將處理結果儲存為副本，並交付清理程式碼、資料字典和樣本流轉記錄。對於會明顯改變樣本或結論的處理，先說明依據與備選方案。",
-    "Review my uploaded [paper draft / research proposal], focusing on the research question and contribution, theory, methods and data, interpretation and whether citations support the claims.\n\nRank findings by impact. For each finding, identify its location, evidence and actionable correction, prioritizing issues affecting the main conclusions.\n\nIf I provide data and code, verify key results against the text, tables and figures. For now provide review comments and preserve the original. Separately identify material that was not provided or could not be verified.": "請評審我上傳的[論文初稿／開題報告]，重點檢查研究問題與貢獻、理論邏輯、方法與資料、結果解釋，以及引用是否支持相應論點。\n\n請按影響程度排序，每條意見註明原文位置、具體問題、判斷依據和可執行的修改建議，優先指出影響核心結論的問題。\n\n如果我提供了資料和程式碼，請核驗關鍵結果與正文、表圖是否一致。本次先交付評審意見，保留原稿；未提供或無法核驗的內容請單獨註明。"
+    "Review my uploaded [paper draft / research proposal], focusing on the research question and contribution, theory, methods and data, interpretation and whether citations support the claims.\n\nRank findings by impact. For each finding, identify its location, evidence and actionable correction, prioritizing issues affecting the main conclusions.\n\nIf I provide data and code, verify key results against the text, tables and figures. For now provide review comments and preserve the original. Separately identify material that was not provided or could not be verified.": "請評審我上傳的[論文初稿／開題報告]，重點檢查研究問題與貢獻、理論邏輯、方法與資料、結果解釋，以及引用是否支持相應論點。\n\n請按影響程度排序，每條意見註明原文位置、具體問題、判斷依據和可執行的修改建議，優先指出影響核心結論的問題。\n\n如果我提供了資料和程式碼，請核驗關鍵結果與正文、表圖是否一致。本次先交付評審意見，保留原稿；未提供或無法核驗的內容請單獨註明。",
+    "Choose a Specialist for your research task.": "為你的研究任務選擇一位專家。",
+    "Manage Specialists": "管理專家",
+    "Specialist details": "專家詳情",
+    "Role and tasks": "職責與任務",
+    "Try starting with": "試試這樣開始",
+    "Opens a new conversation in this project. Edit your task before sending.": "將在目前專案中建立新對話。傳送前可編輯任務。",
+    "No Specialists in this category.": "此分類中暫無專家。",
+    "Browse another category or manage your Specialists.": "瀏覽其他分類，或管理你的專家。",
+    "Open a project to summon a Specialist.": "開啟一個專案即可召喚專家。",
+    "This Specialist is disabled. Enable it in Manage Specialists.": "此專家已停用。請在「管理專家」中啟用。",
+    "This Specialist needs setup. Complete it in Manage Specialists.": "此專家需要設定。請在「管理專家」中完成設定。",
+    "Specialist data must be repaired before summoning.": "召喚前需要修復專家資料。",
+    "Specialists are unavailable here.": "此處無法使用專家。",
+    "Configured instructions": "已設定的指令",
+    "Select a Specialist to view details.": "選擇一位專家查看詳情。",
+    "Summon Specialist": "召喚專家",
+    "This Project is archived. Open an active Project to summon a Specialist.": "此專案已封存。請開啟一個未封存的專案來召喚專家。",
+    "Finish or discard the setup draft before summoning a Specialist.": "召喚專家前，請先完成或放棄設定草稿。"
   }
 }

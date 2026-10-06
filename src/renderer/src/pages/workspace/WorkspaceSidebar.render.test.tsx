@@ -522,10 +522,11 @@ describe('WorkspaceSidebar accessible render', () => {
     ).not.toBe('Read-only')
   })
 
-  it('keeps the sidebar card inset even on both sides', async () => {
+  it('preserves the shared glass sidebar surface and message controls', async () => {
     const html = await renderSidebar([createSession({ id: 'session-a' })])
 
-    expect(html).toContain('m-[0.7px] flex min-h-0 flex-1 flex-col rounded-lg')
+    expect(html).toContain('research-workspace-sidebar')
+    expect(html).toContain('research-sidebar-surface research-glass')
     expect(html).not.toContain('mr-0')
     expect(html).toContain('aria-label="Messages, no unread messages"')
   })
@@ -2522,12 +2523,13 @@ describe('WorkspaceSidebar accessible render', () => {
     expect(onDeleteSession).toHaveBeenCalledWith(sessions[0])
   })
 
-  it('renders Customize, Files, Compute, and Literature after New and wires their entries', async () => {
+  it('renders the project tools and Specialists after New and wires their entries', async () => {
     const { WorkspaceSidebarView } = await import('./WorkspaceSidebar')
     const onOpenFiles = vi.fn()
     const onOpenLiterature = vi.fn()
     const onOpenSettings = vi.fn()
     const onOpenCompute = vi.fn()
+    const onOpenSpecialists = vi.fn()
     const tree = WorkspaceSidebarView({
       now: Date.now(),
       projectName: 'Example project',
@@ -2544,6 +2546,8 @@ describe('WorkspaceSidebar accessible render', () => {
       isLibraryOpen: true,
       isComputeOpen: false,
       onOpenCompute,
+      onOpenSpecialists,
+      isSpecialistsOpen: true,
       onOpenSession: vi.fn(),
       onRenameSession: vi.fn(),
       canDownloadArtifacts: true,
@@ -2564,12 +2568,20 @@ describe('WorkspaceSidebar accessible render', () => {
     const filesButton = buttons.find((button) => getTextContent(button).trim() === 'Files')
     const literatureButton = buttons.find((button) => getTextContent(button).trim() === 'Library')
     const computeButton = buttons.find((button) => getTextContent(button).trim() === 'Compute')
+    const specialistsButton = buttons.find(
+      (button) => getTextContent(button).trim() === 'Specialists'
+    )
 
     expect(newButtonIndex).toBeGreaterThanOrEqual(0)
     expect(buttons[newButtonIndex + 1]).toBe(customizeButton)
     expect(buttons[newButtonIndex + 2]).toBe(filesButton)
     expect(buttons[newButtonIndex + 3]).toBe(computeButton)
     expect(buttons[newButtonIndex + 4]).toBe(literatureButton)
+    expect(buttons[newButtonIndex + 5]).toBe(specialistsButton)
+    expect(specialistsButton?.props['aria-controls']).toBe('specialist-browser')
+    expect(specialistsButton?.props['aria-pressed']).toBe(true)
+    ;(specialistsButton?.props.onClick as () => void)()
+    expect(onOpenSpecialists).toHaveBeenCalledOnce()
     expect(collectElements(customizeButton).some((element) => element.type === Toolbox)).toBe(true)
     expect(filesButton?.props['aria-controls']).toBe('right-panel')
     expect(filesButton?.props['aria-pressed']).toBe(true)

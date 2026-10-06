@@ -2960,14 +2960,17 @@ describe('ConversationPanel composer intake', () => {
     expect(removeAttachment).toHaveBeenCalledWith(attachment)
   })
 
-  it('uses a flat border without a card shadow', () => {
+  it('uses a frosted composer with a separate readable draft field', () => {
     renderPanel()
 
     const composerForm = getComposerForm()
 
     expect(composerForm.classList.contains('border')).toBe(true)
-    expect(composerForm.classList.contains('border-border-200')).toBe(true)
-    expect(composerForm.classList.contains('shadow-card-opaque')).toBe(false)
+    expect(composerForm.classList.contains('research-composer')).toBe(true)
+    expect(composerForm.classList.contains('bg-bg-000')).toBe(false)
+    expect(composerForm.querySelector('.research-composer-field [role="textbox"]')).toBe(
+      getComposerEditor()
+    )
   })
 
   it('stages a pasted non-image file', () => {
@@ -6767,7 +6770,7 @@ describe('ConversationPanel notebook bar', () => {
 
     renderPanel({ view: { activeSession: undefined } })
 
-    expect(container.querySelector('div.min-h-9.shadow-card')).toBeNull()
+    expect(container.querySelector('[data-testid="composer-context-strip"]')).toBeNull()
   })
 
   it('keeps the Notebook chrome available when queued work exists before a notebook reference', () => {
@@ -6789,7 +6792,7 @@ describe('ConversationPanel notebook bar', () => {
 
     const queueTrigger = container.querySelector('[data-testid="composer-queue-trigger"]')
     expect(queueTrigger).not.toBeNull()
-    expect(queueTrigger?.parentElement?.classList.contains('min-h-[68px]')).toBe(true)
+    expect(queueTrigger?.parentElement?.getAttribute('data-testid')).toBe('composer-context-strip')
     expect(container.querySelector('[aria-label="Open notebook"]')).toBeNull()
   })
 
@@ -6808,7 +6811,7 @@ describe('ConversationPanel notebook bar', () => {
     expect(container.querySelector('[data-testid="background-tasks-chip"]')).toBeNull()
   })
 
-  it('keeps unavailable Specialist guidance above the joined Notebook and composer dock', () => {
+  it('keeps unavailable Specialist guidance above the Notebook toolbar and composer', () => {
     renderPanel({
       view: { activeSession: { ...session, specialistId: 'deleted-specialist' } },
       sessionTools: { notebookReference },
@@ -6821,7 +6824,7 @@ describe('ConversationPanel notebook bar', () => {
     expect(
       notice.compareDocumentPosition(notebookBar) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy()
-    expect(notebookBar.nextElementSibling?.contains(getComposerForm())).toBe(true)
+    expect(notebookBar.parentElement).toBe(getComposerForm())
     expect(getComposerEditor().getAttribute('contenteditable')).toBe('true')
     expect(
       container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled
@@ -6850,7 +6853,7 @@ describe('ConversationPanel notebook bar', () => {
     const queueTrigger = container.querySelector('[data-testid="composer-queue-trigger"]')
     expect(queueTrigger?.parentElement).toBe(notebookBar)
     expect(notebookBar?.lastElementChild).toBe(queueTrigger)
-    expect(getComposerForm().contains(queueTrigger)).toBe(false)
+    expect(getComposerForm().contains(queueTrigger)).toBe(true)
 
     act(() => (queueTrigger as HTMLButtonElement).click())
     expect(getComposerForm().querySelector('[data-testid="composer-queue-item"]')).not.toBeNull()
@@ -6918,7 +6921,6 @@ describe('ConversationPanel notebook bar', () => {
     const jobBar = container.querySelector('[data-testid="background-tasks-chip"]')?.parentElement
 
     expect(jobBar?.classList.contains('min-h-9')).toBe(true)
-    expect(jobBar?.classList.contains('bg-bg-000')).toBe(true)
     expect(jobBar?.classList.contains('motion-safe:animate-in')).toBe(false)
   })
 

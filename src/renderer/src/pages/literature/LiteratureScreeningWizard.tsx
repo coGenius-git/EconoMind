@@ -203,8 +203,11 @@ function ScreeningWorkbench({
     (value === 3 && !!workflow?.parseConfirmed) ||
     (value >= 4 && !!workflow?.screeningConfirmed)
   return (
-    <section className="flex min-h-0 flex-1 bg-background" aria-label={t('Literature screening')}>
-      <aside className="flex w-44 shrink-0 flex-col border-r border-border border-border border-border bg-muted/20 p-3 xl:w-48">
+    <section
+      className="research-library-shell research-glass flex min-h-0 flex-1 overflow-hidden"
+      aria-label={t('Literature screening')}
+    >
+      <aside className="research-library-sidebar flex w-44 shrink-0 flex-col border-r p-3 xl:w-48">
         <Button variant="ghost" className="justify-start px-2" onClick={onClose}>
           <ArrowLeft className="mr-2 size-4" />
           {t('Back to library')}
@@ -220,7 +223,7 @@ function ScreeningWorkbench({
               aria-current={step === i + 1 && !!workflow ? 'step' : undefined}
               onClick={() => setStep(i + 1)}
               className={cn(
-                'flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm disabled:opacity-40',
+                'research-sidebar-link flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40',
                 step === i + 1 && workflow
                   ? 'bg-primary/10 font-medium text-primary'
                   : 'text-muted-foreground hover:bg-muted'
@@ -250,14 +253,14 @@ function ScreeningWorkbench({
           </p>
         </div>
       </aside>
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="research-library-content research-reading-surface flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border border-border border-border px-6 py-5">
           <div className="min-w-0">
             <p className="text-xs text-muted-foreground">
               {t('Literature screening')}
               {workflow ? ` / ${t(STEPS[step - 1])}` : ''}
             </p>
-            <h1 className="mt-1 truncate text-2xl font-semibold tracking-tight">
+            <h1 className="mt-1 truncate font-serif text-2xl font-semibold tracking-tight">
               {workflow && selecting !== 'create' ? workflow.config.name : t('Screening tasks')}
             </h1>
           </div>

@@ -1307,7 +1307,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       }}
     >
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none" />
+        <Dialog.Overlay className="research-settings-backdrop fixed inset-0 z-50 data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none" />
         <Dialog.Content
           data-slot="settings-dialog"
           className="pointer-events-none fixed inset-0 z-50 outline-none data-[state=closed]:animate-out motion-reduce:data-[state=closed]:animate-none"
@@ -1370,10 +1370,10 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
             data-slot="settings-surface"
             data-state={open ? 'open' : 'closed'}
             className={cn(
-              'pointer-events-auto fixed z-50 flex overflow-hidden overscroll-contain rounded-xl border border-border bg-card text-foreground shadow-dialog outline-none data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:fill-mode-forwards motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none',
+              'research-settings-shell research-glass pointer-events-auto fixed z-50 flex overflow-hidden overscroll-contain text-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:fill-mode-forwards motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none',
               isExpanded
-                ? 'inset-0 rounded-none md:inset-4 md:rounded-xl'
-                : 'inset-0 h-[100dvh] w-screen rounded-none md:bottom-auto md:left-1/2 md:right-auto md:top-1/2 md:h-[min(688px,calc(100vh-2rem))] md:w-[min(960px,calc(100vw-2rem))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl'
+                ? 'inset-0 max-md:rounded-none md:inset-4'
+                : 'inset-0 h-[100dvh] w-screen max-md:rounded-none md:bottom-auto md:left-1/2 md:right-auto md:top-1/2 md:h-[min(688px,calc(100vh-2rem))] md:w-[min(960px,calc(100vw-2rem))] md:-translate-x-1/2 md:-translate-y-1/2'
             )}
           >
             {/* Radix requires a Title/Description for a11y; the visible panel title lives in the header. */}
@@ -1417,7 +1417,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
                   aria-hidden={isMobile && !isMobileNavOpen ? true : undefined}
                   inert={isMobile && !isMobileNavOpen ? true : undefined}
                   className={cn(
-                    'fixed inset-y-0 left-0 z-[70] flex min-h-0 w-[min(86vw,320px)] shrink-0 flex-col overflow-hidden border-r border-border bg-background transition-transform duration-200 ease-out md:static md:z-auto md:w-48 md:translate-x-0',
+                    'research-settings-sidebar fixed inset-y-0 left-0 z-[70] flex min-h-0 w-[min(86vw,320px)] shrink-0 flex-col overflow-hidden border-r border-border transition-transform duration-200 ease-out md:static md:z-auto md:w-48 md:translate-x-0',
                     isMobileNavOpen ? 'translate-x-0' : '-translate-x-full'
                   )}
                 >
@@ -1454,7 +1454,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
                                   onClick={() => {
                                     navigatePanel(id, () => setIsMobileNavOpen(false))
                                   }}
-                                  className={`flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-sm ${
+                                  className={`research-sidebar-link flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-sm transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                                     isActive
                                       ? 'bg-muted font-medium text-foreground'
                                       : 'text-muted-foreground hover:bg-muted hover:text-foreground'
@@ -1499,10 +1499,10 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
               data-slot="settings-main"
               aria-hidden={isMobile && isMobileNavOpen ? true : undefined}
               inert={isMobile && isMobileNavOpen ? true : undefined}
-              className="flex min-h-0 min-w-0 flex-1 flex-col bg-card"
+              className="research-settings-content flex min-h-0 min-w-0 flex-1 flex-col"
             >
               <TooltipProvider>
-                <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border bg-card px-2 md:px-3">
+                <div className="research-settings-toolbar flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-2 md:px-3">
                   <div className="flex min-w-0 items-center gap-1">
                     <Tooltip>
                       <TooltipTrigger asChild>

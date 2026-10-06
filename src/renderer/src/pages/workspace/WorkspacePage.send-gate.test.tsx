@@ -32,8 +32,11 @@ import {
   setDefaultWorkspaceAgentSettings
 } from './workspace-page-test-fixtures'
 
+;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
 // Capture the ConversationPanel props the page computes, notably canSendMessage and the draft callback.
 let conversationProps: Parameters<(typeof import('./ConversationPanel'))['ConversationPanel']>[0]
+let sidebarProps: Parameters<(typeof import('./WorkspaceSidebar'))['WorkspaceSidebar']>[0]
 
 const runtime = vi.hoisted(() => ({
   actionError: null as string | null,
@@ -79,7 +82,10 @@ vi.mock('@/lib/acp/useWorkspaceAgentRuntime', () => ({
 }))
 
 vi.mock('./WorkspaceSidebar', () => ({
-  WorkspaceSidebar: (): React.JSX.Element => <aside />
+  WorkspaceSidebar: (props: typeof sidebarProps): React.JSX.Element => {
+    sidebarProps = props
+    return <aside />
+  }
 }))
 
 vi.mock('./ConversationPanel', () => ({
@@ -264,6 +270,32 @@ describe('WorkspacePage send gate while compacting', () => {
       )
     })
   }
+
+  it('clears the prompt when New is clicked on an existing new-conversation draft', async () => {
+    useSessionStore.setState({ selectedSessionId: undefined })
+    await renderPage()
+    await act(async () => {
+      conversationProps.composer.actions.changeDoc(textDoc('Old Specialist example'))
+    })
+    await act(async () => sidebarProps.onNewConversation())
+    expect(conversationProps.composer.view.doc.nodes).toEqual([])
+  })
+
+  it('opens a blank new conversation and preserves the outgoing session draft', async () => {
+    useSessionStore.setState({ selectedSessionId: undefined })
+    await renderPage()
+    await act(async () => {
+      conversationProps.composer.actions.changeDoc(textDoc('Old Specialist example'))
+    })
+    await act(async () => useSessionStore.getState().selectSession('sess-a'))
+    await act(async () => {
+      conversationProps.composer.actions.changeDoc(textDoc('Session question'))
+    })
+    await act(async () => sidebarProps.onNewConversation())
+    expect(conversationProps.composer.view.doc.nodes).toEqual([])
+    await act(async () => useSessionStore.getState().selectSession('sess-a'))
+    expect(conversationProps.composer.view.doc).toEqual(textDoc('Session question'))
+  })
 
   it.each(['codex-shared', 'codex-isolated'] as const)(
     'keeps Side chat available when the global main provider changes to %s',

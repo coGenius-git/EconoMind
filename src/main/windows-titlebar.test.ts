@@ -173,6 +173,23 @@ describe('Windows title bar native adapter', () => {
     mocks.handlers.get('window:update-titlebar')!(event, { color: 'red', symbolColor: '#abcdef' })
     expect(window.setTitleBarOverlay).toHaveBeenCalledTimes(1)
   })
+  it('accepts a transparent native background while requiring an opaque symbol color', () => {
+    const { event, window } = install()
+    mocks.handlers.get('window:update-titlebar')!(event, {
+      color: '#00000000',
+      symbolColor: '#172735'
+    })
+    expect(window.setTitleBarOverlay).toHaveBeenCalledWith({
+      color: '#00000000',
+      symbolColor: '#172735',
+      height: 45
+    })
+    mocks.handlers.get('window:update-titlebar')!(event, {
+      color: '#00000000',
+      symbolColor: 'transparent'
+    })
+    expect(window.setTitleBarOverlay).toHaveBeenCalledTimes(1)
+  })
   it('rejects untrusted frames, secondary windows, invalid groups, anchors and labels', () => {
     const { event } = install()
     expect(show({ ...event, senderFrame: {} } as IpcMainInvokeEvent)).toBeNull()

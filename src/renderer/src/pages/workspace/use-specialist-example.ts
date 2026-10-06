@@ -53,7 +53,7 @@ export const useSpecialistExample = ({
       (candidate) => candidate.kind !== 'reviewer' && candidate.id === request.id
     )
     const text = builtinSpecialistExample(item, t)
-    if (text === undefined && lastExample.current?.scopeKey !== scopeKey) return
+    if (text === undefined && docToText(doc).trim() === '') return
     const nextText = text ?? ''
     lastExample.current = text ? { scopeKey, text } : null
     changeDoc(nextText ? { nodes: [{ type: 'text', text: nextText }] } : { nodes: [] }, {
@@ -65,15 +65,16 @@ export const useSpecialistExample = ({
   return (id) => {
     const plainTextOnly = doc.nodes.every((node) => node.type === 'text')
     const text = docToText(doc)
+    // The panel remounts on navigation, but the composer restores its draft. Recognize an exact
+    // builtin example again without mistaking edited text or rich references for a template.
+    const untouchedExample =
+      (lastExample.current?.scopeKey === scopeKey && text === lastExample.current.text) ||
+      items.some((item) => builtinSpecialistExample(item, t) === text)
     setRequest({
       scopeKey,
       id,
       baseline: JSON.stringify(doc),
-      replaceable:
-        canEdit &&
-        plainTextOnly &&
-        (text.trim() === '' ||
-          (lastExample.current?.scopeKey === scopeKey && text === lastExample.current.text))
+      replaceable: canEdit && plainTextOnly && (text.trim() === '' || untouchedExample)
     })
     select(id)
   }

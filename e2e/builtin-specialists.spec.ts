@@ -127,6 +127,46 @@ test('switches examples through both menus and preserves an edited draft', async
   await page.screenshot({ path: testInfo.outputPath('literature-review-example-zh.png') })
 })
 
+test('switches restored examples and clears the prompt when starting a new conversation', async ({
+  app
+}) => {
+  const page = await app.completeOnboarding()
+  await page.evaluate(() => window.api.locale.setPreference({ preference: 'en' }))
+  const projectName = 'Restored Specialist drafts'
+  await createProject(page, projectName)
+  const composer = page.getByRole('textbox', { name: 'Ask anything' })
+  const chooseSpecialist = async (id: string): Promise<void> => {
+    await page.getByTestId('composer-controls-trigger').click()
+    await page.getByTestId('specialist-submenu-trigger').press('ArrowRight')
+    await page.getByTestId(`specialist-option-${id}`).click()
+  }
+  const returnToProject = async (): Promise<void> => {
+    await page.getByRole('button', { name: 'All projects', exact: true }).click()
+    await page
+      .getByRole('region', { name: 'Projects', exact: true })
+      .getByRole('button', { name: projectName, exact: true })
+      .click()
+  }
+  await chooseSpecialist('literature-agent')
+  await expect(composer).toContainText(exampleMarkers['literature-agent'])
+
+  // Leaving the workspace remounts the panel, while its composer draft survives navigation.
+  await returnToProject()
+  await expect(composer).toContainText(exampleMarkers['literature-agent'])
+  await chooseSpecialist('literature-review-agent')
+  await expect(composer).toContainText(exampleMarkers['literature-review-agent'])
+
+  await page.getByRole('button', { name: 'New', exact: true }).click()
+  await expect(composer).toBeEmpty()
+  await chooseSpecialist('data-agent')
+  await expect(composer).toContainText(exampleMarkers['data-agent'])
+  await page.getByRole('button', { name: 'New', exact: true }).click()
+  await expect(composer).toBeEmpty()
+  await returnToProject()
+  await expect(composer).toBeEmpty()
+  expect((await page.evaluate(() => window.api.sessions.loadAll())).sessions).toHaveLength(0)
+})
+
 test('prefills after an existing conversation changes Specialist', async ({ app }) => {
   test.setTimeout(180_000)
   await app.completeOnboarding()

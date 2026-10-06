@@ -41,18 +41,18 @@ export function ResearchWorkbenchHeader({
     }
   ]
   return (
-    <header className="research-workbench-header flex shrink-0 flex-wrap items-center gap-x-6 border-b border-border bg-background px-5 lg:px-8">
+    <header className="research-workbench-header research-glass flex shrink-0 flex-wrap items-center">
       <button
         type="button"
         onClick={onHome}
         aria-label={t('Back to Home')}
-        className="py-4 font-serif text-2xl font-semibold tracking-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="research-brand shrink-0 rounded-full px-2 py-1.5 font-serif text-[22px] font-semibold text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         EconoMind
       </button>
       <nav
         aria-label={t('Workbench modules')}
-        className="order-3 flex w-full items-stretch gap-1 overflow-x-auto md:order-none md:mx-auto md:w-auto lg:gap-5"
+        className="research-module-nav order-3 w-full min-w-0 items-center gap-1 md:order-none md:mx-auto md:w-auto"
       >
         {links.map(({ label, icon: Icon, onClick, active }) => (
           <button
@@ -61,8 +61,10 @@ export function ResearchWorkbenchHeader({
             onClick={onClick}
             aria-current={active ? 'page' : undefined}
             className={cn(
-              'flex shrink-0 items-center gap-2 border-b-2 border-transparent px-3 py-4 text-sm transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:py-5',
-              active ? 'border-primary font-medium text-primary' : 'text-muted-foreground'
+              'research-module-link flex min-h-10 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+              active
+                ? 'font-medium text-primary'
+                : 'text-muted-foreground hover:bg-primary/5 hover:text-foreground'
             )}
           >
             <Icon className="size-4" aria-hidden="true" />
@@ -70,17 +72,19 @@ export function ResearchWorkbenchHeader({
           </button>
         ))}
       </nav>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="ml-auto md:ml-0"
-        aria-label={settingsLabel ?? t('Settings')}
-        onClick={onSettings}
-      >
-        <Settings className="size-4" aria-hidden="true" />
-      </Button>
-      {actions}
+      <div className="research-header-actions ml-auto flex shrink-0 items-center gap-1 md:ml-0">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="rounded-full text-muted-foreground hover:text-foreground"
+          aria-label={settingsLabel ?? t('Settings')}
+          onClick={onSettings}
+        >
+          <Settings className="size-4" aria-hidden="true" />
+        </Button>
+        {actions}
+      </div>
     </header>
   )
 }

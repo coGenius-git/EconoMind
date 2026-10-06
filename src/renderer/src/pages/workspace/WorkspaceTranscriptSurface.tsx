@@ -52,7 +52,11 @@ export const WorkspaceAssistantMessageSurface = ({
   className,
   ...props
 }: ComponentProps<'div'>): React.JSX.Element => (
-  <div className={cn(assistantMessageSurfaceClassName, className)} {...props} />
+  <div
+    data-slot="assistant-message-surface"
+    className={cn(assistantMessageSurfaceClassName, className)}
+    {...props}
+  />
 )
 
 export const WorkspaceActivityGroupSurface = ({
