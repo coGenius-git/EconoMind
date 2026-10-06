@@ -2,6 +2,8 @@ import { ResearchWorkbenchHeader } from '@/components/ResearchWorkbenchHeader'
 import { useSettingsStore } from '@/stores/settings-store'
 import { LiteratureDiscoveryDialog } from './discovery/LiteratureDiscoveryDialog'
 import { ConfirmActionDialog } from '@/components/ui/confirm-action-dialog'
+import { InlineNotice } from '@/components/ui/inline-notice'
+import type { DiscoveryImportResult } from '../../../../shared/literature-discovery'
 import { LITERATURE_JOB_MAX_ITEMS } from '../../../../shared/literature-jobs'
 import type { PdfAnnotation } from '../../../../shared/pdf-annotations'
 import {
@@ -239,6 +241,7 @@ const LiteratureLibraryPage = (): React.JSX.Element => {
   )
   const [screeningWizardOpen, setScreeningWizardOpen] = useState(false)
   const [discoveryOpen, setDiscoveryOpen] = useState(false)
+  const [discoveryImportResult, setDiscoveryImportResult] = useState<DiscoveryImportResult>()
   const [bibliometricsOpen, setBibliometricsOpen] = useState(false)
   const [collectionId, setCollectionId] = useState<string>()
   const [screeningCollection, setScreeningCollection] = useState<string>()
@@ -1563,11 +1566,51 @@ const LiteratureLibraryPage = (): React.JSX.Element => {
           }}
           onSettings={() => useSettingsStore.getState().openSettings()}
         />
+        {discoveryImportResult ? (
+          <InlineNotice
+            role="status"
+            className="mx-4 mt-3 shrink-0"
+            tone={
+              discoveryImportResult.fullText?.some(
+                (entry) => entry.status === 'failed' || entry.status === 'not-found'
+              )
+                ? 'amber'
+                : 'teal'
+            }
+          >
+            {t('Imported records')}: {discoveryImportResult.importedCount}
+            {discoveryImportResult.fullText?.length ? (
+              <span>
+                {' · '}
+                {t('PDFs downloaded')}:{' '}
+                {
+                  discoveryImportResult.fullText.filter((entry) => entry.status === 'downloaded')
+                    .length
+                }
+                {' · '}
+                {t('PDFs already available')}:{' '}
+                {
+                  discoveryImportResult.fullText.filter((entry) => entry.status === 'existing')
+                    .length
+                }
+                {' · '}
+                {t('PDFs not downloaded')}:{' '}
+                {
+                  discoveryImportResult.fullText.filter(
+                    (entry) => entry.status === 'failed' || entry.status === 'not-found'
+                  ).length
+                }
+              </span>
+            ) : null}
+          </InlineNotice>
+        ) : null}
         {discoveryOpen ? (
           <LiteratureDiscoveryDialog
             onClose={() => setDiscoveryOpen(false)}
             collectionId={collectionId}
-            onImported={() => {
+            onImported={(result) => {
+              setDiscoveryImportResult(result)
+              selectLibrary(collectionId)
               void loadEntries(true)
               void loadCollections()
             }}
@@ -1603,7 +1646,10 @@ const LiteratureLibraryPage = (): React.JSX.Element => {
               selectLibrary,
               selectProject,
               openScreening: () => setScreeningWizardOpen(true),
-              openDiscovery: () => setDiscoveryOpen(true),
+              openDiscovery: () => {
+                setDiscoveryImportResult(undefined)
+                setDiscoveryOpen(true)
+              },
               openBibliometrics: () => setBibliometricsOpen(true),
               screeningAvailable: Boolean(reviewProjectId),
               openDuplicates: () => {

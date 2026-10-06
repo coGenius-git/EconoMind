@@ -46,7 +46,7 @@ test('imports OpenAlex search results and keeps duplicate mappings correct', asy
         query.sort !== 'citations'
       )
         throw new Error('OpenAlex filter fixture mismatch')
-      return { candidates: records, statuses: [], warnings: [] }
+      return { ok: true, result: { candidates: records, statuses: [], warnings: [] } }
     })
   }, candidates)
   await page.getByRole('button', { name: 'Library', exact: true }).click()
@@ -63,7 +63,9 @@ test('imports OpenAlex search results and keeps duplicate mappings correct', asy
   ).toBeVisible()
   await discovery.getByRole('button', { name: 'Select all', exact: true }).click()
   await discovery.getByRole('button', { name: 'Import selected', exact: true }).click()
-  await expect(discovery.getByText('Imported records: 2', { exact: true })).toBeVisible()
+  await expect(discovery).toHaveCount(0)
+  await expect(page.getByRole('status').filter({ hasText: 'Imported records: 2' })).toBeVisible()
+  await expect(page.getByText('Final discovery paper', { exact: true })).toBeVisible()
   // Reuse the persisted records through the real command bridge. Each candidate must retain its
   // actual target even though the library returned only two unique IDs for three input records.
   const imported = await page.evaluate(async (records) => {
@@ -83,7 +85,4 @@ test('imports OpenAlex search results and keeps duplicate mappings correct', asy
   expect(imported[0].itemId).toBe(imported[1].itemId)
   expect(imported[2].itemId).not.toBe(imported[0].itemId)
   expect(imported[2].title).toBe('Final discovery paper')
-  await discovery.getByRole('button', { name: 'Close', exact: true }).click()
-  await page.getByRole('button', { name: 'All references', exact: true }).click()
-  await expect(page.getByText('Final discovery paper', { exact: true })).toBeVisible()
 })

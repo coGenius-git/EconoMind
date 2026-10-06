@@ -241,11 +241,11 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
   )
 
   const importSelected = useCallback(
-    async (duplicatePolicy: 'reuse' | 'separate'): Promise<void> => {
+    async (duplicatePolicy: 'reuse' | 'separate'): Promise<DiscoveryImportResult | undefined> => {
       const chosen = candidates.filter((candidate) => selected.has(candidate.key))
       if (!chosen.length) {
         setError(t('Select at least one record to import.'))
-        return
+        return undefined
       }
       setImporting(true)
       setError(undefined)
@@ -257,8 +257,10 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
         })
         setImportResult(result)
         setNotice(`${t('Imported records')}: ${result.importedCount}`)
+        return result
       } catch (importError) {
         setError(importError instanceof Error ? importError.message : t('The import failed.'))
+        return undefined
       } finally {
         setImporting(false)
       }
@@ -377,7 +379,9 @@ export type LiteratureDiscoveryController = Readonly<{
   search: () => Promise<void>
   signInCnki: () => Promise<void>
   importCnkiExport: (file: File) => Promise<void>
-  importSelected: (duplicatePolicy: 'reuse' | 'separate') => Promise<void>
+  importSelected: (
+    duplicatePolicy: 'reuse' | 'separate'
+  ) => Promise<DiscoveryImportResult | undefined>
   screenImported: (criteria: {
     mode: 'all' | 'any' | 'custom'
     items: string[]

@@ -11,6 +11,7 @@ import {
   DISCOVERY_RESULT_LIMIT,
   OPENALEX_DISCOVERY_SOURCE_TIERS,
   type DiscoveryDocumentType,
+  type DiscoveryImportResult,
   type DiscoverySourceId
 } from '../../../../../shared/literature-discovery'
 import { useLiteratureDiscovery } from './useLiteratureDiscovery'
@@ -42,7 +43,7 @@ export function LiteratureDiscoveryPanel({
   onImported
 }: {
   collectionId?: string
-  onImported?: () => void
+  onImported?: (result: DiscoveryImportResult) => void
 }): React.JSX.Element {
   const { t } = useTranslation()
   const discovery = useLiteratureDiscovery(collectionId)
@@ -51,8 +52,8 @@ export function LiteratureDiscoveryPanel({
   const [credentialBusy, setCredentialBusy] = useState(false)
 
   const runImport = async (): Promise<void> => {
-    await discovery.importSelected(duplicatePolicy)
-    onImported?.()
+    const result = await discovery.importSelected(duplicatePolicy)
+    if (result && result.importedCount > 0) onImported?.(result)
   }
 
   return (
@@ -155,6 +156,7 @@ export function LiteratureDiscoveryPanel({
         <label className="space-y-2">
           <span className="text-sm font-medium">{t('Language')}</span>
           <select
+            aria-label={t('Language')}
             className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
             value={discovery.form.language}
             onChange={(event) =>
@@ -169,6 +171,7 @@ export function LiteratureDiscoveryPanel({
         <label className="space-y-2">
           <span className="text-sm font-medium">{t('Sort by')}</span>
           <select
+            aria-label={t('Sort by')}
             className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
             value={discovery.form.sort}
             onChange={(event) =>
