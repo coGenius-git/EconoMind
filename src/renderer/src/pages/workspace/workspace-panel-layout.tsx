@@ -485,7 +485,7 @@ const useWorkspacePanelLayout = (
           data-testid="workspace-preview-toggle"
           className={`absolute z-40 flex shrink-0 cursor-pointer items-center justify-center rounded-[10px] ${
             previewPort.state === 'collapsed'
-              ? 'right-2 top-0 size-7 bg-transparent shadow-none text-action-panel-toggle hover:bg-surface-control-hover'
+              ? 'right-2 top-[var(--research-title-center,35.5px)] -translate-y-1/2 size-7 bg-transparent shadow-none text-action-panel-toggle hover:bg-surface-control-hover'
               : 'right-[29px] top-[calc(var(--research-preview-top,82px)+15px)] size-8 bg-bg-300 shadow-none text-action-panel-toggle hover:bg-surface-control-hover'
           }`}
           aria-label={
@@ -566,6 +566,11 @@ const WorkspacePanelLayout = ({
         `${conversation.getBoundingClientRect().left - origin.left}px`
       )
       const dividerTop = header.getBoundingClientRect().bottom - origin.top
+      const title = (header.querySelector('h1') ?? header).getBoundingClientRect()
+      workspace.style.setProperty(
+        '--research-title-center',
+        `${title.top + title.height / 2 - origin.top}px`
+      )
       workspace.style.setProperty('--research-divider-top', `${dividerTop}px`)
       workspace.style.setProperty('--research-preview-top', `${dividerTop + 16}px`)
     }
@@ -574,7 +579,7 @@ const WorkspacePanelLayout = ({
       observer.disconnect()
       observer.observe(workspace)
       for (const surface of workspace.querySelectorAll(
-        '.research-conversation, [data-testid="conversation-header"]'
+        '.research-conversation, [data-testid="conversation-header"], [data-testid="conversation-header"] h1'
       )) {
         observer.observe(surface)
       }
