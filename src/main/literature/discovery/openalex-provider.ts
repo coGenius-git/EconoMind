@@ -58,6 +58,8 @@ const openAlexWorkSchema = z.object({
     })
     .nullish(),
   best_oa_location: invertedLocation,
+  locations: z.array(invertedLocation).nullish(),
+  content_urls: z.object({ pdf: z.string().nullish() }).nullish(),
   open_access: z.object({ is_oa: z.boolean().nullish(), oa_url: z.string().nullish() }).nullish(),
   authorships: z
     .array(z.object({ author: z.object({ display_name: z.string().nullish() }).nullish() }))
@@ -192,6 +194,8 @@ export async function searchOpenAlex(
           'abstract_inverted_index',
           'primary_location',
           'best_oa_location',
+          'locations',
+          'content_urls',
           'open_access',
           'authorships'
         ].join(',')
@@ -227,14 +231,24 @@ export async function searchOpenAlex(
         if (!title) continue
         const documentType = mapDocumentType(work.type)
         if (query.documentTypes.length && !query.documentTypes.includes(documentType)) continue
-        // Only records whose full text is reachable are kept. A result without an accessible copy
-        // cannot be screened against inclusion criteria or read afterwards, so it is dropped here
-        // instead of being listed and discarded by hand in the next step. The PDF location is
-        // preferred; the general open-access link is accepted as a fallback because it usually
-        // resolves to the PDF (or to a landing page that offers it).
-        const pdfUrl = work.best_oa_location?.pdf_url?.trim() || null
-        const openAccessUrl = work.open_access?.oa_url?.trim() || null
-        const fullTextUrl = pdfUrl ?? openAccessUrl
+        // Keep records with a full-text location. Availability is checked during import: try PDF
+        // locations first, then repository pages with explicit document links.
+        const urls = [
+          ...new Set(
+            [
+              work.best_oa_location?.pdf_url,
+              ...(work.locations ?? [])
+                .filter((location) => location?.is_oa)
+                .map((location) => location?.pdf_url),
+              ...(apiKey ? [work.content_urls?.pdf] : []),
+              work.open_access?.oa_url,
+              work.best_oa_location?.landing_page_url
+            ]
+              .filter((url): url is string => Boolean(url?.trim()))
+              .map((url) => url.trim())
+          )
+        ].slice(0, 10)
+        const fullTextUrl = urls[0]
         if (!fullTextUrl) continue
         const isOa = work.open_access?.is_oa === true || work.best_oa_location?.is_oa === true
         const tiers: DiscoverySourceTier[] = []
@@ -256,7 +270,8 @@ export async function searchOpenAlex(
           abstract: restoreAbstract(work.abstract_inverted_index),
           citationCount: work.cited_by_count ?? null,
           sourceTiers: tiers,
-          openAccessPdfUrl: fullTextUrl
+          openAccessPdfUrl: fullTextUrl,
+          openAccessPdfUrls: urls
         })
       }
       if (payload.results.length < 25) break

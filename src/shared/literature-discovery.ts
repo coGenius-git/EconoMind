@@ -5,8 +5,7 @@ import { defineApplicationCommandContract, validationCodec } from './application
 // candidate list, then import the selected records into the library for title/abstract screening.
 // This module only describes the wire contract; providers live in src/main/literature/discovery.
 
-// Where a candidate came from. Only OpenAlex can be searched from inside the app; CNKI records
-// arrive from an export file, so the two lists are deliberately different.
+// Both sources can be searched online; CNKI additionally supports exported reference files.
 export const DISCOVERY_SOURCE_IDS = ['openalex', 'cnki'] as const
 export const DISCOVERY_SEARCH_SOURCE_IDS = ['openalex', 'cnki'] as const
 export const DISCOVERY_DOCUMENT_TYPES = [
@@ -74,7 +73,8 @@ export const discoveryCandidateSchema = z
     abstract: boundedText(20_000).default(''),
     citationCount: z.number().int().min(0).max(100_000_000).nullable().default(null),
     sourceTiers: z.array(discoverySourceTierSchema).max(DISCOVERY_SOURCE_TIERS.length).default([]),
-    openAccessPdfUrl: boundedText(2000).nullable().default(null)
+    openAccessPdfUrl: boundedText(2000).nullable().default(null),
+    openAccessPdfUrls: z.array(boundedText(2000)).max(10).optional()
   })
   .strict()
 
@@ -134,7 +134,17 @@ export const discoveryImportResultSchema = z
     skipped: z
       .array(z.object({ key: z.string().trim().min(1).max(512), reason: boundedText(1000) }))
       .max(DISCOVERY_RESULT_LIMIT),
-    importedCount: z.number().int().min(0)
+    importedCount: z.number().int().min(0),
+    fullText: z
+      .array(
+        z.object({
+          key: z.string().trim().min(1).max(512),
+          itemId: z.string().trim().min(1).max(512),
+          status: z.enum(['downloaded', 'existing', 'not-found', 'failed'])
+        })
+      )
+      .max(DISCOVERY_RESULT_LIMIT)
+      .optional()
   })
   .strict()
 

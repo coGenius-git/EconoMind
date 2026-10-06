@@ -6780,6 +6780,10 @@
     "Imported records live in your library: open one there to look for its open-access full text.": "가져온 문헌은 라이브러리에 있습니다. 라이브러리에서 열면 오픈 액세스 전문을 찾을 수 있습니다.",
     "Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.": "대체 방법: CNKI에서 선택한 문헌을 RefWorks 또는 EndNote 파일로 내보낸 뒤, 그 파일을 이곳에서 가져오세요.",
     "(Close the tab when you are done.)": "(완료되면 탭을 닫아 주세요.)",
-    "OpenAlex results include only records whose full text can be retrieved.": "OpenAlex는 전문을 받을 수 있는 문헌만 반환합니다."
+    "OpenAlex PDFs are downloaded when you import selected records.": "선택한 기록을 가져오면 OpenAlex 문헌의 PDF를 다운로드합니다.",
+    "PDFs downloaded": "다운로드한 PDF",
+    "PDFs already available": "기존 PDF",
+    "PDFs not downloaded": "다운로드하지 못한 PDF",
+    "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "일부 PDF를 다운로드하지 못했습니다. 서지 기록은 저장되었습니다. 해당 기록을 선택하여 다시 가져오면 재시도할 수 있습니다."
   }
 }

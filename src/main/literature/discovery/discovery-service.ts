@@ -105,6 +105,10 @@ export type LiteratureDiscoveryOptions = {
   openAlexKey?: () => Promise<string | undefined>
   contactEmail?: () => Promise<string | undefined>
   fetch?: typeof fetch
+  acquirePdf?: (
+    itemId: string,
+    candidate: DiscoveryCandidate
+  ) => Promise<'downloaded' | 'existing' | 'not-found'>
 }
 
 export class LiteratureDiscovery {
@@ -173,6 +177,36 @@ export class LiteratureDiscovery {
       if (itemId) imported.push({ key: candidate.key, itemId })
     }
     const matchedKeys = new Set(imported.map((entry) => entry.key))
+    const fullText: NonNullable<DiscoveryImportResult['fullText']> = []
+    if (this.options.acquirePdf) {
+      const targets = new Map<string, DiscoveryCandidate>()
+      for (const entry of imported) {
+        const candidate = request.candidates.find((candidate) => candidate.key === entry.key)
+        if (candidate?.source === 'openalex' && !targets.has(entry.itemId))
+          targets.set(entry.itemId, candidate)
+      }
+      const pending = [...targets]
+      let index = 0
+      await Promise.all(
+        Array.from({ length: Math.min(3, pending.length) }, async () => {
+          while (index < pending.length) {
+            const [itemId, candidate] = pending[index++]!
+            let status: NonNullable<DiscoveryImportResult['fullText']>[number]['status']
+            try {
+              status = await this.options.acquirePdf!(itemId, candidate)
+            } catch {
+              status = 'failed'
+            }
+            fullText.push({ key: candidate.key, itemId, status })
+          }
+        })
+      )
+      fullText.sort(
+        (a, b) =>
+          request.candidates.findIndex((entry) => entry.key === a.key) -
+          request.candidates.findIndex((entry) => entry.key === b.key)
+      )
+    }
     const skipped = request.candidates
       .filter((candidate) => !matchedKeys.has(candidate.key))
       .map((candidate) => ({
@@ -182,7 +216,8 @@ export class LiteratureDiscovery {
     return {
       imported,
       skipped,
-      importedCount: new Set(imported.map((entry) => entry.itemId)).size
+      importedCount: new Set(imported.map((entry) => entry.itemId)).size,
+      fullText
     }
   }
 

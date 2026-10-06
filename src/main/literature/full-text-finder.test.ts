@@ -100,6 +100,45 @@ const setup = (): {
 }
 
 describe('Literature full-text discovery and attachment', () => {
+  it('acquires a discovery PDF through the content repository even without a DOI', async () => {
+    const { finder, options, item } = setup()
+    item.item.identifiers = []
+    const result = await finder.acquire(item.id, [
+      { url: 'https://journal.example/paper.pdf', provider: 'openalex', source: 'OpenAlex' }
+    ])
+    expect(result).toBe('downloaded')
+    expect(options.download).toHaveBeenCalledWith(
+      'https://journal.example/paper.pdf',
+      expect.any(Number),
+      expect.any(Function)
+    )
+    expect(options.catalog.attachContent).toHaveBeenCalledWith(
+      expect.objectContaining({ itemId: item.id, contentType: 'application/pdf', pageCount: 8 })
+    )
+  })
+
+  it('resolves a repository landing page citation PDF before saving an attachment', async () => {
+    const { finder, options, item } = setup()
+    item.item.identifiers = []
+    options.download = vi.fn(async (url) =>
+      url.endsWith('/record')
+        ? Buffer.from(
+            '<html><head><meta name="citation_pdf_url" content="/files/paper.pdf"></head></html>'
+          )
+        : Buffer.from('%PDF-1.7\nexample')
+    )
+    const result = await finder.acquire(item.id, [
+      { url: 'https://journal.example/record', provider: 'openalex', source: 'OpenAlex' }
+    ])
+    expect(result).toBe('downloaded')
+    expect(options.download).toHaveBeenCalledWith(
+      'https://journal.example/files/paper.pdf',
+      expect.any(Number),
+      expect.any(Function)
+    )
+    expect(options.catalog.attachContent).toHaveBeenCalledOnce()
+  })
+
   it.each([
     ['10.1000/example', '10.1000/example'],
     ['https://doi.org/10.1000/EXAMPLE', '10.1000/example'],

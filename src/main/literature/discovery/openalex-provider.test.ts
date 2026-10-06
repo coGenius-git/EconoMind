@@ -37,6 +37,57 @@ const jsonResponse = (payload: unknown, status = 200): Response =>
   })
 
 describe('searchOpenAlex', () => {
+  it('uses cached PDF URLs only with a configured key and keeps the key out of candidates', async () => {
+    const fetcher = vi.fn(async () =>
+      jsonResponse({
+        results: [
+          work({
+            best_oa_location: null,
+            open_access: null,
+            content_urls: { pdf: 'https://content.openalex.org/works/W1.pdf' }
+          })
+        ]
+      })
+    )
+    expect((await searchOpenAlex(query(), { fetch: fetcher })).candidates).toEqual([])
+    const result = await searchOpenAlex(query(), {
+      fetch: fetcher,
+      apiKey: async () => 'private-test-key'
+    })
+    expect(result.candidates[0]?.openAccessPdfUrl).toBe('https://content.openalex.org/works/W1.pdf')
+    expect(JSON.stringify(result.candidates)).not.toContain('private-test-key')
+  })
+  it('prefers actual PDF locations over a landing page and retains alternate PDF sources', async () => {
+    const result = await searchOpenAlex(query(), {
+      fetch: vi.fn(async () =>
+        jsonResponse({
+          results: [
+            work({
+              best_oa_location: {
+                is_oa: true,
+                pdf_url: null,
+                landing_page_url: 'https://repository.example/record'
+              },
+              open_access: { is_oa: true, oa_url: 'https://repository.example/record' },
+              locations: [
+                { is_oa: true, pdf_url: 'https://journal.example/paper.pdf' },
+                { is_oa: true, pdf_url: 'https://repository.example/paper.pdf' }
+              ]
+            })
+          ]
+        })
+      )
+    })
+    expect(result.candidates[0]?.openAccessPdfUrl).toBe('https://journal.example/paper.pdf')
+    expect(result.candidates[0]).toMatchObject({
+      openAccessPdfUrls: [
+        'https://journal.example/paper.pdf',
+        'https://repository.example/paper.pdf',
+        'https://repository.example/record'
+      ]
+    })
+  })
+
   it('fetches a 200-record query in pages within the API limit', async () => {
     const fetcher = vi.fn(async (url: RequestInfo | URL) => {
       const parameters = new URL(String(url)).searchParams

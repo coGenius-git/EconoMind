@@ -7108,6 +7108,10 @@
     "Imported records live in your library: open one there to look for its open-access full text.": "Les références importées se trouvent dans votre bibliothèque: ouvrez-en une pour rechercher son texte intégral en accès libre.",
     "Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.": "Solution de repli: exportez les références sélectionnées depuis CNKI dans un fichier RefWorks ou EndNote, puis importez ce fichier ici.",
     "(Close the tab when you are done.)": "(Fermez l’onglet lorsque vous avez terminé.)",
-    "OpenAlex results include only records whose full text can be retrieved.": "OpenAlex ne renvoie que les références dont le texte intégral est accessible."
+    "OpenAlex PDFs are downloaded when you import selected records.": "Les PDF OpenAlex sont téléchargés lorsque vous importez les notices sélectionnées.",
+    "PDFs downloaded": "PDF téléchargés",
+    "PDFs already available": "PDF déjà disponibles",
+    "PDFs not downloaded": "PDF non téléchargés",
+    "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "Certains PDF n’ont pas pu être téléchargés. Les notices ont été enregistrées. Sélectionnez ces notices et importez-les à nouveau pour réessayer."
   }
 }

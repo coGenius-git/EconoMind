@@ -170,7 +170,7 @@ export function LiteratureDiscoveryPanel({
           </div>
           {discovery.form.sources.includes('openalex') ? (
             <p className="text-xs leading-relaxed text-muted-foreground">
-              {t('OpenAlex results include only records whose full text can be retrieved.')}
+              {t('OpenAlex PDFs are downloaded when you import selected records.')}
             </p>
           ) : null}
           {discovery.form.sources.includes('cnki') ? (
@@ -364,6 +364,55 @@ export function LiteratureDiscoveryPanel({
 
       {discovery.importResult?.importedCount ? (
         <section className="space-y-3 rounded-xl border border-border bg-card p-5">
+          {discovery.importResult.fullText?.length ? (
+            <>
+              <p className="text-sm text-muted-foreground">
+                {t('PDFs downloaded')}
+                {': '}
+                {
+                  discovery.importResult.fullText.filter((entry) => entry.status === 'downloaded')
+                    .length
+                }
+                {' · '}
+                {t('PDFs already available')}
+                {': '}
+                {
+                  discovery.importResult.fullText.filter((entry) => entry.status === 'existing')
+                    .length
+                }
+                {' · '}
+                {t('PDFs not downloaded')}
+                {': '}
+                {
+                  discovery.importResult.fullText.filter(
+                    (entry) => entry.status === 'failed' || entry.status === 'not-found'
+                  ).length
+                }
+              </p>
+              {discovery.importResult.fullText.some(
+                (entry) => entry.status === 'failed' || entry.status === 'not-found'
+              ) ? (
+                <InlineNotice tone="amber">
+                  {t(
+                    'Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.'
+                  )}
+                  <ul className="mt-2 list-disc pl-5">
+                    {discovery.importResult.fullText
+                      .filter((entry) => entry.status === 'failed' || entry.status === 'not-found')
+                      .slice(0, 10)
+                      .map((entry) => (
+                        <li key={entry.itemId}>
+                          {
+                            discovery.candidates.find((candidate) => candidate.key === entry.key)
+                              ?.title
+                          }
+                        </li>
+                      ))}
+                  </ul>
+                </InlineNotice>
+              ) : null}
+            </>
+          ) : null}
           <h3 className="text-base font-bold">{t('Screen imported records')}</h3>
           <label className="block space-y-2">
             <span className="text-sm font-medium">{t('Inclusion criteria')}</span>

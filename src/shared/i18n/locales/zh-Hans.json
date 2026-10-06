@@ -6782,6 +6782,10 @@
     "Imported records live in your library: open one there to look for its open-access full text.": "导入的文献已存入库中：在文献库打开该条，即可查找其开放获取全文。",
     "Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.": "备用方式：在知网勾选文献后导出为 RefWorks 或 EndNote 文件，再回到此处导入该文件。（RefWorks/EndNote 是知网提供的两种题录格式，选任一种即可，无需安装任何软件。）",
     "(Close the tab when you are done.)": "（登录完成后请关闭标签页）",
-    "OpenAlex results include only records whose full text can be retrieved.": "OpenAlex 仅返回可获取全文的记录。"
+    "OpenAlex PDFs are downloaded when you import selected records.": "导入所选记录时，将自动下载 OpenAlex 文献的 PDF。",
+    "PDFs downloaded": "已下载 PDF",
+    "PDFs already available": "已有 PDF",
+    "PDFs not downloaded": "未下载 PDF",
+    "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "部分 PDF 下载失败，题录已保存。选中这些记录并再次导入即可重试。"
   }
 }

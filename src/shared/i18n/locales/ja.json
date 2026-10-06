@@ -6782,6 +6782,10 @@
     "Imported records live in your library: open one there to look for its open-access full text.": "取り込んだ文献はライブラリにあります。ライブラリで開くとオープンアクセスの全文を検索できます。",
     "Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.": "代替手段：CNKI で選択した文献を RefWorks または EndNote ファイルとして書き出し、そのファイルをここに取り込んでください。",
     "(Close the tab when you are done.)": "（完了したらタブを閉じてください）",
-    "OpenAlex results include only records whose full text can be retrieved.": "OpenAlex は全文を取得できる文献のみを返します。"
+    "OpenAlex PDFs are downloaded when you import selected records.": "選択したレコードを取り込むと、OpenAlex の文献の PDF がダウンロードされます。",
+    "PDFs downloaded": "ダウンロード済み PDF",
+    "PDFs already available": "既存の PDF",
+    "PDFs not downloaded": "未ダウンロードの PDF",
+    "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "一部の PDF をダウンロードできませんでした。書誌情報は保存されています。該当するレコードを選択して再度取り込むと再試行できます。"
   }
 }

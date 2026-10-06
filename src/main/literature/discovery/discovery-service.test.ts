@@ -131,3 +131,41 @@ it('keeps candidate-to-item mappings when duplicate imports reuse a library row'
   expect(result.importedCount).toBe(2)
   expect(result.skipped).toEqual([])
 })
+
+it('downloads selected OpenAlex PDFs after saving records and reports failures without losing records', async () => {
+  const acquirePdf = vi.fn(async (itemId: string) => {
+    if (itemId === 'item-1') throw new Error('PDF unavailable')
+    return 'downloaded' as const
+  })
+  let nextId = 0
+  const discovery = new LiteratureDiscovery({
+    importItems: async () => ({ itemIds: [`item-${nextId++}`] }),
+    get: async () => undefined,
+    model: async () => {
+      throw new Error('unused')
+    },
+    acquirePdf
+  })
+  const result = await discovery.import({
+    collectionId: null,
+    duplicatePolicy: 'reuse',
+    candidates: [
+      candidate({ key: 'first', openAccessPdfUrl: 'https://journal.example/first.pdf' }),
+      candidate({
+        key: 'second',
+        doi: '10.1000/two',
+        openAccessPdfUrl: 'https://journal.example/second.pdf'
+      }),
+      candidate({ key: 'cnki', source: 'cnki' })
+    ]
+  })
+  expect(acquirePdf).toHaveBeenCalledTimes(2)
+  expect(acquirePdf).toHaveBeenCalledWith('item-0', expect.objectContaining({ key: 'first' }))
+  expect(result.importedCount).toBe(3)
+  expect(result).toMatchObject({
+    fullText: [
+      { key: 'first', itemId: 'item-0', status: 'downloaded' },
+      { key: 'second', itemId: 'item-1', status: 'failed' }
+    ]
+  })
+})
