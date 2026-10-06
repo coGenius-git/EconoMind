@@ -486,7 +486,7 @@ const useWorkspacePanelLayout = (
           className={`absolute z-40 flex shrink-0 cursor-pointer items-center justify-center rounded-[10px] ${
             previewPort.state === 'collapsed'
               ? 'right-2 top-0 size-7 bg-transparent shadow-none text-action-panel-toggle hover:bg-surface-control-hover'
-              : 'right-[15px] top-[15px] size-8 bg-bg-300 shadow-none text-action-panel-toggle hover:bg-surface-control-hover'
+              : 'right-[29px] top-[calc(var(--research-preview-top,82px)+15px)] size-8 bg-bg-300 shadow-none text-action-panel-toggle hover:bg-surface-control-hover'
           }`}
           aria-label={
             previewPort.state === 'collapsed'
@@ -544,15 +544,78 @@ const WorkspacePanelLayout = ({
   renderConversation
 }: WorkspacePanelLayoutProps): React.JSX.Element => {
   const { t } = useTranslation()
+  const workspaceRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarDialogRef = useRef<HTMLDivElement | null>(null)
   const { isMobile, mobileSidebar, sidebar, preview } = useWorkspacePanelLayout(
     previewPort,
     mobileSidebarDialogRef
   )
 
+  // One sheet spans the conversation and preview. Measure the real header so taller session
+  // controls and window resizing keep the inset preview below its divider without remounting it.
+  useLayoutEffect(() => {
+    const workspace = workspaceRef.current
+    if (isMobile || !workspace || typeof ResizeObserver === 'undefined') return
+    const synchronize = (): void => {
+      const conversation = workspace.querySelector<HTMLElement>('.research-conversation')
+      const header = workspace.querySelector<HTMLElement>('[data-testid="conversation-header"]')
+      if (!conversation || !header) return
+      const origin = workspace.getBoundingClientRect()
+      workspace.style.setProperty(
+        '--research-conversation-left',
+        `${conversation.getBoundingClientRect().left - origin.left}px`
+      )
+      const dividerTop = header.getBoundingClientRect().bottom - origin.top
+      workspace.style.setProperty('--research-divider-top', `${dividerTop}px`)
+      workspace.style.setProperty('--research-preview-top', `${dividerTop + 16}px`)
+    }
+    const observer = new ResizeObserver(synchronize)
+    const observeSurfaces = (): void => {
+      observer.disconnect()
+      observer.observe(workspace)
+      for (const surface of workspace.querySelectorAll(
+        '.research-conversation, [data-testid="conversation-header"]'
+      )) {
+        observer.observe(surface)
+      }
+      synchronize()
+    }
+    observeSurfaces()
+    // Switching sessions replaces the keyed conversation; retain the mounted preview and
+    // subscribe to the replacement header instead of observing every message update.
+    const changes = new MutationObserver((records) => {
+      if (
+        records.some((record) =>
+          [...record.addedNodes, ...record.removedNodes].some(
+            (node) =>
+              node instanceof Element &&
+              (node.matches('[data-testid="conversation-header"]') ||
+                node.querySelector('[data-testid="conversation-header"]'))
+          )
+        )
+      ) {
+        observeSurfaces()
+      }
+    })
+    changes.observe(workspace, { childList: true, subtree: true })
+    return () => {
+      observer.disconnect()
+      changes.disconnect()
+    }
+  }, [isMobile])
+
   return (
     <>
-      <div className="relative flex h-full">
+      <div
+        ref={workspaceRef}
+        className="research-workspace-layout relative flex h-full"
+        data-desktop={!isMobile || undefined}
+      >
+        {!isMobile ? (
+          <div className="research-workbench-sheet research-glass" aria-hidden="true">
+            <div className="research-workbench-divider" />
+          </div>
+        ) : null}
         {mobileSidebar.isOpen ? (
           <button
             type="button"
@@ -635,7 +698,7 @@ const WorkspacePanelLayout = ({
                 aria-label={t('Resize right panel')}
                 disabled={preview.state === 'collapsed'}
                 aria-hidden={preview.state === 'collapsed'}
-                className={`${WORKSPACE_RESIZE_HANDLE_CLASS_NAME} bg-border shadow-[1px_0_3px_rgba(30,28,24,0.08)] ${
+                className={`${WORKSPACE_RESIZE_HANDLE_CLASS_NAME} before:top-[var(--research-preview-top,82px)] before:h-[calc(100%-var(--research-preview-top,82px)-14px)] ${
                   preview.state === 'collapsed' ? 'pointer-events-none opacity-0' : 'opacity-100'
                 }`}
               />

@@ -144,7 +144,7 @@ const MobilePreviewSheet = ({
           className={
             isMobile
               ? 'fixed inset-x-0 bottom-0 z-[60] h-[min(82dvh,760px)] overflow-hidden rounded-t-2xl border border-b-0 border-border-200 bg-bg-10 pb-[env(safe-area-inset-bottom)] text-text-000 shadow-dialog outline-none'
-              : 'h-full min-h-0 outline-none'
+              : 'research-desktop-preview-inset h-full min-h-0 outline-none'
           }
         >
           <div className="flex h-full min-h-0 flex-col">

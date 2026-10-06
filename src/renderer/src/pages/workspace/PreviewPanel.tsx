@@ -954,10 +954,14 @@ const PreviewPanelSurface = ({
           className
         )}
       >
+        <div
+          className="research-preview-glass pointer-events-none absolute inset-0"
+          aria-hidden="true"
+        />
         {items.length > 0 ? (
           <div
             data-testid="preview-panel-top-bar"
-            className="flex h-8 min-w-0 w-full shrink-0 items-center pr-11"
+            className="relative flex h-8 min-w-0 w-full shrink-0 items-center pr-11"
           >
             <PreviewTabBar
               tabs={items}
@@ -999,7 +1003,7 @@ const PreviewPanelSurface = ({
             />
           </div>
         ) : null}
-        <div className="min-h-0 min-w-0 flex-1">
+        <div className="relative min-h-0 min-w-0 flex-1">
           {!activeItem ? (
             <PreviewActiveContent
               key={activeContentKey}
