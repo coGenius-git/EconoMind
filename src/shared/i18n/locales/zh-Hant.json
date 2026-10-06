@@ -6775,7 +6775,6 @@
     "Sign in to CNKI": "登入知網",
     "CNKI session ready": "知網工作階段已就緒",
     "No CNKI session": "未登入知網",
-    "Sign in to CNKI before searching.": "檢索前請先登入知網。",
     "Sign in to CNKI in the window that opened, then close it.": "請在剛開啟的視窗中登入知網，完成後關閉該視窗。",
     "Unable to open CNKI.": "無法開啟知網。",
     "Open source page": "開啟來源頁",
@@ -6786,6 +6785,7 @@
     "PDFs downloaded": "已下載 PDF",
     "PDFs already available": "已有 PDF",
     "PDFs not downloaded": "未下載 PDF",
-    "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "部分 PDF 下載失敗，書目已儲存。選取這些記錄並再次匯入即可重試。"
+    "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "部分 PDF 下載失敗，書目已儲存。選取這些記錄並再次匯入即可重試。",
+    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "知網公開書目可先嘗試直接檢索。如提示驗證，請在瀏覽器中完成。"
   }
 }

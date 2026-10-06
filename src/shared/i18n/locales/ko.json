@@ -6773,7 +6773,6 @@
     "Sign in to CNKI": "CNKI 로그인",
     "CNKI session ready": "CNKI 세션 사용 가능",
     "No CNKI session": "CNKI 세션 없음",
-    "Sign in to CNKI before searching.": "검색 전에 CNKI에 로그인하세요.",
     "Sign in to CNKI in the window that opened, then close it.": "열린 창에서 CNKI에 로그인한 뒤 창을 닫으세요.",
     "Unable to open CNKI.": "CNKI를 열 수 없습니다.",
     "Open source page": "출처 페이지 열기",
@@ -6784,6 +6783,7 @@
     "PDFs downloaded": "다운로드한 PDF",
     "PDFs already available": "기존 PDF",
     "PDFs not downloaded": "다운로드하지 못한 PDF",
-    "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "일부 PDF를 다운로드하지 못했습니다. 서지 기록은 저장되었습니다. 해당 기록을 선택하여 다시 가져오면 재시도할 수 있습니다."
+    "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "일부 PDF를 다운로드하지 못했습니다. 서지 기록은 저장되었습니다. 해당 기록을 선택하여 다시 가져오면 재시도할 수 있습니다.",
+    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "CNKI 공개 서지 정보는 로그인 없이 검색할 수 있습니다. 인증이 요청되면 브라우저에서 완료하세요."
   }
 }

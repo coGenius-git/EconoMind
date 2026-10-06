@@ -7101,7 +7101,6 @@
     "Sign in to CNKI": "Se connecter à CNKI",
     "CNKI session ready": "Session CNKI disponible",
     "No CNKI session": "Aucune session CNKI",
-    "Sign in to CNKI before searching.": "Connectez-vous à CNKI avant de lancer la recherche.",
     "Sign in to CNKI in the window that opened, then close it.": "Connectez-vous à CNKI dans la fenêtre qui vient de s’ouvrir, puis fermez-la.",
     "Unable to open CNKI.": "Impossible d’ouvrir CNKI.",
     "Open source page": "Ouvrir la page source",
@@ -7112,6 +7111,7 @@
     "PDFs downloaded": "PDF téléchargés",
     "PDFs already available": "PDF déjà disponibles",
     "PDFs not downloaded": "PDF non téléchargés",
-    "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "Certains PDF n’ont pas pu être téléchargés. Les notices ont été enregistrées. Sélectionnez ces notices et importez-les à nouveau pour réessayer."
+    "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "Certains PDF n’ont pas pu être téléchargés. Les notices ont été enregistrées. Sélectionnez ces notices et importez-les à nouveau pour réessayer.",
+    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "La recherche publique CNKI peut fonctionner sans connexion. Si une vérification est demandée, effectuez-la dans le navigateur."
   }
 }

@@ -6775,7 +6775,6 @@
     "Sign in to CNKI": "CNKI にログイン",
     "CNKI session ready": "CNKI セッション利用可能",
     "No CNKI session": "CNKI セッションなし",
-    "Sign in to CNKI before searching.": "検索する前に CNKI にログインしてください。",
     "Sign in to CNKI in the window that opened, then close it.": "開いたウィンドウで CNKI にログインし、その後ウィンドウを閉じてください。",
     "Unable to open CNKI.": "CNKI を開けません。",
     "Open source page": "ソースページを開く",
@@ -6786,6 +6785,7 @@
     "PDFs downloaded": "ダウンロード済み PDF",
     "PDFs already available": "既存の PDF",
     "PDFs not downloaded": "未ダウンロードの PDF",
-    "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "一部の PDF をダウンロードできませんでした。書誌情報は保存されています。該当するレコードを選択して再度取り込むと再試行できます。"
+    "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "一部の PDF をダウンロードできませんでした。書誌情報は保存されています。該当するレコードを選択して再度取り込むと再試行できます。",
+    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "CNKI の公開書誌はログインせず検索できる場合があります。認証を求められたらブラウザーで完了してください。"
   }
 }

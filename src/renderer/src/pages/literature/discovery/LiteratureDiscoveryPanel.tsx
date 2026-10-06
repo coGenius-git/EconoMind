@@ -194,7 +194,9 @@ export function LiteratureDiscoveryPanel({
           ) : null}
           {discovery.form.sources.includes('cnki') && !discovery.cnkiSignedIn ? (
             <p className="text-xs leading-relaxed text-muted-foreground">
-              {t('Sign in to CNKI before searching.')}
+              {t(
+                'CNKI public search can work without sign-in. Complete verification in the browser if prompted.'
+              )}
             </p>
           ) : null}
           <div className="flex flex-wrap items-center gap-4">

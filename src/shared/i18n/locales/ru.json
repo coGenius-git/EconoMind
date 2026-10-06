@@ -7239,7 +7239,6 @@
     "Sign in to CNKI": "Войти в CNKI",
     "CNKI session ready": "Сессия CNKI активна",
     "No CNKI session": "Нет сессии CNKI",
-    "Sign in to CNKI before searching.": "Войдите в CNKI перед поиском.",
     "Sign in to CNKI in the window that opened, then close it.": "Войдите в CNKI в открывшемся окне, затем закройте его.",
     "Unable to open CNKI.": "Не удалось открыть CNKI.",
     "Open source page": "Открыть страницу источника",
@@ -7250,6 +7249,7 @@
     "PDFs downloaded": "Загруженные PDF",
     "PDFs already available": "Уже доступные PDF",
     "PDFs not downloaded": "Незагруженные PDF",
-    "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "Некоторые PDF не удалось загрузить. Записи сохранены. Выберите эти записи и импортируйте их снова, чтобы повторить попытку."
+    "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "Некоторые PDF не удалось загрузить. Записи сохранены. Выберите эти записи и импортируйте их снова, чтобы повторить попытку.",
+    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "Общедоступный поиск CNKI может работать без входа. При запросе пройдите проверку в браузере."
   }
 }
