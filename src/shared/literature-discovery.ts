@@ -14,8 +14,14 @@ export const DISCOVERY_DOCUMENT_TYPES = [
   'dissertation',
   'conference',
   'book',
+  'book-chapter',
+  'preprint',
+  'dataset',
+  'report',
   'other'
 ] as const
+export const OPENALEX_DISCOVERY_SOURCE_TIERS = ['open-access', 'doaj'] as const
+export const OPENALEX_DISCOVERY_SORTS = ['relevance', 'newest', 'citations'] as const
 // Tiers are advisory. A provider reports the tiers it can actually resolve and the service
 // records unresolved tiers as warnings instead of silently widening the result set.
 export const DISCOVERY_SOURCE_TIERS = [
@@ -49,6 +55,8 @@ export const discoveryQuerySchema = z
       .default([]),
     sourceTiers: z.array(discoverySourceTierSchema).max(DISCOVERY_SOURCE_TIERS.length).default([]),
     minCitations: z.number().int().min(0).max(10_000_000).nullable().default(null),
+    language: z.enum(['en', 'zh']).nullable().optional(),
+    sort: z.enum(OPENALEX_DISCOVERY_SORTS).optional(),
     limit: z.number().int().min(1).max(DISCOVERY_RESULT_LIMIT).default(DISCOVERY_DEFAULT_LIMIT),
     sources: z
       .array(discoverySourceIdSchema)

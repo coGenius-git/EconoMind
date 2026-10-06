@@ -37,6 +37,29 @@ const jsonResponse = (payload: unknown, status = 200): Response =>
   })
 
 describe('searchOpenAlex', () => {
+  it('uses OpenAlex work types, language and sorting without ignoring other types', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ results: [work({ type: 'preprint' })] })
+    )
+    const result = await searchOpenAlex(
+      query({ documentTypes: ['preprint'], language: 'en', sort: 'citations' }),
+      { fetch: fetcher }
+    )
+    const url = new URL(String(fetcher.mock.calls[0][0]))
+    expect(url.searchParams.get('filter')).toContain('type:preprint')
+    expect(url.searchParams.get('filter')).toContain('language:en')
+    expect(url.searchParams.get('sort')).toBe('cited_by_count:desc')
+    expect(result.candidates[0]?.documentType).toBe('preprint')
+    const otherFetch = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ results: [work({ type: 'other' })] })
+    )
+    await searchOpenAlex(query({ documentTypes: ['conference', 'other'], sort: 'newest' }), {
+      fetch: otherFetch
+    })
+    const otherUrl = new URL(String(otherFetch.mock.calls[0][0]))
+    expect(otherUrl.searchParams.get('filter')).toContain('type:conference-paper|other')
+    expect(otherUrl.searchParams.get('sort')).toBe('publication_date:desc')
+  })
   it('retries a transient 429 after the server delay', async () => {
     const fetcher = vi
       .fn()

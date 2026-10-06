@@ -42,13 +42,11 @@ export function LiteratureDiscoveryDialog({
         >
           <div className={cn(dialogHeaderClassName, 'shrink-0')}>
             <div className="min-w-0">
-              <Dialog.Title className={dialogTitleClassName}>
-                {t('Search external sources')}
-              </Dialog.Title>
+              <Dialog.Title className={dialogTitleClassName}>{t('Search OpenAlex')}</Dialog.Title>
               <Dialog.Description
                 className={cn(dialogDescriptionClassName, '[overflow-wrap:anywhere]')}
               >
-                {t('Find records by topic and criteria, then import the ones you want to screen.')}
+                {t('Search by title, abstract or full text, then import selected records.')}
               </Dialog.Description>
             </div>
             <Dialog.Close asChild>

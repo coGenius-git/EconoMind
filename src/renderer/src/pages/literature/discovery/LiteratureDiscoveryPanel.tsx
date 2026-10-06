@@ -9,11 +9,9 @@ import { InlineNotice } from '@/components/ui/inline-notice'
 import {
   DISCOVERY_DOCUMENT_TYPES,
   DISCOVERY_RESULT_LIMIT,
-  DISCOVERY_SEARCH_SOURCE_IDS,
-  DISCOVERY_SOURCE_TIERS,
+  OPENALEX_DISCOVERY_SOURCE_TIERS,
   type DiscoveryDocumentType,
-  type DiscoverySourceId,
-  type DiscoverySourceTier
+  type DiscoverySourceId
 } from '../../../../../shared/literature-discovery'
 import { useLiteratureDiscovery } from './useLiteratureDiscovery'
 import { LiteratureOpenAlexCredential } from '../detail/LiteratureOpenAlexCredential'
@@ -24,16 +22,15 @@ const DOCUMENT_TYPE_LABELS: Record<DiscoveryDocumentType, string> = {
   dissertation: 'Thesis',
   conference: 'Conference paper',
   book: 'Book',
+  'book-chapter': 'Book chapter',
+  preprint: 'Preprint',
+  dataset: 'Dataset',
+  report: 'Report',
   other: 'Other'
 }
-const SOURCE_TIER_LABELS: Record<DiscoverySourceTier, string> = {
-  cssci: 'CSSCI',
-  pkucore: 'Peking University core',
-  sci: 'SCI',
-  ssci: 'SSCI',
-  ei: 'EI',
-  doaj: 'DOAJ',
-  'open-access': 'Open access'
+const SOURCE_TIER_LABELS = {
+  doaj: 'Indexed in DOAJ',
+  'open-access': 'Open access only'
 }
 const SOURCE_LABELS: Record<DiscoverySourceId, string> = {
   openalex: 'OpenAlex',
@@ -61,34 +58,29 @@ export function LiteratureDiscoveryPanel({
   return (
     <div className="flex min-w-0 flex-col gap-4 p-6">
       <header className="space-y-1">
-        <h2 className="text-xl font-bold">{t('Search external sources')}</h2>
+        <h2 className="text-xl font-bold">{t('Search OpenAlex')}</h2>
         <p className="text-sm text-muted-foreground">
-          {t('Find records by topic and criteria, then import the ones you want to screen.')}
+          {t('Search by title, abstract or full text, then import selected records.')}
         </p>
       </header>
 
       <section className="grid gap-4 rounded-xl border border-border bg-card p-5 md:grid-cols-2">
         <label className="space-y-2 md:col-span-2">
-          <span className="text-sm font-medium">{t('Review topic')}</span>
+          <span className="text-sm font-medium">{t('Search terms')}</span>
           <Textarea
             value={discovery.form.topic}
             rows={2}
-            placeholder={t('Review topic')}
+            placeholder={t('Example: artificial intelligence AND firm performance')}
             onChange={(event) => discovery.update('topic', event.target.value)}
-          />
-        </label>
-        <label className="space-y-2 md:col-span-2">
-          <span className="text-sm font-medium">{t('Keywords')}</span>
-          <Input
-            value={discovery.form.keywords}
-            placeholder={t('Keywords')}
-            onChange={(event) => discovery.update('keywords', event.target.value)}
           />
         </label>
         <label className="space-y-2">
           <span className="text-sm font-medium">{t('Publication year from')}</span>
           <Input
             value={discovery.form.yearFrom}
+            type="number"
+            min={1000}
+            max={9999}
             inputMode="numeric"
             placeholder={t('Publication year from')}
             onChange={(event) => discovery.update('yearFrom', event.target.value)}
@@ -98,6 +90,9 @@ export function LiteratureDiscoveryPanel({
           <span className="text-sm font-medium">{t('Publication year to')}</span>
           <Input
             value={discovery.form.yearTo}
+            type="number"
+            min={1000}
+            max={9999}
             inputMode="numeric"
             placeholder={t('Publication year to')}
             onChange={(event) => discovery.update('yearTo', event.target.value)}
@@ -107,6 +102,8 @@ export function LiteratureDiscoveryPanel({
           <span className="text-sm font-medium">{t('Minimum citations')}</span>
           <Input
             value={discovery.form.minCitations}
+            type="number"
+            min={0}
             inputMode="numeric"
             placeholder={t('Minimum citations')}
             onChange={(event) => discovery.update('minCitations', event.target.value)}
@@ -140,9 +137,9 @@ export function LiteratureDiscoveryPanel({
         </fieldset>
 
         <fieldset className="space-y-2">
-          <legend className="text-sm font-medium">{t('Source tiers')}</legend>
+          <legend className="text-sm font-medium">{t('Access and indexing')}</legend>
           <div className="flex flex-wrap gap-3">
-            {DISCOVERY_SOURCE_TIERS.map((tier) => (
+            {OPENALEX_DISCOVERY_SOURCE_TIERS.map((tier) => (
               <label key={tier} className="flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
@@ -155,88 +152,49 @@ export function LiteratureDiscoveryPanel({
           </div>
         </fieldset>
 
-        <fieldset className="space-y-3 md:col-span-2">
-          <legend className="text-sm font-medium">{t('Data sources')}</legend>
-          <div className="flex flex-wrap items-center gap-4">
-            {DISCOVERY_SEARCH_SOURCE_IDS.map((source) => (
-              <label key={source} className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={discovery.form.sources.includes(source)}
-                  onChange={() => discovery.toggleSource(source)}
-                />
-                <span>{t(SOURCE_LABELS[source])}</span>
-              </label>
-            ))}
-            <span className="text-xs text-muted-foreground">{t('Searched online')}</span>
-          </div>
-          {discovery.form.sources.includes('openalex') ? (
-            <div>
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                {t('OpenAlex PDFs are downloaded when you import selected records.')}
-              </p>
-              <LiteratureOpenAlexCredential
-                disabled={discovery.searching || discovery.importing}
-                onSaved={() => void discovery.search()}
-                onBusyChange={setCredentialBusy}
-              />
-            </div>
-          ) : null}
-          {discovery.form.sources.includes('cnki') ? (
-            <div className="space-y-2">
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                {t(
-                  'CNKI PDFs are downloaded on import using the current browser session and institutional IP permissions.'
-                )}
-              </p>
-              <div className="flex flex-wrap items-center gap-3">
-                <Badge variant={discovery.cnkiSignedIn ? 'default' : 'secondary'}>
-                  {discovery.cnkiSignedIn ? t('CNKI session ready') : t('No CNKI session')}
-                </Badge>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={discovery.signingIn}
-                  onClick={() => void discovery.signInCnki()}
-                >
-                  {discovery.signingIn ? <LoaderCircle className="size-4 animate-spin" /> : null}
-                  {t('Sign in to CNKI')}
-                </Button>
-                <span className="text-xs text-muted-foreground">
-                  {t('(Close the tab when you are done.)')}
-                </span>
-              </div>
-            </div>
-          ) : null}
-          {discovery.form.sources.includes('cnki') && !discovery.cnkiSignedIn ? (
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              {t(
-                'CNKI public search can work without sign-in. Complete verification in the browser if prompted.'
-              )}
-            </p>
-          ) : null}
-          <div className="flex flex-wrap items-center gap-4">
-            <label className="flex items-center gap-2 text-sm">
-              <span>{t('Import a CNKI export file')}</span>
-              <input
-                type="file"
-                accept=".txt,.ris,.enw,.nbib,.bib,text/plain"
-                disabled={discovery.parsing}
-                onChange={(event) => {
-                  const file = event.target.files?.[0]
-                  // Reset so the same file can be picked again after an edit.
-                  event.target.value = ''
-                  if (file) void discovery.importCnkiExport(file)
-                }}
-              />
-            </label>
-          </div>
+        <label className="space-y-2">
+          <span className="text-sm font-medium">{t('Language')}</span>
+          <select
+            className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+            value={discovery.form.language}
+            onChange={(event) =>
+              discovery.update('language', event.target.value as '' | 'en' | 'zh')
+            }
+          >
+            <option value="">{t('All languages')}</option>
+            <option value="en">{t('English literature')}</option>
+            <option value="zh">{t('Chinese literature')}</option>
+          </select>
+        </label>
+        <label className="space-y-2">
+          <span className="text-sm font-medium">{t('Sort by')}</span>
+          <select
+            className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+            value={discovery.form.sort}
+            onChange={(event) =>
+              discovery.update('sort', event.target.value as 'relevance' | 'newest' | 'citations')
+            }
+          >
+            <option value="relevance">{t('Relevance')}</option>
+            <option value="newest">{t('Newest first')}</option>
+            <option value="citations">{t('Most cited')}</option>
+          </select>
+        </label>
+        <div className="space-y-2 md:col-span-2">
           <p className="text-xs leading-relaxed text-muted-foreground">
             {t(
-              'Fallback: in CNKI export the selected records as a RefWorks or EndNote file, then import that file here.'
+              'Only records with a full-text link are shown. Downloads depend on availability at the source.'
             )}
           </p>
-        </fieldset>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {t('OpenAlex PDFs are downloaded when you import selected records.')}
+          </p>
+          <LiteratureOpenAlexCredential
+            disabled={discovery.searching || discovery.importing}
+            onSaved={() => void discovery.search()}
+            onBusyChange={setCredentialBusy}
+          />
+        </div>
 
         <div className="md:col-span-2">
           <Button

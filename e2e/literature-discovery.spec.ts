@@ -1,4 +1,4 @@
-import { expect } from '@playwright/test'
+import { expect, type ElectronApplication } from '@playwright/test'
 import { test } from './fixtures/electron-app'
 
 const exportText = [
@@ -22,19 +22,42 @@ const exportText = [
   ''
 ].join('\n')
 
-test('imports exported references through the discovery dialog and keeps duplicate mappings correct', async ({
-  app
-}) => {
+test('imports OpenAlex search results and keeps duplicate mappings correct', async ({ app }) => {
   const page = await app.completeOnboarding()
   await page.evaluate(() => window.api.locale.setPreference({ preference: 'en' }))
+  // Stub only the external search in this isolated app; imports, duplicate mapping and storage
+  // still use the real command bridge. Provider filter encoding has its own regression test.
+  const candidates = await page.evaluate(async (content) => {
+    const parsed = await window.api.literature.discoveryParseRecords({ content })
+    return parsed.candidates.map((candidate, index) => ({
+      ...candidate,
+      source: 'openalex' as const,
+      key: `openalex:fixture-${index}`
+    }))
+  }, exportText)
+  const application = (app as unknown as { application: ElectronApplication }).application
+  await application.evaluate(({ ipcMain }, records) => {
+    ipcMain.removeHandler('literature:discovery-search')
+    ipcMain.handle('literature:discovery-search', (_event, query) => {
+      if (
+        query.sources.length !== 1 ||
+        query.sources[0] !== 'openalex' ||
+        query.language !== 'en' ||
+        query.sort !== 'citations'
+      )
+        throw new Error('OpenAlex filter fixture mismatch')
+      return { candidates: records, statuses: [], warnings: [] }
+    })
+  }, candidates)
   await page.getByRole('button', { name: 'Library', exact: true }).click()
   await page.getByRole('button', { name: 'Search external sources', exact: true }).click()
-  const discovery = page.getByRole('dialog', { name: 'Search external sources', exact: true })
-  await discovery.locator('input[type="file"]').setInputFiles({
-    name: 'references.txt',
-    mimeType: 'text/plain',
-    buffer: Buffer.from(exportText)
-  })
+  const discovery = page.getByRole('dialog', { name: 'Search OpenAlex', exact: true })
+  await expect(discovery.getByRole('checkbox', { name: 'CNKI', exact: true })).toHaveCount(0)
+  await expect(discovery.getByRole('checkbox', { name: 'SCI', exact: true })).toHaveCount(0)
+  await discovery.getByLabel('Search terms', { exact: true }).fill('firm performance')
+  await discovery.getByLabel('Language', { exact: true }).selectOption('en')
+  await discovery.getByLabel('Sort by', { exact: true }).selectOption('citations')
+  await discovery.getByRole('button', { name: 'Search', exact: true }).click()
   await expect(
     discovery.getByRole('checkbox', { name: 'Final discovery paper', exact: true })
   ).toBeVisible()
@@ -43,10 +66,9 @@ test('imports exported references through the discovery dialog and keeps duplica
   await expect(discovery.getByText('Imported records: 2', { exact: true })).toBeVisible()
   // Reuse the persisted records through the real command bridge. Each candidate must retain its
   // actual target even though the library returned only two unique IDs for three input records.
-  const imported = await page.evaluate(async (content) => {
-    const parsed = await window.api.literature.discoveryParseRecords({ content })
+  const imported = await page.evaluate(async (records) => {
     const receipt = await window.api.literature.discoveryImport({
-      candidates: parsed.candidates,
+      candidates: records,
       collectionId: null,
       duplicatePolicy: 'reuse'
     })
@@ -56,7 +78,7 @@ test('imports exported references through the discovery dialog and keeps duplica
         title: (await window.api.literature.get(entry.itemId))?.item.title
       }))
     )
-  }, exportText)
+  }, candidates)
   expect(imported).toHaveLength(3)
   expect(imported[0].itemId).toBe(imported[1].itemId)
   expect(imported[2].itemId).not.toBe(imported[0].itemId)

@@ -4,11 +4,11 @@ import {
   DISCOVERY_DEFAULT_LIMIT,
   DISCOVERY_DOCUMENT_TYPES,
   DISCOVERY_RESULT_LIMIT,
-  DISCOVERY_SEARCH_SOURCE_IDS,
-  DISCOVERY_SOURCE_TIERS,
+  OPENALEX_DISCOVERY_SOURCE_TIERS,
   type DiscoveryCandidate,
   type DiscoveryDocumentType,
   type DiscoveryImportResult,
+  type DiscoveryQuery,
   type DiscoveryScreenResult,
   type DiscoverySourceId,
   type DiscoverySourceStatus,
@@ -25,6 +25,8 @@ export type DiscoveryFormState = {
   minCitations: string
   limit: number
   sources: DiscoverySourceId[]
+  language: NonNullable<DiscoveryQuery['language']> | ''
+  sort: NonNullable<DiscoveryQuery['sort']>
 }
 
 export const emptyDiscoveryForm: DiscoveryFormState = {
@@ -36,7 +38,9 @@ export const emptyDiscoveryForm: DiscoveryFormState = {
   sourceTiers: [],
   minCitations: '',
   limit: DISCOVERY_DEFAULT_LIMIT,
-  sources: [...DISCOVERY_SEARCH_SOURCE_IDS]
+  sources: ['openalex'],
+  language: '',
+  sort: 'relevance'
 }
 
 function parseYear(value: string): number | null {
@@ -119,7 +123,25 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
     setImportResult(undefined)
     setScreenResult(undefined)
     if (!form.topic.trim()) {
-      setError(t('Enter a review topic before searching.'))
+      setError(t('Enter search terms before searching.'))
+      return
+    }
+    const yearFrom = parseYear(form.yearFrom)
+    const yearTo = parseYear(form.yearTo)
+    if (
+      (form.yearFrom.trim() && (!yearFrom || yearFrom < 1000)) ||
+      (form.yearTo.trim() && (!yearTo || yearTo < 1000))
+    ) {
+      setError(t('Enter a four-digit publication year.'))
+      return
+    }
+    if (yearFrom !== null && yearTo !== null && yearFrom > yearTo) {
+      setError(t('Publication year from must not exceed publication year to.'))
+      return
+    }
+    const minCitations = parseCount(form.minCitations)
+    if (form.minCitations.trim() && (minCitations === null || minCitations > 10_000_000)) {
+      setError(t('Enter a non-negative citation count.'))
       return
     }
     setSearching(true)
@@ -127,13 +149,17 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
       const result = await window.api.literature.discoverySearch({
         topic: form.topic.trim(),
         keywords: keywords(),
-        yearFrom: parseYear(form.yearFrom),
-        yearTo: parseYear(form.yearTo),
+        yearFrom,
+        yearTo,
         documentTypes: form.documentTypes.filter((type) => DISCOVERY_DOCUMENT_TYPES.includes(type)),
-        sourceTiers: form.sourceTiers.filter((tier) => DISCOVERY_SOURCE_TIERS.includes(tier)),
-        minCitations: parseCount(form.minCitations),
+        sourceTiers: form.sourceTiers.filter((tier) =>
+          OPENALEX_DISCOVERY_SOURCE_TIERS.some((supported) => supported === tier)
+        ),
+        minCitations,
+        language: form.language || null,
+        sort: form.sort,
         limit: Math.min(DISCOVERY_RESULT_LIMIT, Math.max(1, Math.trunc(form.limit) || 1)),
-        sources: form.sources.length ? form.sources : ['openalex']
+        sources: ['openalex']
       })
       setCandidates(result.candidates)
       setStatuses(result.statuses)

@@ -32,6 +32,10 @@ const ITEM_TYPE_BY_DOCUMENT_TYPE: Readonly<
   dissertation: 'thesis',
   conference: 'conferencePaper',
   book: 'book',
+  'book-chapter': 'bookSection',
+  preprint: 'preprint',
+  dataset: 'dataset',
+  report: 'report',
   other: 'document'
 }
 

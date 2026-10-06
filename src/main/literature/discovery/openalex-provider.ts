@@ -134,9 +134,13 @@ const TYPE_FILTER: Readonly<Record<DiscoveryDocumentType, string | undefined>> =
   article: 'article',
   review: 'review',
   dissertation: 'dissertation',
-  conference: 'proceedings-article',
+  conference: 'conference-paper',
   book: 'book',
-  other: undefined
+  'book-chapter': 'book-chapter',
+  preprint: 'preprint',
+  dataset: 'dataset',
+  report: 'report',
+  other: 'other'
 }
 
 const invertedLocation = z
@@ -211,7 +215,13 @@ function mapDocumentType(value: string | null | undefined): DiscoveryDocumentTyp
     case 'dissertation':
       return 'dissertation'
     case 'proceedings-article':
+    case 'conference-paper':
       return 'conference'
+    case 'book-chapter':
+    case 'preprint':
+    case 'dataset':
+    case 'report':
+      return value
     case 'book':
     case 'monograph':
     case 'edited-book':
@@ -231,11 +241,11 @@ function buildFilters(query: DiscoveryQuery): {
   if (query.yearTo !== null) filters.push(`to_publication_date:${query.yearTo}-12-31`)
   if (query.minCitations !== null && query.minCitations > 0)
     filters.push(`cited_by_count:>${query.minCitations - 1}`)
+  if (query.language) filters.push(`language:${query.language}`)
   const types = query.documentTypes
     .map((type) => TYPE_FILTER[type])
     .filter((value): value is string => Boolean(value))
-  if (types.length && !query.documentTypes.includes('other'))
-    filters.push(`type:${types.join('|')}`)
+  if (types.length) filters.push(`type:${types.join('|')}`)
   for (const tier of query.sourceTiers) {
     if (!RESOLVABLE_TIERS.includes(tier)) {
       unresolved.push(tier)
@@ -307,6 +317,8 @@ export async function searchOpenAlex(
         ].join(',')
       })
       if (filters.length) params.set('filter', filters.join(','))
+      if (query.sort === 'citations') params.set('sort', 'cited_by_count:desc')
+      else if (query.sort === 'newest') params.set('sort', 'publication_date:desc')
       if (apiKey) params.set('api_key', apiKey)
       url.search = params.toString()
 
