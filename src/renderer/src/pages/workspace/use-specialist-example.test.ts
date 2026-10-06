@@ -171,6 +171,43 @@ describe('explicit Specialist example selection', () => {
     expect(hook.changed).not.toHaveBeenCalled()
   })
 
+  it('waits through a pending recovery notice until the switch successfully applies', () => {
+    const hook = mount()
+    hook.choose('literature-review-agent')
+    hook.update({ selectedId: 'literature-review-agent', pending: true, failed: true })
+    expect(hook.changed).not.toHaveBeenCalled()
+    hook.update({ pending: false, failed: false })
+    expect(hook.text()).toBe(builtinSpecialistExample(builtin('literature-review-agent'), t))
+  })
+
+  it('keeps user edits made while a pending recovery notice is visible', () => {
+    const hook = mount()
+    hook.choose('literature-review-agent')
+    hook.update({ selectedId: 'literature-review-agent', pending: true, failed: true })
+    hook.update({ doc: textDoc('My revised question') })
+    hook.update({ pending: false, failed: false })
+    expect(hook.text()).toBe('My revised question')
+    expect(hook.changed).not.toHaveBeenCalled()
+  })
+
+  it('discards a pending request when its switch settles as a real failure', () => {
+    const hook = mount()
+    hook.choose('literature-review-agent')
+    hook.update({ pending: true, failed: true })
+    hook.update({ pending: false })
+    hook.update({ failed: false, selectedId: 'literature-review-agent' })
+    expect(hook.changed).not.toHaveBeenCalled()
+  })
+
+  it('waits until an unchanged draft becomes editable after the selected role applies', () => {
+    const hook = mount()
+    hook.choose('literature-review-agent')
+    hook.update({ selectedId: 'literature-review-agent', canEdit: false })
+    expect(hook.changed).not.toHaveBeenCalled()
+    hook.update({ canEdit: true })
+    expect(hook.text()).toBe(builtinSpecialistExample(builtin('literature-review-agent'), t))
+  })
+
   it('does not prefill another conversation or revive a request after navigating back', () => {
     const hook = mount({ pending: true })
     hook.choose('data-agent')

@@ -205,6 +205,7 @@ type WorkspaceComposerController = {
     restoreFailedSend: (snapshot: ComposerSendSnapshot, preserveOnConflict?: boolean) => boolean
     discardSnapshot: (snapshot: ComposerSendSnapshot) => void
     hasUnfinishedTransfers: (draftKey: string) => boolean
+    hasWslSetupDraft: (draftKey: string) => boolean
     beginSessionDeletion: (draftKey: string) => boolean
     settleSessionDeletion: (draftKey: string, deleted: boolean) => void
   }
@@ -1534,6 +1535,20 @@ const useWorkspaceComposerController = ({
       discardSnapshot: (snapshot) =>
         releaseHistoryResources([{ attachments: snapshot.attachments, attachmentTransfers: [] }]),
       hasUnfinishedTransfers,
+      hasWslSetupDraft: (draftKey): boolean => {
+        if (deletedDraftKeysRef.current.has(draftKey)) return false
+        if (activeDraftKeyRef.current === draftKey) {
+          return setupSessionTokenRef.current !== undefined
+        }
+        const draft =
+          draftsRef.current[draftKey] ??
+          readComposerDraft(
+            draftProjectsRef.current[draftKey] ?? projectIdRef.current,
+            draftKey,
+            retryMessage
+          )
+        return draft?.setupSessionToken !== undefined
+      },
       beginSessionDeletion,
       settleSessionDeletion: (draftKey, deleted): void => {
         settleSessionDeletion(draftKey, deleted)

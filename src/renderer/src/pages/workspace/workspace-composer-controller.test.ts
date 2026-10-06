@@ -438,6 +438,25 @@ describe('workspace composer controller', () => {
     expect(hook.result.current.view.doc).toEqual(emptyDoc)
   })
 
+  it('detects a parked New setup draft while an existing session is selected', () => {
+    const hook = renderController(uploads(), undefined, [], null)
+    mounted.push(hook)
+    hook.setWslPrefill({
+      projectId: 'project',
+      doc: textDoc('setup diagnostics'),
+      setupSessionToken: 'test-setup-token',
+      requestId: 1
+    })
+    hook.selectSession({ id: 'session-a', projectId: 'project' })
+    expect(hook.result.current.view.isWslSetupDraft).toBe(false)
+    expect(hook.result.current.lifecycle.hasWslSetupDraft('new:project')).toBe(true)
+    expect(hook.result.current.lifecycle.hasWslSetupDraft('session-a')).toBe(false)
+    hook.selectSession(undefined)
+    act(() => hook.result.current.actions.discardWslSetupDraft())
+    hook.selectSession({ id: 'session-a', projectId: 'project' })
+    expect(hook.result.current.lifecycle.hasWslSetupDraft('new:project')).toBe(false)
+  })
+
   it('does not discard an ordinary conversation draft through the WSL2 setup action', () => {
     const hook = renderController()
     mounted.push(hook)

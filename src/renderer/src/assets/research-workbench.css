@@ -712,3 +712,188 @@
     font-size: 18px;
   }
 }
+
+/* Specialist browsing remains a workspace sheet; the profile is read directly
+   from the catalog and its details stay visible while the directory is browsed. */
+@layer components {
+  .specialist-browser {
+    container-type: inline-size;
+    overscroll-behavior: contain;
+  }
+
+  .specialist-browser-inner {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    padding: 22px;
+  }
+
+  .specialist-browser-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    flex-shrink: 0;
+    margin-bottom: 18px;
+  }
+
+  .specialist-browser-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    flex-shrink: 0;
+    margin-bottom: 18px;
+  }
+
+  .specialist-browser-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 36%);
+    grid-template-rows: minmax(0, 1fr);
+    flex: 1;
+    min-height: 0;
+    gap: 20px;
+  }
+
+  .specialist-browser-directory {
+    min-height: 0;
+    overflow-y: auto;
+    padding: 3px;
+    overscroll-behavior: contain;
+  }
+
+  .specialist-browser-cards {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    padding: 0;
+    list-style: none;
+  }
+
+  .specialist-browser-card {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    min-height: 166px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--research-paper);
+    text-align: left;
+    color: var(--text-000);
+    transition:
+      border-color 150ms,
+      background-color 150ms;
+  }
+
+  .specialist-browser-card:hover {
+    border-color: var(--primary);
+  }
+
+  .specialist-browser-card[aria-pressed='true'] {
+    border-color: var(--primary);
+    box-shadow: inset 0 0 0 1px var(--primary);
+  }
+
+  .specialist-browser-card:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 3px;
+  }
+
+  .specialist-browser-detail {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+    padding: 20px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--research-paper);
+  }
+
+  .specialist-browser-detail-reading {
+    flex: 1;
+    min-height: 0;
+    margin-top: 16px;
+    overflow-y: auto;
+    padding: 2px 4px 2px 2px;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .specialist-browser-detail-action {
+    flex-shrink: 0;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+
+  .specialist-browser-example {
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-100);
+    color: var(--text-100);
+    overscroll-behavior: contain;
+  }
+
+  .specialist-browser-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 28px 20px;
+    border: 1px dashed var(--border);
+    border-radius: 12px;
+    background: var(--research-paper);
+  }
+
+  @container (max-width: 850px) {
+    .specialist-browser-cards {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .specialist-browser-card {
+      min-height: 150px;
+    }
+  }
+
+  @container (max-width: 660px) {
+    .specialist-browser-inner {
+      height: auto;
+      min-height: 100%;
+      padding: 20px;
+    }
+
+    .specialist-browser-header,
+    .specialist-browser-toolbar {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 14px;
+    }
+
+    .specialist-browser-toolbar > [role='group'] {
+      align-self: flex-start;
+    }
+
+    .specialist-browser-layout {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto;
+      flex: initial;
+      gap: 20px;
+    }
+
+    .specialist-browser-directory {
+      overflow-y: visible;
+    }
+
+    .specialist-browser-detail {
+      padding: 20px;
+    }
+
+    .specialist-browser-detail-reading {
+      max-height: 360px;
+      flex: initial;
+    }
+  }
+}

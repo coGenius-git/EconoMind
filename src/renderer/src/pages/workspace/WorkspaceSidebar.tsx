@@ -18,6 +18,7 @@ import {
   Search,
   Settings,
   Toolbox,
+  Users,
   X
 } from 'lucide-react'
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -86,6 +87,8 @@ type WorkspaceSidebarProps = {
   onOpenLiterature?: () => void
   isComputeOpen?: boolean
   onOpenCompute?: () => void
+  isSpecialistsOpen?: boolean
+  onOpenSpecialists?: () => void
   onOpenSession: (sessionId: string) => void
   onPreviewSession?: SessionPreviewRequest
   onRenameSession: (session: ChatSession) => void
@@ -715,6 +718,8 @@ const WorkspaceSidebarView = (props: WorkspaceSidebarViewProps): React.JSX.Eleme
     onOpenLiterature,
     isComputeOpen = false,
     onOpenCompute,
+    isSpecialistsOpen = false,
+    onOpenSpecialists,
     onPreviewSession,
     onRenameSessionTitle,
     canDownloadArtifacts,
@@ -1201,6 +1206,25 @@ const WorkspaceSidebarView = (props: WorkspaceSidebarViewProps): React.JSX.Eleme
                 <BookOpen className="size-3.5" strokeWidth={2} />
               </span>
               <span>{t('Library')}</span>
+            </button>
+          </div>
+
+          <div className="flex h-9 items-center gap-1 px-2">
+            <button
+              type="button"
+              className={cn(
+                'flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm text-text-000 hover:bg-bg-300 disabled:cursor-not-allowed disabled:opacity-50',
+                isSpecialistsOpen && 'bg-bg-300',
+                sidebarInteractiveTransitionClassName
+              )}
+              disabled={!onOpenSpecialists}
+              aria-controls="specialist-browser"
+              aria-pressed={isSpecialistsOpen}
+              data-testid="workspace-specialists-trigger"
+              onClick={onOpenSpecialists}
+            >
+              <Users className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+              <span>{t('Specialists')}</span>
             </button>
           </div>
 

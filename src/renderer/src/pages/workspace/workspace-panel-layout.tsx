@@ -269,7 +269,8 @@ type PreviewPanelLayoutPort = {
 // Presents one layout contract to WorkspacePage across desktop and mobile surfaces.
 const useWorkspacePanelLayout = (
   previewPort: PreviewPanelLayoutPort,
-  mobileSidebarDialogRef: React.RefObject<HTMLDivElement | null>
+  mobileSidebarDialogRef: React.RefObject<HTMLDivElement | null>,
+  showPreviewPanel: boolean
 ): WorkspacePanelLayout => {
   const { t } = useTranslation()
   const [sidebarState, setSidebarState] = useState<ResizablePanelState>('open')
@@ -324,7 +325,7 @@ const useWorkspacePanelLayout = (
     previewPort.state === 'collapsed' ? PANEL_COLLAPSED_SIZE_CSS : PREVIEW_PANEL_DEFAULT_SIZE_CSS
   )
   const preview = useAnimatedResizablePanel({
-    enabled: !isMobile,
+    enabled: !isMobile && showPreviewPanel,
     panelState: previewPort.state,
     defaultOpenSize: PREVIEW_PANEL_DEFAULT_SIZE,
     minOpenSize: PREVIEW_PANEL_MIN_OPEN_SIZE,
@@ -511,6 +512,7 @@ const useWorkspacePanelLayout = (
 
 type WorkspacePanelLayoutProps = {
   hasPreviewItems: boolean
+  showPreviewPanel?: boolean
   isPreviewPresentationActive?: boolean
   restoredPlanResponder?: RestoredPlanResponder
   previewAnnotations?: PreviewInteractionPort
@@ -534,6 +536,7 @@ type WorkspacePanelLayoutProps = {
 // Adapts the controller to the desktop split view and mobile drawer/sheet without owning page data.
 const WorkspacePanelLayout = ({
   hasPreviewItems,
+  showPreviewPanel = true,
   isPreviewPresentationActive = true,
   restoredPlanResponder,
   previewAnnotations,
@@ -548,14 +551,15 @@ const WorkspacePanelLayout = ({
   const mobileSidebarDialogRef = useRef<HTMLDivElement | null>(null)
   const { isMobile, mobileSidebar, sidebar, preview } = useWorkspacePanelLayout(
     previewPort,
-    mobileSidebarDialogRef
+    mobileSidebarDialogRef,
+    showPreviewPanel
   )
 
   // One sheet spans the conversation and preview. Measure the real header so taller session
   // controls and window resizing keep the inset preview below its divider without remounting it.
   useLayoutEffect(() => {
     const workspace = workspaceRef.current
-    if (isMobile || !workspace || typeof ResizeObserver === 'undefined') return
+    if (isMobile || !showPreviewPanel || !workspace || typeof ResizeObserver === 'undefined') return
     const synchronize = (): void => {
       const conversation = workspace.querySelector<HTMLElement>('.research-conversation')
       const header = workspace.querySelector<HTMLElement>('[data-testid="conversation-header"]')
@@ -607,7 +611,7 @@ const WorkspacePanelLayout = ({
       observer.disconnect()
       changes.disconnect()
     }
-  }, [isMobile])
+  }, [isMobile, showPreviewPanel])
 
   return (
     <>
@@ -616,7 +620,7 @@ const WorkspacePanelLayout = ({
         className="research-workspace-layout relative flex h-full"
         data-desktop={!isMobile || undefined}
       >
-        {!isMobile ? (
+        {!isMobile && showPreviewPanel ? (
           <div className="research-workbench-sheet research-glass" aria-hidden="true">
             <div className="research-workbench-divider" />
           </div>
@@ -696,7 +700,7 @@ const WorkspacePanelLayout = ({
             openMobileSidebar: mobileSidebar.open
           })}
 
-          {!isMobile ? (
+          {!isMobile && showPreviewPanel ? (
             <>
               <ResizableHandle
                 elementRef={preview.separatorRef}
@@ -709,27 +713,29 @@ const WorkspacePanelLayout = ({
               />
             </>
           ) : null}
-          <PreviewPanel
-            isMobile={isMobile}
-            panelRef={preview.panelRef}
-            defaultSize={preview.defaultSize}
-            minSize={preview.minSize}
-            onResize={preview.onResize}
-            restoredPlanResponder={restoredPlanResponder}
-            {...previewAnnotations}
-            onPdfContextError={onPdfContextError}
-          >
-            <MobilePreviewSheet
+          {showPreviewPanel ? (
+            <PreviewPanel
               isMobile={isMobile}
-              open={isPreviewPresentationActive && preview.state === 'open'}
-              onClose={preview.collapse}
+              panelRef={preview.panelRef}
+              defaultSize={preview.defaultSize}
+              minSize={preview.minSize}
+              onResize={preview.onResize}
               restoredPlanResponder={restoredPlanResponder}
               {...previewAnnotations}
               onPdfContextError={onPdfContextError}
-            />
-          </PreviewPanel>
+            >
+              <MobilePreviewSheet
+                isMobile={isMobile}
+                open={isPreviewPresentationActive && preview.state === 'open'}
+                onClose={preview.collapse}
+                restoredPlanResponder={restoredPlanResponder}
+                {...previewAnnotations}
+                onPdfContextError={onPdfContextError}
+              />
+            </PreviewPanel>
+          ) : null}
         </ResizablePanelGroup>
-        {!isMobile && hasPreviewItems ? preview.toggleButton : null}
+        {!isMobile && showPreviewPanel && hasPreviewItems ? preview.toggleButton : null}
         {!isMobile && sidebar.state === 'collapsed' ? sidebar.toggleButton : null}
       </div>
     </>

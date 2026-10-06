@@ -19,6 +19,7 @@ import {
   type ChatSession
 } from '@/stores/session-store'
 import { useSpecialistStore } from '@/stores/specialist-store'
+import { previewLeaveGuards } from '@/stores/preview-leave-guard'
 
 import { type ComposerDoc } from './composer/composer-doc'
 import {
@@ -31,6 +32,10 @@ import type { SpecialistListItem } from '../../../../shared/specialist'
 
 // Capture all props WorkspacePage passes to ConversationPanel.
 let conversationProps: Parameters<(typeof import('./ConversationPanel'))['ConversationPanel']>[0]
+let sidebarProps: React.ComponentProps<(typeof import('./WorkspaceSidebar'))['WorkspaceSidebar']>
+let browserProps: React.ComponentProps<
+  (typeof import('../specialists/SpecialistBrowser'))['SpecialistBrowser']
+>
 const panelSpecialistId = (): string | undefined =>
   conversationProps.view.activeSession?.specialistId ??
   conversationProps.specialist.view.specialist.newConversationId
@@ -70,7 +75,16 @@ vi.mock('@/lib/acp/useWorkspaceAgentRuntime', () => ({
 }))
 
 vi.mock('./WorkspaceSidebar', () => ({
-  WorkspaceSidebar: (): React.JSX.Element => <aside />
+  WorkspaceSidebar: (props: typeof sidebarProps): React.JSX.Element => {
+    sidebarProps = props
+    return <aside />
+  }
+}))
+vi.mock('../specialists/SpecialistBrowser', () => ({
+  SpecialistBrowser: (props: typeof browserProps): React.JSX.Element => {
+    browserProps = props
+    return <section data-testid="specialist-browser" />
+  }
 }))
 
 vi.mock('./ConversationPanel', () => ({
@@ -185,6 +199,7 @@ const setupBase = (): void => {
 }
 
 beforeEach(() => {
+  previewLeaveGuards.clear()
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -202,6 +217,112 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 describe('WorkspacePage fail-closed send gate', () => {
+  it('summons into the existing new draft and preserves the outgoing session draft', async () => {
+    setupBase()
+    useProjectStore.setState({
+      projects: [
+        {
+          id: 'proj-1',
+          name: 'Research',
+          description: '',
+          isExample: false,
+          createdAt: 1,
+          updatedAt: 1
+        }
+      ]
+    })
+    useSessionStore.setState({
+      ...createInitialSessionState(),
+      sessions: [createSession({ specialistId: 'spec-a' })]
+    })
+    useSpecialistStore.setState({
+      items: [makeSpecialist('spec-a', 'Analyst'), makeSpecialist('spec-b', 'Researcher')],
+      isLoaded: true,
+      integrity: { status: 'ok' },
+      loadError: undefined,
+      load: vi.fn()
+    })
+    window.api = apiStub()
+    await renderPage(root)
+    act(() => conversationProps.composer.actions.changeDoc(textDoc('My saved new draft')))
+    await act(async () => sidebarProps.onOpenSession('sess-a'))
+    act(() => conversationProps.composer.actions.changeDoc(textDoc('My session draft')))
+    act(() => sidebarProps.onOpenSpecialists?.())
+    expect(browserProps.canSummon).toBe(true)
+    expect(useSessionStore.getState().selectedSessionId).toBe('sess-a')
+    act(() => browserProps.onSummon('spec-b'))
+    expect(conversationProps.view.activeSession).toBeUndefined()
+    expect(conversationProps.specialistSummonRequest).toMatchObject({
+      draftKey: 'new:proj-1',
+      specialistId: 'spec-b'
+    })
+    expect(conversationProps.composer.view.doc).toEqual(textDoc('My saved new draft'))
+    expect(useSessionStore.getState().sessions[0].specialistId).toBe('spec-a')
+    expect(window.api.specialist.setSessionSpecialist).not.toHaveBeenCalled()
+    expect(runtime.sendMessage).not.toHaveBeenCalled()
+    await act(async () => sidebarProps.onOpenSession('sess-a'))
+    expect(conversationProps.composer.view.doc).toEqual(textDoc('My session draft'))
+    expect(conversationProps.specialistSummonRequest).toBeUndefined()
+  })
+
+  it('keeps an edited file preview mounted until its existing leave guard permits browsing', async () => {
+    setupBase()
+    useSessionStore.setState(createInitialSessionState())
+    window.api = apiStub()
+    await renderPage(root)
+    let permit!: () => boolean | void
+    previewLeaveGuards.register('dirty-preview', (action) => {
+      permit = action
+      return false
+    })
+    act(() => sidebarProps.onOpenSpecialists?.())
+    expect(container.querySelector('[data-testid="specialist-browser"]')).toBeNull()
+    expect(container.querySelector('[data-testid="preview-panel"]')).not.toBeNull()
+    act(() => permit())
+    expect(container.querySelector('[data-testid="specialist-browser"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="preview-panel"]')).toBeNull()
+  })
+
+  it('rejects a summon when the target New draft is parked for system setup', async () => {
+    setupBase()
+    useProjectStore.setState({
+      projects: [
+        {
+          id: 'proj-1',
+          name: 'Research',
+          description: '',
+          isExample: false,
+          createdAt: 1,
+          updatedAt: 1
+        }
+      ]
+    })
+    useSessionStore.setState({ ...createInitialSessionState(), sessions: [createSession()] })
+    useSpecialistStore.setState({
+      items: [makeSpecialist('spec-b', 'Researcher')],
+      isLoaded: true,
+      integrity: { status: 'ok' },
+      loadError: undefined,
+      load: vi.fn()
+    })
+    window.api = apiStub()
+    await renderPage(root)
+    await act(async () => {
+      useNavigationStore
+        .getState()
+        .startWslSupportConversation('proj-1', textDoc('setup diagnostics'), 'test-setup-token')
+    })
+    expect(conversationProps.composer.view.isWslSetupDraft).toBe(true)
+    await act(async () => sidebarProps.onOpenSession('sess-a'))
+    expect(conversationProps.composer.view.isWslSetupDraft).toBe(false)
+    act(() => sidebarProps.onOpenSpecialists?.())
+    expect(browserProps.canSummon).toBe(false)
+    expect(browserProps.summonDisabledReason).toContain('setup draft')
+    act(() => browserProps.onSummon('spec-b'))
+    expect(useSessionStore.getState().selectedSessionId).toBe('sess-a')
+    expect(runtime.sendMessage).not.toHaveBeenCalled()
+  })
+
   it('blocks send when the bound specialist is missing from a loaded catalog', async () => {
     setupBase()
     useSessionStore.setState({
@@ -362,6 +483,72 @@ describe('WorkspacePage fail-closed send gate', () => {
       pendingHistoryReplay: { kind: 'all' },
       specialistSwitchResetRequired: true
     })
+  })
+
+  it('does not treat the in-flight durable pending marker as a restored switch failure', async () => {
+    setupBase()
+    const switchRequest = Promise.withResolvers<{ status: 'applied'; contextReset: boolean }>()
+    useSessionStore.setState({
+      ...createInitialSessionState(),
+      sessions: [createSession({ specialistId: 'spec-a' })],
+      selectedSessionId: 'sess-a'
+    })
+    useSpecialistStore.setState({
+      items: [makeSpecialist('spec-a', 'Analyst'), makeSpecialist('spec-b', 'Researcher')],
+      isLoaded: true,
+      load: vi.fn()
+    })
+    window.api = apiStub({ setSessionSpecialist: vi.fn(() => switchRequest.promise) })
+    await renderPage(root)
+    act(() => conversationProps.specialist.actions.selectSpecialist('spec-b'))
+    // Main publishes the pending binding before it finishes applying the runtime.
+    act(() => useSessionStore.getState().setSessionSpecialistId('sess-a', 'spec-b', true))
+    expect(conversationProps.specialist.view.specialist.barrierInFlight).toBe(true)
+    expect(conversationProps.specialist.view.specialist.reconfigureError).toBeNull()
+    expect(conversationProps.specialist.view.specialist.sendAvailable).toBe(false)
+    await act(async () => {
+      switchRequest.resolve({ status: 'applied', contextReset: false })
+      await switchRequest.promise
+    })
+    expect(conversationProps.specialist.view.specialist.barrierInFlight).toBe(false)
+    expect(conversationProps.specialist.view.specialist.reconfigureError).toBeNull()
+    expect(conversationProps.specialist.view.specialist.hasPendingSwitch).toBe(false)
+    expect(useSessionStore.getState().sessions[0].specialistBindingPending).toBeUndefined()
+    expect(runtime.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('keeps an unapplied durable switch blocked after the in-flight attempt ends', async () => {
+    setupBase()
+    const switchRequest = Promise.withResolvers<{
+      status: 'pending'
+      reason: 'runtime-application-failed'
+    }>()
+    useSessionStore.setState({
+      ...createInitialSessionState(),
+      sessions: [createSession({ specialistId: 'spec-a' })],
+      selectedSessionId: 'sess-a'
+    })
+    useSpecialistStore.setState({
+      items: [makeSpecialist('spec-a', 'Analyst'), makeSpecialist('spec-b', 'Researcher')],
+      isLoaded: true,
+      load: vi.fn()
+    })
+    window.api = apiStub({ setSessionSpecialist: vi.fn(() => switchRequest.promise) })
+    await renderPage(root)
+    act(() => conversationProps.specialist.actions.selectSpecialist('spec-b'))
+    act(() => useSessionStore.getState().setSessionSpecialistId('sess-a', 'spec-b', true))
+    await act(async () => {
+      switchRequest.resolve({ status: 'pending', reason: 'runtime-application-failed' })
+      await switchRequest.promise
+    })
+    expect(conversationProps.specialist.view.specialist.barrierInFlight).toBe(false)
+    expect(conversationProps.specialist.view.specialist.reconfigureError).toMatchObject({
+      sessionId: 'sess-a',
+      committed: true
+    })
+    expect(conversationProps.specialist.view.specialist.sendAvailable).toBe(false)
+    expect(useSessionStore.getState().sessions[0].specialistBindingPending).toBe(true)
+    expect(runtime.sendMessage).not.toHaveBeenCalled()
   })
 
   it('locks provider controls while an idle Specialist switch is in flight', async () => {

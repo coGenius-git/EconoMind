@@ -132,6 +132,7 @@ import { ContextWindowDialog } from './ContextWindowDialog'
 import { ComposerModelPicker } from './ComposerModelPicker'
 import { ComposerSpecialistPicker } from './ComposerSpecialistPicker'
 import { useSpecialistExample } from './use-specialist-example'
+import { useSpecialistSummon, type SpecialistSummonRequest } from './use-specialist-summon'
 import { ComposerYourFilesMenu } from './ComposerYourFilesMenu'
 import { PermissionApprovalControls } from './PermissionApprovalControls'
 import { ReadingContextPicker } from './ReadingContextPicker'
@@ -442,6 +443,8 @@ type ConversationPanelSubagents = {
 }
 
 type ConversationPanelProps = {
+  specialistSummonRequest?: SpecialistSummonRequest
+  onSpecialistSummonConsumed?: (requestId: number) => void
   view: ConversationPanelView
   composer: Pick<WorkspaceComposerController, 'view' | 'actions'>
   conversation: WorkspaceConversationController
@@ -484,6 +487,8 @@ const DismissibleConversationError = ({
 
 // Middle chat surface owns the visible conversation and local message composer UI.
 const ConversationPanel = ({
+  specialistSummonRequest,
+  onSpecialistSummonConsumed,
   view,
   composer,
   conversation,
@@ -715,6 +720,15 @@ const ConversationPanel = ({
     select: specialist.actions.selectSpecialist,
     changeDoc: onValidatedDraftDocChange,
     t
+  })
+  useSpecialistSummon({
+    request: specialistSummonRequest,
+    scopeKey: composerFocusKey ?? activeSession?.id ?? 'new-conversation',
+    activeSessionId: activeSession?.id,
+    canEdit: canEditDraft && !isWslSetupDraft,
+    items: specialistItems,
+    select: onSpecialistChange,
+    consumed: onSpecialistSummonConsumed
   })
   const catalogSkills = useSettingsStore((state) => state.skills)
   const settingsLoaded = useSettingsStore((state) => state.isLoaded)

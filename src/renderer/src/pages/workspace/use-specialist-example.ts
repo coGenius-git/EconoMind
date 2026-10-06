@@ -42,13 +42,20 @@ export const useSpecialistExample = ({
 
   useEffect(() => {
     if (!request || handledRequest.current === request) return
-    if (request.scopeKey !== scopeKey || failed) {
+    if (request.scopeKey !== scopeKey) {
       handledRequest.current = request
       return
     }
-    if (pending || selectedId !== request.id) return
+    // A durable pending binding can be published before the in-flight switch completes.
+    // Keep the explicit request while its barrier is active, even if recovery copy is visible.
+    if (pending) return
+    if (failed) {
+      handledRequest.current = request
+      return
+    }
+    if (selectedId !== request.id || !canEdit) return
     handledRequest.current = request
-    if (!canEdit || !request.replaceable || JSON.stringify(doc) !== request.baseline) return
+    if (!request.replaceable || JSON.stringify(doc) !== request.baseline) return
     const item = items.find(
       (candidate) => candidate.kind !== 'reviewer' && candidate.id === request.id
     )
