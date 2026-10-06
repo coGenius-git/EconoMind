@@ -20,6 +20,7 @@ import type { ContentRepository } from '../storage/content-repository'
 import { findPmcPdfs, findUnpaywallPdfs, readFullTextProvider } from './full-text-sources'
 import { inspectPdfPageCount, MAX_AUTO_EXTRACT_PDF_BYTES } from '../uploads/attachment-media'
 import { downloadFullText, FullTextRateLimitError, fullTextUrl } from './full-text-download'
+import { findPdfLinks } from './full-text-links'
 
 const optionalText = z.string().nullish()
 const europeRecord = z.object({
@@ -87,6 +88,61 @@ class LiteratureFullTextFinder {
     }
   }
   constructor(private readonly options: Options) {}
+
+  async acquire(
+    itemId: string,
+    preferred: Candidate[] = [],
+    sessionDownload?: typeof downloadFullText
+  ): Promise<'downloaded' | 'existing' | 'not-found'> {
+    const item = await this.options.catalog.get(itemId)
+    if (!item) throw new Error('Literature Item is unavailable.')
+    if (
+      item.attachments.some(
+        (attachment) =>
+          attachment.kind === 'fullText' &&
+          attachment.versions.some((version) => version.contentType === 'application/pdf')
+      )
+    )
+      return 'existing'
+    const attempted = new Set<string>()
+    let failure: unknown
+    const attempt = async (candidates: Candidate[]): Promise<boolean> => {
+      for (const candidate of candidates.slice(0, 10)) {
+        if (attempted.has(candidate.url)) continue
+        attempted.add(candidate.url)
+        const id = randomUUID()
+        try {
+          fullTextUrl(candidate.url)
+          this.candidates.set(id, {
+            candidate,
+            itemId,
+            revision: item.metadataRevision,
+            expires: Date.now() + 15 * 60_000
+          })
+          const result = await this.attach(item, id, sessionDownload)
+          if (
+            result.mode === 'attach' ||
+            (result.mode === 'transfer' && result.transfer?.status === 'succeeded')
+          )
+            return true
+          if (result.mode === 'attach-error') failure = new FullTextRateLimitError(result.retryAt)
+        } catch (error) {
+          failure = error
+        } finally {
+          this.candidates.delete(id)
+        }
+      }
+      return false
+    }
+    if (await attempt(preferred)) return 'downloaded'
+    if (sessionDownload) {
+      if (failure) throw failure
+      return 'not-found'
+    }
+    if (await attempt((await this.search(item)).candidates)) return 'downloaded'
+    if (failure) throw failure
+    return 'not-found'
+  }
 
   async discover(item: LiteratureItemView['item']): Promise<SearchResult> {
     return this.search({
@@ -346,7 +402,8 @@ class LiteratureFullTextFinder {
 
   private async attach(
     item: LiteratureItemView,
-    candidateId: string
+    candidateId: string,
+    download = this.options.download ?? downloadFullText
   ): Promise<LiteratureFullTextResult> {
     const selected = this.candidates.get(candidateId)
     if (
@@ -370,13 +427,25 @@ class LiteratureFullTextFinder {
     this.transfers.set(item.id, task)
     let directory: string | undefined
     try {
-      const bytes = await (this.options.download ?? downloadFullText)(
-        selected.candidate.url,
-        MAX_AUTO_EXTRACT_PDF_BYTES,
-        (value) => {
-          task.snapshot.progress = value
+      let bytes = await download(selected.candidate.url, MAX_AUTO_EXTRACT_PDF_BYTES, (value) => {
+        task.snapshot.progress = value
+      })
+      if (bytes.subarray(0, 5).toString('ascii') !== '%PDF-') {
+        const links = findPdfLinks(bytes, selected.candidate.url)
+        for (const url of links) {
+          try {
+            const document = await download(url, MAX_AUTO_EXTRACT_PDF_BYTES, (value) => {
+              task.snapshot.progress = value
+            })
+            if (document.subarray(0, 5).toString('ascii') === '%PDF-') {
+              bytes = document
+              break
+            }
+          } catch {
+            // Try the next explicit PDF link; a failed page remains a failed download.
+          }
         }
-      )
+      }
       task.snapshot.progress = {
         receivedBytes: bytes.length,
         totalBytes: bytes.length,

@@ -12,6 +12,7 @@ import {
   dialogTitleClassName
 } from '@/components/ui/dialog-chrome'
 import { LiteratureDiscoveryPanel } from './LiteratureDiscoveryPanel'
+import type { DiscoveryImportResult } from '../../../../../shared/literature-discovery'
 
 // This dialog owns its layout instead of reusing LiteratureImportDialogFrame: the shared panel
 // style scrolls itself, which leaves the flex column without a fixed height and makes the body
@@ -23,7 +24,7 @@ export function LiteratureDiscoveryDialog({
 }: {
   onClose: () => void
   collectionId?: string
-  onImported?: () => void
+  onImported?: (result: DiscoveryImportResult) => void
 }): React.JSX.Element {
   const { t } = useTranslation()
   return (
@@ -42,13 +43,11 @@ export function LiteratureDiscoveryDialog({
         >
           <div className={cn(dialogHeaderClassName, 'shrink-0')}>
             <div className="min-w-0">
-              <Dialog.Title className={dialogTitleClassName}>
-                {t('Search external sources')}
-              </Dialog.Title>
+              <Dialog.Title className={dialogTitleClassName}>{t('Search OpenAlex')}</Dialog.Title>
               <Dialog.Description
                 className={cn(dialogDescriptionClassName, '[overflow-wrap:anywhere]')}
               >
-                {t('Find records by topic and criteria, then import the ones you want to screen.')}
+                {t('Search by title, abstract or full text, then import selected records.')}
               </Dialog.Description>
             </div>
             <Dialog.Close asChild>
@@ -64,7 +63,13 @@ export function LiteratureDiscoveryDialog({
             </Dialog.Close>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-            <LiteratureDiscoveryPanel collectionId={collectionId} onImported={onImported} />
+            <LiteratureDiscoveryPanel
+              collectionId={collectionId}
+              onImported={(result) => {
+                onImported?.(result)
+                onClose()
+              }}
+            />
           </div>
         </Dialog.Content>
       </Dialog.Portal>

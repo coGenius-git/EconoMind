@@ -5,7 +5,7 @@ import {
   type DiscoveryQuery,
   type DiscoverySourceStatus
 } from '../../../shared/literature-discovery'
-import { CNKI_SEARCH_URL, readCnkiSignInState, scrapeCnkiSearch } from './cnki-browser'
+import { CNKI_SEARCH_URL, scrapeCnkiSearch } from './cnki-browser'
 import type { DiscoveryProviderResult } from './openalex-provider'
 
 const MAX_PAGES = 12
@@ -94,28 +94,19 @@ export async function searchCnki(query: DiscoveryQuery): Promise<DiscoveryProvid
     ...patch
   })
 
-  const state = await readCnkiSignInState()
-  if (!state.signedIn)
-    return {
-      candidates: [],
-      status: status({
-        failureCode: 'unauthorized',
-        requiresLogin: true,
-        message: state.message
-      })
-    }
-
   try {
     const scraped = await scrapeCnkiSearch(buildSearchUrl(query), MAX_PAGES)
     if (!scraped.selector)
       return {
         candidates: [],
         status: status({
-          failureCode: scraped.blocked ? 'unauthorized' : 'parse-failed',
+          failureCode: scraped.blocked
+            ? 'unauthorized'
+            : scraped.networkError
+              ? 'unavailable'
+              : 'parse-failed',
           requiresLogin: scraped.blocked,
-          message: scraped.blocked
-            ? `CNKI asked for a security check or sign-in. Click "Sign in to CNKI", complete it in the window that opens, close the window, then search again. ${scraped.detail}`
-            : `CNKI result markup was not recognised. ${scraped.detail}`
+          message: scraped.detail
         })
       }
 

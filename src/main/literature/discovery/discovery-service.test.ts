@@ -6,6 +6,7 @@ import {
   type DiscoveryQuery
 } from '../../../shared/literature-discovery'
 import { LiteratureDiscovery, candidateToItemInput } from './discovery-service'
+import { CnkiPdfDownloadError } from './cnki-pdf-download'
 
 const query = (patch: Partial<DiscoveryQuery> = {}): DiscoveryQuery => ({
   topic: 'green finance',
@@ -98,6 +99,35 @@ describe('LiteratureDiscovery.search', () => {
   })
 })
 
+it('acquires a CNKI PDF alongside its imported metadata and preserves the record when access is required', async () => {
+  const acquirePdf = vi.fn(async () => {
+    throw new CnkiPdfDownloadError('access-required')
+  })
+  const discovery = new LiteratureDiscovery({
+    importItems: async () => ({ itemIds: ['cnki-item'] }),
+    get: async () => undefined,
+    model: async () => {
+      throw new Error('unused')
+    },
+    acquirePdf
+  })
+  const selected = candidate({
+    key: 'cnki:1',
+    source: 'cnki',
+    url: 'https://kns.cnki.net/kcms2/article/abstract?id=1'
+  })
+  const result = await discovery.import({
+    collectionId: null,
+    duplicatePolicy: 'reuse',
+    candidates: [selected]
+  })
+  expect(acquirePdf).toHaveBeenCalledWith('cnki-item', selected)
+  expect(result.importedCount).toBe(1)
+  expect(result.fullText).toEqual([
+    { key: 'cnki:1', itemId: 'cnki-item', status: 'failed', reason: 'access-required' }
+  ])
+})
+
 it('keeps candidate-to-item mappings when duplicate imports reuse a library row', async () => {
   const idsByTitle = new Map<string, string>()
   const discovery = new LiteratureDiscovery({
@@ -130,4 +160,43 @@ it('keeps candidate-to-item mappings when duplicate imports reuse a library row'
   ])
   expect(result.importedCount).toBe(2)
   expect(result.skipped).toEqual([])
+})
+
+it('downloads selected OpenAlex PDFs after saving records and reports failures without losing records', async () => {
+  const acquirePdf = vi.fn(async (itemId: string) => {
+    if (itemId === 'item-1') throw new Error('PDF unavailable')
+    return 'downloaded' as const
+  })
+  let nextId = 0
+  const discovery = new LiteratureDiscovery({
+    importItems: async () => ({ itemIds: [`item-${nextId++}`] }),
+    get: async () => undefined,
+    model: async () => {
+      throw new Error('unused')
+    },
+    acquirePdf
+  })
+  const result = await discovery.import({
+    collectionId: null,
+    duplicatePolicy: 'reuse',
+    candidates: [
+      candidate({ key: 'first', openAccessPdfUrl: 'https://journal.example/first.pdf' }),
+      candidate({
+        key: 'second',
+        doi: '10.1000/two',
+        openAccessPdfUrl: 'https://journal.example/second.pdf'
+      }),
+      candidate({ key: 'cnki', source: 'cnki' })
+    ]
+  })
+  expect(acquirePdf).toHaveBeenCalledTimes(3)
+  expect(acquirePdf).toHaveBeenCalledWith('item-0', expect.objectContaining({ key: 'first' }))
+  expect(result.importedCount).toBe(3)
+  expect(result).toMatchObject({
+    fullText: [
+      { key: 'first', itemId: 'item-0', status: 'downloaded' },
+      { key: 'second', itemId: 'item-1', status: 'failed' },
+      { key: 'cnki', itemId: 'item-2', status: 'downloaded' }
+    ]
+  })
 })

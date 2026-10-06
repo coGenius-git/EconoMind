@@ -5,8 +5,7 @@ import { defineApplicationCommandContract, validationCodec } from './application
 // candidate list, then import the selected records into the library for title/abstract screening.
 // This module only describes the wire contract; providers live in src/main/literature/discovery.
 
-// Where a candidate came from. Only OpenAlex can be searched from inside the app; CNKI records
-// arrive from an export file, so the two lists are deliberately different.
+// Both sources can be searched online; CNKI additionally supports exported reference files.
 export const DISCOVERY_SOURCE_IDS = ['openalex', 'cnki'] as const
 export const DISCOVERY_SEARCH_SOURCE_IDS = ['openalex', 'cnki'] as const
 export const DISCOVERY_DOCUMENT_TYPES = [
@@ -15,8 +14,14 @@ export const DISCOVERY_DOCUMENT_TYPES = [
   'dissertation',
   'conference',
   'book',
+  'book-chapter',
+  'preprint',
+  'dataset',
+  'report',
   'other'
 ] as const
+export const OPENALEX_DISCOVERY_SOURCE_TIERS = ['open-access', 'doaj'] as const
+export const OPENALEX_DISCOVERY_SORTS = ['relevance', 'newest', 'citations'] as const
 // Tiers are advisory. A provider reports the tiers it can actually resolve and the service
 // records unresolved tiers as warnings instead of silently widening the result set.
 export const DISCOVERY_SOURCE_TIERS = [
@@ -50,6 +55,8 @@ export const discoveryQuerySchema = z
       .default([]),
     sourceTiers: z.array(discoverySourceTierSchema).max(DISCOVERY_SOURCE_TIERS.length).default([]),
     minCitations: z.number().int().min(0).max(10_000_000).nullable().default(null),
+    language: z.enum(['en', 'zh']).nullable().optional(),
+    sort: z.enum(OPENALEX_DISCOVERY_SORTS).optional(),
     limit: z.number().int().min(1).max(DISCOVERY_RESULT_LIMIT).default(DISCOVERY_DEFAULT_LIMIT),
     sources: z
       .array(discoverySourceIdSchema)
@@ -74,7 +81,8 @@ export const discoveryCandidateSchema = z
     abstract: boundedText(20_000).default(''),
     citationCount: z.number().int().min(0).max(100_000_000).nullable().default(null),
     sourceTiers: z.array(discoverySourceTierSchema).max(DISCOVERY_SOURCE_TIERS.length).default([]),
-    openAccessPdfUrl: boundedText(2000).nullable().default(null)
+    openAccessPdfUrl: boundedText(2000).nullable().default(null),
+    openAccessPdfUrls: z.array(boundedText(2000)).max(10).optional()
   })
   .strict()
 
@@ -98,6 +106,9 @@ export const discoverySourceStatusSchema = z
     // CNKI is reached through an embedded browser session; when the session has no login state
     // the UI offers an explicit "sign in" step instead of reporting a bare failure.
     requiresLogin: z.boolean().default(false),
+    rateLimitReason: z.enum(['daily-budget', 'request-rate']).optional(),
+    retryAt: z.number().int().nonnegative().optional(),
+    requiresApiKey: z.boolean().optional(),
     unresolvedTiers: z
       .array(discoverySourceTierSchema)
       .max(DISCOVERY_SOURCE_TIERS.length)
@@ -134,7 +145,25 @@ export const discoveryImportResultSchema = z
     skipped: z
       .array(z.object({ key: z.string().trim().min(1).max(512), reason: boundedText(1000) }))
       .max(DISCOVERY_RESULT_LIMIT),
-    importedCount: z.number().int().min(0)
+    importedCount: z.number().int().min(0),
+    fullText: z
+      .array(
+        z.object({
+          key: z.string().trim().min(1).max(512),
+          itemId: z.string().trim().min(1).max(512),
+          status: z.enum(['downloaded', 'existing', 'not-found', 'failed']),
+          reason: z
+            .enum([
+              'access-required',
+              'verification-required',
+              'pdf-unavailable',
+              'download-failed'
+            ])
+            .optional()
+        })
+      )
+      .max(DISCOVERY_RESULT_LIMIT)
+      .optional()
   })
   .strict()
 
