@@ -7112,6 +7112,10 @@
     "PDFs already available": "PDF déjà disponibles",
     "PDFs not downloaded": "PDF non téléchargés",
     "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "Certains PDF n’ont pas pu être téléchargés. Les notices ont été enregistrées. Sélectionnez ces notices et importez-les à nouveau pour réessayer.",
-    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "La recherche publique CNKI peut fonctionner sans connexion. Si une vérification est demandée, effectuez-la dans le navigateur."
+    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "La recherche publique CNKI peut fonctionner sans connexion. Si une vérification est demandée, effectuez-la dans le navigateur.",
+    "OpenAlex daily budget is exhausted. Configure a free OpenAlex API key to use your own budget, or wait for the reset.": "Le budget quotidien OpenAlex est épuisé. Configurez une clé API gratuite pour utiliser votre propre budget ou attendez sa réinitialisation.",
+    "OpenAlex daily budget is exhausted. Wait for the reset or update your API key.": "Le budget quotidien OpenAlex est épuisé. Attendez sa réinitialisation ou mettez à jour votre clé API.",
+    "OpenAlex is temporarily rate limited. Automatic retries did not succeed. Try again after the waiting period.": "OpenAlex limite temporairement les requêtes. Les tentatives automatiques ont échoué. Réessayez après le délai indiqué.",
+    "Retry after {{time}}.": "Réessayez après {{time}}."
   }
 }

@@ -98,6 +98,9 @@ export const discoverySourceStatusSchema = z
     // CNKI is reached through an embedded browser session; when the session has no login state
     // the UI offers an explicit "sign in" step instead of reporting a bare failure.
     requiresLogin: z.boolean().default(false),
+    rateLimitReason: z.enum(['daily-budget', 'request-rate']).optional(),
+    retryAt: z.number().int().nonnegative().optional(),
+    requiresApiKey: z.boolean().optional(),
     unresolvedTiers: z
       .array(discoverySourceTierSchema)
       .max(DISCOVERY_SOURCE_TIERS.length)

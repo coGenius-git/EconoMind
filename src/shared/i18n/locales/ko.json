@@ -6784,6 +6784,10 @@
     "PDFs already available": "기존 PDF",
     "PDFs not downloaded": "다운로드하지 못한 PDF",
     "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "일부 PDF를 다운로드하지 못했습니다. 서지 기록은 저장되었습니다. 해당 기록을 선택하여 다시 가져오면 재시도할 수 있습니다.",
-    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "CNKI 공개 서지 정보는 로그인 없이 검색할 수 있습니다. 인증이 요청되면 브라우저에서 완료하세요."
+    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "CNKI 공개 서지 정보는 로그인 없이 검색할 수 있습니다. 인증이 요청되면 브라우저에서 완료하세요.",
+    "OpenAlex daily budget is exhausted. Configure a free OpenAlex API key to use your own budget, or wait for the reset.": "OpenAlex 일일 한도를 소진했습니다. 무료 API 키를 설정하여 개인 한도를 사용하거나 초기화를 기다리세요.",
+    "OpenAlex daily budget is exhausted. Wait for the reset or update your API key.": "OpenAlex 일일 한도를 소진했습니다. 초기화를 기다리거나 API 키를 업데이트하세요.",
+    "OpenAlex is temporarily rate limited. Automatic retries did not succeed. Try again after the waiting period.": "OpenAlex 요청이 일시적으로 제한되어 자동 재시도가 실패했습니다. 대기 시간이 지난 후 다시 시도하세요.",
+    "Retry after {{time}}.": "{{time}} 이후 다시 시도하세요。"
   }
 }

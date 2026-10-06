@@ -137,13 +137,35 @@ export function useLiteratureDiscovery(collectionId?: string): LiteratureDiscove
       })
       setCandidates(result.candidates)
       setStatuses(result.statuses)
-      setWarnings(result.warnings)
+      const providerMessages = new Set(
+        result.statuses.map((status) => status.message).filter(Boolean)
+      )
+      const warnings = result.warnings.filter((warning) => !providerMessages.has(warning))
+      for (const status of result.statuses) {
+        if (status.source === 'openalex' && status.failureCode === 'rate-limited') {
+          warnings.push(
+            status.rateLimitReason === 'daily-budget'
+              ? status.requiresApiKey
+                ? t(
+                    'OpenAlex daily budget is exhausted. Configure a free OpenAlex API key to use your own budget, or wait for the reset.'
+                  )
+                : t(
+                    'OpenAlex daily budget is exhausted. Wait for the reset or update your API key.'
+                  )
+              : t(
+                  'OpenAlex is temporarily rate limited. Automatic retries did not succeed. Try again after the waiting period.'
+                )
+          )
+          if (status.retryAt)
+            warnings.push(
+              t('Retry after {{time}}.', { time: new Date(status.retryAt).toLocaleString() })
+            )
+        } else if (status.message) warnings.push(status.message)
+      }
+      setWarnings(warnings)
       setSelected(new Set())
-      if (!result.candidates.length)
-        setNotice(
-          result.statuses.find((status) => status.message)?.message ??
-            t('No records matched this query.')
-        )
+      if (!result.candidates.length && !providerMessages.size)
+        setNotice(t('No records matched this query.'))
     } catch (searchError) {
       setError(searchError instanceof Error ? searchError.message : t('The search failed.'))
       setCandidates([])

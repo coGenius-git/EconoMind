@@ -6786,6 +6786,10 @@
     "PDFs already available": "既存の PDF",
     "PDFs not downloaded": "未ダウンロードの PDF",
     "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "一部の PDF をダウンロードできませんでした。書誌情報は保存されています。該当するレコードを選択して再度取り込むと再試行できます。",
-    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "CNKI の公開書誌はログインせず検索できる場合があります。認証を求められたらブラウザーで完了してください。"
+    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "CNKI の公開書誌はログインせず検索できる場合があります。認証を求められたらブラウザーで完了してください。",
+    "OpenAlex daily budget is exhausted. Configure a free OpenAlex API key to use your own budget, or wait for the reset.": "OpenAlex の日次予算を使い切りました。無料の API キーを設定して個人の予算を使うか、リセットをお待ちください。",
+    "OpenAlex daily budget is exhausted. Wait for the reset or update your API key.": "OpenAlex の日次予算を使い切りました。リセットを待つか API キーを更新してください。",
+    "OpenAlex is temporarily rate limited. Automatic retries did not succeed. Try again after the waiting period.": "OpenAlex で一時的なレート制限が発生し、自動再試行に失敗しました。待機期間後に再試行してください。",
+    "Retry after {{time}}.": "{{time}} 以降に再試行できます。"
   }
 }

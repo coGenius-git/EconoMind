@@ -6945,6 +6945,10 @@
     "PDFs already available": "Bereits vorhandene PDFs",
     "PDFs not downloaded": "Nicht heruntergeladene PDFs",
     "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "Einige PDFs konnten nicht heruntergeladen werden. Die Einträge wurden gespeichert. Wählen Sie diese Einträge aus und importieren Sie sie erneut.",
-    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "Die öffentliche CNKI-Suche kann ohne Anmeldung funktionieren. Führen Sie bei Aufforderung die Verifizierung im Browser durch."
+    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "Die öffentliche CNKI-Suche kann ohne Anmeldung funktionieren. Führen Sie bei Aufforderung die Verifizierung im Browser durch.",
+    "OpenAlex daily budget is exhausted. Configure a free OpenAlex API key to use your own budget, or wait for the reset.": "Das tägliche OpenAlex-Budget ist aufgebraucht. Konfigurieren Sie einen kostenlosen API-Schlüssel für Ihr eigenes Budget oder warten Sie auf die Rücksetzung.",
+    "OpenAlex daily budget is exhausted. Wait for the reset or update your API key.": "Das tägliche OpenAlex-Budget ist aufgebraucht. Warten Sie auf die Rücksetzung oder aktualisieren Sie Ihren API-Schlüssel.",
+    "OpenAlex is temporarily rate limited. Automatic retries did not succeed. Try again after the waiting period.": "OpenAlex begrenzt vorübergehend Anfragen. Automatische Wiederholungen waren erfolglos. Versuchen Sie es nach der Wartezeit erneut.",
+    "Retry after {{time}}.": "Erneut versuchen nach {{time}}."
   }
 }

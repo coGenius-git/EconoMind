@@ -16,6 +16,7 @@ import {
   type DiscoverySourceTier
 } from '../../../../../shared/literature-discovery'
 import { useLiteratureDiscovery } from './useLiteratureDiscovery'
+import { LiteratureOpenAlexCredential } from '../detail/LiteratureOpenAlexCredential'
 
 const DOCUMENT_TYPE_LABELS: Record<DiscoveryDocumentType, string> = {
   article: 'Journal article',
@@ -50,6 +51,7 @@ export function LiteratureDiscoveryPanel({
   const discovery = useLiteratureDiscovery(collectionId)
   const [criteriaText, setCriteriaText] = useState('')
   const [duplicatePolicy, setDuplicatePolicy] = useState<'reuse' | 'separate'>('reuse')
+  const [credentialBusy, setCredentialBusy] = useState(false)
 
   const runImport = async (): Promise<void> => {
     await discovery.importSelected(duplicatePolicy)
@@ -169,9 +171,16 @@ export function LiteratureDiscoveryPanel({
             <span className="text-xs text-muted-foreground">{t('Searched online')}</span>
           </div>
           {discovery.form.sources.includes('openalex') ? (
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              {t('OpenAlex PDFs are downloaded when you import selected records.')}
-            </p>
+            <div>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {t('OpenAlex PDFs are downloaded when you import selected records.')}
+              </p>
+              <LiteratureOpenAlexCredential
+                disabled={discovery.searching || discovery.importing}
+                onSaved={() => void discovery.search()}
+                onBusyChange={setCredentialBusy}
+              />
+            </div>
           ) : null}
           {discovery.form.sources.includes('cnki') ? (
             <div className="flex flex-wrap items-center gap-3">
@@ -223,7 +232,10 @@ export function LiteratureDiscoveryPanel({
         </fieldset>
 
         <div className="md:col-span-2">
-          <Button disabled={discovery.searching} onClick={() => void discovery.search()}>
+          <Button
+            disabled={discovery.searching || credentialBusy}
+            onClick={() => void discovery.search()}
+          >
             {discovery.searching ? (
               <LoaderCircle className="size-4 animate-spin" />
             ) : (

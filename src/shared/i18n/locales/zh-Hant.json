@@ -6786,6 +6786,10 @@
     "PDFs already available": "已有 PDF",
     "PDFs not downloaded": "未下載 PDF",
     "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "部分 PDF 下載失敗，書目已儲存。選取這些記錄並再次匯入即可重試。",
-    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "知網公開書目可先嘗試直接檢索。如提示驗證，請在瀏覽器中完成。"
+    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "知網公開書目可先嘗試直接檢索。如提示驗證，請在瀏覽器中完成。",
+    "OpenAlex daily budget is exhausted. Configure a free OpenAlex API key to use your own budget, or wait for the reset.": "OpenAlex 今日額度已用完。請設定免費的 OpenAlex API Key 使用個人額度，或等待額度重設。",
+    "OpenAlex daily budget is exhausted. Wait for the reset or update your API key.": "OpenAlex 今日額度已用完。請等待額度重設或更新 API Key。",
+    "OpenAlex is temporarily rate limited. Automatic retries did not succeed. Try again after the waiting period.": "OpenAlex 暫時限制請求頻率，自動重試未成功。請在等待時間結束後重試。",
+    "Retry after {{time}}.": "可在 {{time}} 後重試。"
   }
 }

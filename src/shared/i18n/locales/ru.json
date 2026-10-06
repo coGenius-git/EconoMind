@@ -7250,6 +7250,10 @@
     "PDFs already available": "Уже доступные PDF",
     "PDFs not downloaded": "Незагруженные PDF",
     "Some PDFs could not be downloaded. Their records were saved. Select those records and import again to retry.": "Некоторые PDF не удалось загрузить. Записи сохранены. Выберите эти записи и импортируйте их снова, чтобы повторить попытку.",
-    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "Общедоступный поиск CNKI может работать без входа. При запросе пройдите проверку в браузере."
+    "CNKI public search can work without sign-in. Complete verification in the browser if prompted.": "Общедоступный поиск CNKI может работать без входа. При запросе пройдите проверку в браузере.",
+    "OpenAlex daily budget is exhausted. Configure a free OpenAlex API key to use your own budget, or wait for the reset.": "Дневной лимит OpenAlex исчерпан. Добавьте бесплатный API-ключ для личного лимита или дождитесь сброса.",
+    "OpenAlex daily budget is exhausted. Wait for the reset or update your API key.": "Дневной лимит OpenAlex исчерпан. Дождитесь сброса или обновите API-ключ.",
+    "OpenAlex is temporarily rate limited. Automatic retries did not succeed. Try again after the waiting period.": "OpenAlex временно ограничивает частоту запросов. Автоматические повторы не помогли. Повторите после указанного времени ожидания.",
+    "Retry after {{time}}.": "Повторите после {{time}}."
   }
 }

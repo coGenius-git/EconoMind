@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { searchOpenAlex } from './openalex-provider'
+import { createOpenAlexSearch, searchOpenAlex } from './openalex-provider'
 import type { DiscoveryQuery } from '../../../shared/literature-discovery'
 
 const query = (patch: Partial<DiscoveryQuery> = {}): DiscoveryQuery => ({
@@ -37,6 +37,72 @@ const jsonResponse = (payload: unknown, status = 200): Response =>
   })
 
 describe('searchOpenAlex', () => {
+  it('retries a transient 429 after the server delay', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('', { status: 429, headers: { 'retry-after': '1' } }))
+      .mockResolvedValueOnce(jsonResponse({ results: [work()] }))
+    const sleep = vi.fn(async () => undefined)
+    const result = await searchOpenAlex(query(), { fetch: fetcher, sleep })
+    expect(result.status.ok).toBe(true)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(sleep).toHaveBeenCalledWith(1000, undefined)
+  })
+
+  it('does not retry exhausted daily budgets and respects cooldown across different queries', async () => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ message: 'Insufficient budget.' }), {
+          status: 429,
+          headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '3600' }
+        })
+    )
+    const search = createOpenAlexSearch({ fetch: fetcher })
+    const result = await search(query())
+    expect(result.status).toMatchObject({ rateLimitReason: 'daily-budget', requiresApiKey: true })
+    expect(result.status.retryAt).toBeGreaterThan(Date.now())
+    await search(query({ topic: 'another query' }))
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
+  it('a newly saved key can retry immediately and successful repeated searches reuse the cache', async () => {
+    let key = ''
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response('', { status: 429, headers: { 'x-ratelimit-remaining': '0' } })
+      )
+      .mockResolvedValueOnce(jsonResponse({ results: [work()] }))
+    const search = createOpenAlexSearch({ fetch: fetcher, apiKey: async () => key || undefined })
+    await search(query())
+    key = 'private-test-key'
+    const result = await search(query())
+    expect(result.status.ok).toBe(true)
+    result.candidates[0].title = 'caller mutation'
+    expect((await search(query())).candidates[0].title).toBe('Green finance and firm value')
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps preceding pages when a later page exhausts the budget', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          meta: { count: 500 },
+          results: Array.from({ length: 100 }, (_, i) => work({ id: `W${i}` }))
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response('', { status: 429, headers: { 'x-ratelimit-remaining': '0' } })
+      )
+    const result = await searchOpenAlex(query({ limit: 200 }), { fetch: fetcher })
+    expect(result.candidates).toHaveLength(100)
+    expect(result.status).toMatchObject({
+      matched: 500,
+      returned: 100,
+      failureCode: 'rate-limited'
+    })
+  })
   it('uses cached PDF URLs only with a configured key and keeps the key out of candidates', async () => {
     const fetcher = vi.fn(async () =>
       jsonResponse({

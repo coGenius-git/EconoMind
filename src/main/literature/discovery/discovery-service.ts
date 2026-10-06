@@ -20,7 +20,7 @@ import {
 } from './cnki-browser'
 import { searchCnki } from './cnki-provider'
 import { parseCnkiRecords } from './cnki-records'
-import { searchOpenAlex, type DiscoveryProviderResult } from './openalex-provider'
+import { createOpenAlexSearch, type DiscoveryProviderResult } from './openalex-provider'
 import { screenRecords, type RecordScreeningModel } from './record-screening'
 
 const ITEM_TYPE_BY_DOCUMENT_TYPE: Readonly<
@@ -112,19 +112,18 @@ export type LiteratureDiscoveryOptions = {
 }
 
 export class LiteratureDiscovery {
-  constructor(private readonly options: LiteratureDiscoveryOptions) {}
+  private readonly searchOpenAlex: ReturnType<typeof createOpenAlexSearch>
+  constructor(private readonly options: LiteratureDiscoveryOptions) {
+    this.searchOpenAlex = createOpenAlexSearch({
+      fetch: options.fetch,
+      apiKey: options.openAlexKey
+    })
+  }
 
   async search(query: DiscoveryQuery, signal?: AbortSignal): Promise<DiscoverySearchResponse> {
     const settled = await Promise.all(
       query.sources.map(async (source): Promise<DiscoveryProviderResult> =>
-        source === 'cnki'
-          ? searchCnki(query)
-          : searchOpenAlex(query, {
-              signal,
-              fetch: this.options.fetch,
-              apiKey: this.options.openAlexKey,
-              contactEmail: this.options.contactEmail
-            })
+        source === 'cnki' ? searchCnki(query) : this.searchOpenAlex(query, signal)
       )
     )
 
