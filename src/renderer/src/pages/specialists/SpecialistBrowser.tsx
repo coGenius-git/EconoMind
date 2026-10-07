@@ -110,6 +110,7 @@ export const SpecialistBrowser = ({
       className="research-glass specialist-browser min-h-0 h-full flex-1 overflow-y-auto rounded-3xl text-text-000"
       aria-labelledby={headingId}
       data-testid="specialist-browser"
+      data-product-tour="workspace-specialist-catalog"
     >
       <div className="specialist-browser-inner">
         <header className="specialist-browser-header">

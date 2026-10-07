@@ -14,6 +14,7 @@ import { LifecycleToast } from '@/components/LifecycleToast'
 import { LanguageSaveToast } from '@/components/LanguageControls'
 import { NotificationLiveToast } from '@/components/NotificationLiveToast'
 import { OpenScienceLogoLoader } from '@/components/OpenScienceLogoLoader'
+import { ProductTour } from '@/components/ProductTour'
 import { useSettingsUndoPortal } from '@/components/use-settings-undo-portal'
 import { PermissionUndoSnackbar } from '@/components/PermissionUndoSnackbar'
 import { SessionCatalogRecoveryAlert } from '@/components/SessionCatalogRecoveryAlert'
@@ -377,6 +378,7 @@ const ApplicationPresentationContent = ({
           </WorkspaceMessageQueueProvider>
         </WorkspaceComposerDraftsProvider>
       </WorkspaceAgentRuntimeProvider>
+      <ProductTour ready={sessions.isReady && activePresentation === 'base'} />
       <WebEventRecoveryDialog
         active={activePresentation === 'webEventRecovery'}
         phase={events.webEventConnectionPhase}

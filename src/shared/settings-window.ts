@@ -27,6 +27,7 @@ export type SettingsWindowNavigation = {
     | 'customize-specialist'
     | 'wsl-support'
     | 'wsl-create-project'
+    | 'product-tour'
   id: string
 }
 

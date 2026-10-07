@@ -1,4 +1,6 @@
 import { ResearchWorkbenchHeader } from '@/components/ResearchWorkbenchHeader'
+import { PRODUCT_TOUR_STEPS } from '@/components/product-tour-steps'
+import { useProductTourStore } from '@/stores/product-tour-store'
 import { useSettingsStore } from '@/stores/settings-store'
 import { LiteratureDiscoveryDialog } from './discovery/LiteratureDiscoveryDialog'
 import { ConfirmActionDialog } from '@/components/ui/confirm-action-dialog'
@@ -233,7 +235,17 @@ const LiteratureLibraryPage = (): React.JSX.Element => {
   const loadTags = useTagStore((state) => state.load)
   const listenTags = useTagStore((state) => state.listen)
   const tagRevision = useTagStore((state) => state.revision)
-  const [section, setSection] = useState<LibrarySection>('inbox')
+  const tourTarget = useProductTourStore((state) =>
+    state.active && PRODUCT_TOUR_STEPS[state.stepIndex].view === 'library'
+      ? PRODUCT_TOUR_STEPS[state.stepIndex].target
+      : undefined
+  )
+  const [manualSection, setSection] = useState<LibrarySection>('inbox')
+  const section = tourTarget
+    ? tourTarget === 'library-inbox'
+      ? 'inbox'
+      : 'library'
+    : manualSection
   const [inboxState, setInboxState] = useState<'pending' | 'dismissed'>('pending')
   const [duplicatesOpen, setDuplicatesOpen] = useState(false)
   const [shouldCueLiteratureReview, setShouldCueLiteratureReview] = useState(
@@ -1689,7 +1701,10 @@ const LiteratureLibraryPage = (): React.JSX.Element => {
             openCreateCollection={openCreateCollection}
           />
 
-          <section className="research-library-content research-glass flex min-h-0 min-w-0 flex-1 overflow-hidden">
+          <section
+            data-product-tour="library-content"
+            className="research-library-content research-glass flex min-h-0 min-w-0 flex-1 overflow-hidden"
+          >
             <LiteratureDuplicatesView
               active={duplicatesOpen && !citationStylesOpen && !journalsOpen}
               revision={duplicatesRevision}

@@ -101,6 +101,7 @@ type NavigationStore = {
   artifactMentionAvailability: ArtifactMentionAvailability | undefined
   recordUserNavigation: () => void
   goHome: (origin: NavigationOrigin) => void
+  openTourWorkspace: (projectId?: string) => void
   returnFromLibrary: (origin: NavigationOrigin) => void
   openLibrary: (origin: NavigationOrigin, options?: { section?: 'library' }) => void
   openLiteratureItem: (
@@ -264,6 +265,18 @@ export const useNavigationStore = create<NavigationStore>((set, get) => ({
     requestPreviewLeaveForNavigation({ view: 'home' }, () =>
       set((state) => navigationState(state, origin, { view: 'home' }))
     )
+  },
+
+  // A guided visit preserves the selected Session instead of choosing the latest one.
+  openTourWorkspace: (projectId) => {
+    requestPreviewLeaveForNavigation({ view: 'workspace', projectId }, () => {
+      // A tour can display the real empty workspace without creating a project. Preserve
+      // the selected conversation and its unsent draft when revisiting an existing project.
+      set((state) => ({
+        ...navigationState(state, 'automatic', { view: 'workspace' }),
+        activeProjectId: projectId
+      }))
+    })
   },
 
   // Library retains the Workspace selection, including an unsent New Conversation. Opening the

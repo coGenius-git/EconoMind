@@ -61,6 +61,7 @@ import type { SessionCatalogRecovery } from '@/lib/session-persistence/session-p
 import { preloadComputeHosts } from '@/stores/compute-store'
 import { useMemoryStore } from '@/stores/memory-store'
 import { useNavigationStore } from '@/stores/navigation-store'
+import { useProductTourStore } from '@/stores/product-tour-store'
 import { useProjectStore } from '@/stores/project-store'
 import { useSessionStore } from '@/stores/session-store'
 import {
@@ -222,6 +223,8 @@ type SettingsPageProps = {
   open: boolean
   standalone?: boolean
   onClose: () => void
+  onStartTour?: () => void
+  startTourError?: boolean
   onOpenSession?: (sessionId: string) => void
   onOpenProject?: (projectId: string) => void
   onOpenLiteratureItem?: (itemId: string) => void
@@ -391,6 +394,8 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
     open,
     standalone = false,
     onClose,
+    onStartTour,
+    startTourError,
     onOpenSession,
     onOpenProject,
     onOpenLiteratureItem,
@@ -1727,7 +1732,19 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
                     ) : activePanel === 'usage' ? (
                       <TokenUsagePanel sessions={sessions} projects={projects} />
                     ) : activePanel === 'general' ? (
-                      <GeneralPanel />
+                      <GeneralPanel
+                        startTourError={startTourError}
+                        onStartTour={() =>
+                          requestLeave(() => {
+                            if (onStartTour) {
+                              onStartTour()
+                              return
+                            }
+                            onClose()
+                            useProductTourStore.getState().requestTour()
+                          })
+                        }
+                      />
                     ) : activePanel === 'agent' ? (
                       <AgentPanel
                         title={t('Agent framework')}

@@ -77,7 +77,8 @@ it('rejects malformed routes and restricts navigation to the Settings sender', a
     'customize-skill',
     'customize-specialist',
     'wsl-support',
-    'wsl-create-project'
+    'wsl-create-project',
+    'product-tour'
   ] as const) {
     controller.navigateMain({ sender: settings.webContents } as unknown as IpcMainInvokeEvent, {
       kind,

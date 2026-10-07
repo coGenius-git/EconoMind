@@ -270,14 +270,19 @@ type PreviewPanelLayoutPort = {
 const useWorkspacePanelLayout = (
   previewPort: PreviewPanelLayoutPort,
   mobileSidebarDialogRef: React.RefObject<HTMLDivElement | null>,
-  showPreviewPanel: boolean
+  showPreviewPanel: boolean,
+  tourTarget?: string
 ): WorkspacePanelLayout => {
   const { t } = useTranslation()
-  const [sidebarState, setSidebarState] = useState<ResizablePanelState>('open')
+  const [manualSidebarState, setSidebarState] = useState<ResizablePanelState>('open')
+  const sidebarState = tourTarget ? 'open' : manualSidebarState
   const sidebarToggleRef = useRef<HTMLButtonElement | null>(null)
   const previewToggleRef = useRef<HTMLButtonElement | null>(null)
   const isMobile = useMediaQuery('(max-width: 767px)')
-  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false)
+  const [manualMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false)
+  const isMobileSidebarOpen = tourTarget
+    ? isMobile && tourTarget === 'workspace-sidebar'
+    : manualMobileSidebarOpen
   const mobileSidebarReturnFocusRef = useRef<HTMLElement | null>(null)
   const mobileSidebarWasOpenRef = useRef(false)
   // Latest sidebar width in pixels and a render-phase-independent mirror of the collapse state,
@@ -339,6 +344,7 @@ const useWorkspacePanelLayout = (
   }, [sidebarState])
 
   useEffect(() => {
+    if (tourTarget) return
     const dialog = mobileSidebarDialogRef.current
     if (isMobile && isMobileSidebarOpen) {
       mobileSidebarWasOpenRef.current = true
@@ -366,7 +372,7 @@ const useWorkspacePanelLayout = (
     const returnFocus = mobileSidebarReturnFocusRef.current
     mobileSidebarReturnFocusRef.current = null
     if (returnFocus?.isConnected && !returnFocus.closest('[inert]')) returnFocus.focus()
-  }, [isMobile, isMobileSidebarOpen, mobileSidebarDialogRef])
+  }, [isMobile, isMobileSidebarOpen, mobileSidebarDialogRef, tourTarget])
 
   // Drag-to-collapse emits its final zero-width resize while the header toggle still holds the
   // ref, so the freshly mounted floating fallback reapplies the tracked width on collapse.
@@ -399,14 +405,14 @@ const useWorkspacePanelLayout = (
   }, [sidebarState])
 
   useEffect(() => {
-    if (!isMobile || !isMobileSidebarOpen) return
+    if (!isMobile || !isMobileSidebarOpen || tourTarget) return
 
     const closeOnEscape = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') closeMobileSidebar()
     }
     window.addEventListener('keydown', closeOnEscape)
     return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [closeMobileSidebar, isMobile, isMobileSidebarOpen])
+  }, [closeMobileSidebar, isMobile, isMobileSidebarOpen, tourTarget])
 
   useEffect(() => {
     const toggleSidebarFromShortcut = (event: KeyboardEvent): void => {
@@ -511,6 +517,7 @@ const useWorkspacePanelLayout = (
 }
 
 type WorkspacePanelLayoutProps = {
+  tourTarget?: string
   hasPreviewItems: boolean
   showPreviewPanel?: boolean
   isPreviewPresentationActive?: boolean
@@ -535,6 +542,7 @@ type WorkspacePanelLayoutProps = {
 
 // Adapts the controller to the desktop split view and mobile drawer/sheet without owning page data.
 const WorkspacePanelLayout = ({
+  tourTarget,
   hasPreviewItems,
   showPreviewPanel = true,
   isPreviewPresentationActive = true,
@@ -552,7 +560,8 @@ const WorkspacePanelLayout = ({
   const { isMobile, mobileSidebar, sidebar, preview } = useWorkspacePanelLayout(
     previewPort,
     mobileSidebarDialogRef,
-    showPreviewPanel
+    showPreviewPanel,
+    tourTarget
   )
 
   // One sheet spans the conversation and preview. Measure the real header so taller session
@@ -637,15 +646,15 @@ const WorkspacePanelLayout = ({
         {isMobile ? (
           <FocusScope
             asChild
-            loop={mobileSidebar.isOpen}
-            trapped={mobileSidebar.isOpen}
+            loop={mobileSidebar.isOpen && !tourTarget}
+            trapped={mobileSidebar.isOpen && !tourTarget}
             onMountAutoFocus={(event) => event.preventDefault()}
             onUnmountAutoFocus={(event) => event.preventDefault()}
           >
             <div
               ref={mobileSidebarDialogRef}
-              role={mobileSidebar.isOpen ? 'dialog' : undefined}
-              aria-modal={mobileSidebar.isOpen ? true : undefined}
+              role={mobileSidebar.isOpen && !tourTarget ? 'dialog' : undefined}
+              aria-modal={mobileSidebar.isOpen && !tourTarget ? true : undefined}
               aria-label={mobileSidebar.isOpen ? t('Workspace navigation') : undefined}
               className="contents"
             >
@@ -659,8 +668,8 @@ const WorkspacePanelLayout = ({
         <ResizablePanelGroup
           orientation="horizontal"
           resizeTargetMinimumSize={{ coarse: 20, fine: 20 }}
-          aria-hidden={isMobile && mobileSidebar.isOpen ? true : undefined}
-          inert={isMobile && mobileSidebar.isOpen ? true : undefined}
+          aria-hidden={isMobile && mobileSidebar.isOpen && !tourTarget ? true : undefined}
+          inert={isMobile && mobileSidebar.isOpen && !tourTarget ? true : undefined}
           className="min-w-0 flex-1"
         >
           {!isMobile ? (
@@ -726,7 +735,11 @@ const WorkspacePanelLayout = ({
             >
               <MobilePreviewSheet
                 isMobile={isMobile}
-                open={isPreviewPresentationActive && preview.state === 'open'}
+                guided={Boolean(tourTarget)}
+                open={
+                  isPreviewPresentationActive &&
+                  (tourTarget ? tourTarget === 'workspace-file-preview' : preview.state === 'open')
+                }
                 onClose={preview.collapse}
                 restoredPlanResponder={restoredPlanResponder}
                 {...previewAnnotations}

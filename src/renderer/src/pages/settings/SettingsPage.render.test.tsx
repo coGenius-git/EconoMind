@@ -16,6 +16,7 @@ import { i18next } from '@/i18n'
 import { createInitialComputeState, useComputeStore } from '@/stores/compute-store'
 import { createInitialMemoryState, useMemoryStore } from '@/stores/memory-store'
 import { useNavigationStore } from '@/stores/navigation-store'
+import { useProductTourStore } from '@/stores/product-tour-store'
 import { createInitialProjectState, useProjectStore } from '@/stores/project-store'
 import { usePermissionGrantsStore } from '@/stores/permission-grants-store'
 import { createInitialSessionState, useSessionStore } from '@/stores/session-store'
@@ -2390,6 +2391,44 @@ describe('SettingsPage layout', () => {
     expect(document.body.textContent).toContain('This Provider no longer exists.')
   })
 
+  it.each([false, true])(
+    'restarts the guide through its owning surface (standalone=%s)',
+    async (standalone) => {
+      const onClose = vi.fn()
+      const onStartTour = standalone ? vi.fn() : undefined
+      const requestTour = vi
+        .spyOn(useProductTourStore.getState(), 'requestTour')
+        .mockClear()
+        .mockImplementation(() => {})
+      await act(async () =>
+        root.render(
+          <SettingsPage open standalone={standalone} onClose={onClose} onStartTour={onStartTour} />
+        )
+      )
+      await act(async () => {
+        Array.from(
+          document.body.querySelectorAll<HTMLButtonElement>('nav[aria-label="Settings"] button')
+        )
+          .find((button) => button.textContent?.trim() === 'General')
+          ?.click()
+      })
+      const restart = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
+        (button) => button.textContent?.trim() === 'Restart new user guide'
+      )
+      expect(restart?.disabled).toBe(false)
+      await act(async () => restart?.click())
+      if (standalone) {
+        expect(onStartTour).toHaveBeenCalledTimes(1)
+        expect(onClose).not.toHaveBeenCalled()
+        expect(requestTour).not.toHaveBeenCalled()
+      } else {
+        expect(onClose).toHaveBeenCalledTimes(1)
+        expect(requestTour).toHaveBeenCalledTimes(1)
+      }
+      requestTour.mockRestore()
+    }
+  )
+
   it('switches to the General panel and shows the diagnostic log file', async () => {
     await act(async () => {
       root.render(<SettingsPage ref={defaultSettingsRef} open onClose={vi.fn()} />)
@@ -2404,8 +2443,9 @@ describe('SettingsPage layout', () => {
       generalTab?.click()
     })
 
-    // Appearance, AppVersion, Notifications, App icon, Diagnostics, Command line tool, Community.
-    expect(document.body.querySelectorAll('[data-slot="settings-section"]')).toHaveLength(6)
+    // Appearance, new user guide, notifications, diagnostics, CLI, community, and app version.
+    expect(document.body.querySelectorAll('[data-slot="settings-section"]')).toHaveLength(7)
+    expect(document.body.textContent).toContain('Restart new user guide')
     expect(document.body.querySelector('[data-slot="settings-row"]')).not.toBeNull()
 
     // The Diagnostics panel surfaces the log file path plus Open and Reveal controls.

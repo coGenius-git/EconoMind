@@ -886,9 +886,18 @@ class ElectronAppHarness implements ElectronApp {
   async completeOnboarding(): Promise<Page> {
     await this.page.evaluate(async () => {
       const bridge = globalThis as unknown as {
-        api: { settings: { markOnboardingComplete: () => Promise<unknown> } }
+        api: {
+          settings: {
+            markOnboardingComplete: () => Promise<unknown>
+            getSettings: () => Promise<{ onboardingCompletedAt?: number }>
+          }
+        }
       }
       await bridge.api.settings.markOnboardingComplete()
+      // Ordinary journeys start with setup and the product tour already completed. The tour's
+      // dedicated regression uses the fresh profile and actual completion boundary instead.
+      const snapshot = await bridge.api.settings.getSettings()
+      localStorage.setItem('economind-product-tour-v1', String(snapshot.onboardingCompletedAt))
     })
     await this.page.reload({ waitUntil: 'domcontentloaded' })
     return this.page
