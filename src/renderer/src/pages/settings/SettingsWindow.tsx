@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ErrorNotice } from '@/components/error-notice'
 import { PermissionUndoSnackbar } from '@/components/PermissionUndoSnackbar'
@@ -21,6 +21,8 @@ export function SettingsWindow(): React.JSX.Element {
   const { t } = useTranslation()
   const startup = useApplicationStartup()
   const pageRef = useRef<SettingsPageHandle>(null)
+  const startingTour = useRef(false)
+  const [startTourError, setStartTourError] = useState(false)
   const undoPortal = useSettingsUndoPortal(
     <PermissionUndoSnackbar allowsArchiveShortcut={allowsArchiveShortcut} />
   )
@@ -30,6 +32,24 @@ export function SettingsWindow(): React.JSX.Element {
   const navigate = (kind: SettingsWindowNavigation['kind'], id: string): void => {
     void window.api.window.navigateMain?.({ kind, id })
   }
+  const startTour = useCallback(() => {
+    if (startingTour.current) return
+    startingTour.current = true
+    setStartTourError(false)
+    void (async () => {
+      try {
+        const { navigateMain, confirmSettingsClose } = window.api.window
+        if (!navigateMain || !confirmSettingsClose)
+          throw new Error('Settings navigation unavailable')
+        await navigateMain({ kind: 'product-tour', id: 'restart' })
+        await confirmSettingsClose()
+      } catch {
+        setStartTourError(true)
+      } finally {
+        startingTour.current = false
+      }
+    })()
+  }, [])
 
   useEffect(() => {
     const launch = (event: Event): void => {
@@ -122,6 +142,8 @@ export function SettingsWindow(): React.JSX.Element {
         standalone
         open
         onClose={close}
+        onStartTour={startTour}
+        startTourError={startTourError}
         onOpenSession={(id) => navigate('session', id)}
         onOpenProject={(id) => navigate('project', id)}
         onOpenLiteratureItem={(id) => navigate('literature', id)}

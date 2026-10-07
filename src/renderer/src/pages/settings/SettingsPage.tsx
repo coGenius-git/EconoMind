@@ -62,7 +62,6 @@ import { preloadComputeHosts } from '@/stores/compute-store'
 import { useMemoryStore } from '@/stores/memory-store'
 import { useNavigationStore } from '@/stores/navigation-store'
 import { useProductTourStore } from '@/stores/product-tour-store'
-import { requestSettingsWindowWorkflow } from './settings-window-workflow'
 import { useProjectStore } from '@/stores/project-store'
 import { useSessionStore } from '@/stores/session-store'
 import {
@@ -224,6 +223,8 @@ type SettingsPageProps = {
   open: boolean
   standalone?: boolean
   onClose: () => void
+  onStartTour?: () => void
+  startTourError?: boolean
   onOpenSession?: (sessionId: string) => void
   onOpenProject?: (projectId: string) => void
   onOpenLiteratureItem?: (itemId: string) => void
@@ -393,6 +394,8 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
     open,
     standalone = false,
     onClose,
+    onStartTour,
+    startTourError,
     onOpenSession,
     onOpenProject,
     onOpenLiteratureItem,
@@ -1730,12 +1733,13 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
                       <TokenUsagePanel sessions={sessions} projects={projects} />
                     ) : activePanel === 'general' ? (
                       <GeneralPanel
+                        startTourError={startTourError}
                         onStartTour={() =>
                           requestLeave(() => {
-                            if (
-                              requestSettingsWindowWorkflow({ kind: 'product-tour', id: 'restart' })
-                            )
+                            if (onStartTour) {
+                              onStartTour()
                               return
+                            }
                             onClose()
                             useProductTourStore.getState().requestTour()
                           })

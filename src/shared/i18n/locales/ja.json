@@ -6841,6 +6841,7 @@
     "Get to know EconoMind": "EconoMind を知る",
     "Take a step-by-step tour of the main areas. Your configuration and research data stay as they are.": "主な領域の使い方を順に紹介します。現在の設定と研究データは保持されます。",
     "Restart new user guide": "初心者ガイドを再開",
+    "Could not start the new user guide. Try again.": "初心者ガイドを開始できませんでした。もう一度お試しください。",
     "Organize your references": "文献を整理する",
     "This sidebar groups all references, collections, and project literature. Use Duplicates to review repeated records, and Trash to restore deleted references.": "サイドバーにはすべての文献、コレクション、プロジェクトの文献がまとまっています。重複一覧で重複記録を確認し、ゴミ箱で削除した文献を復元できます。",
     "Review the literature Inbox": "文献の受信トレイを確認する",

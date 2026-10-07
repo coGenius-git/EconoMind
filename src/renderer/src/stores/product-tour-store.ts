@@ -24,7 +24,7 @@ type ProductTourState = {
   requestTour: () => void
   beginTour: () => void
   setStep: (stepIndex: number) => void
-  finishTour: (onboardingCompletedAt: number) => void
+  finishTour: (onboardingCompletedAt: number | undefined) => void
 }
 
 const resolveTourProject = (): string | undefined =>
@@ -52,7 +52,8 @@ export const useProductTourStore = create<ProductTourState>((set, get) => ({
   setStep: (stepIndex) => set({ stepIndex }),
   finishTour: (onboardingCompletedAt) => {
     try {
-      localStorage.setItem(PRODUCT_TOUR_STORAGE_KEY, String(onboardingCompletedAt))
+      if (onboardingCompletedAt !== undefined)
+        localStorage.setItem(PRODUCT_TOUR_STORAGE_KEY, String(onboardingCompletedAt))
     } catch {
       // Disabled storage must still allow dismissal for the current app session.
     }

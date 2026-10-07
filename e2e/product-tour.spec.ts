@@ -113,6 +113,9 @@ test('starts after setup, walks the real entry points, persists completion, and 
   const settingsPage = await settingsOpened
   await expect(settingsPage).toHaveURL(/window=settings/)
   await settingsPage.getByRole('button', { name: '通用', exact: true }).click()
+  await expect(
+    settingsPage.getByRole('button', { name: '重新进行新手引导', exact: true })
+  ).toBeEnabled()
   await settingsPage.getByRole('button', { name: '重新进行新手引导', exact: true }).click()
   await expect.poll(() => settingsPage.isClosed()).toBe(true)
   await expect(
@@ -122,12 +125,19 @@ test('starts after setup, walks the real entry points, persists completion, and 
   for (let index = 0; index < targets.length; index++) {
     const mobileGuide = page.getByTestId('product-tour')
     await expect(mobileGuide).toBeVisible()
-    const bounds = await mobileGuide.boundingBox()
-    expect(bounds).not.toBeNull()
-    expect(bounds!.x).toBeGreaterThanOrEqual(0)
-    expect(bounds!.y).toBeGreaterThanOrEqual(0)
-    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(391)
-    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(845)
+    // Resizing dispatches a frame-based spotlight measurement. Check the settled position.
+    await expect
+      .poll(async () => {
+        const bounds = await mobileGuide.boundingBox()
+        return (
+          bounds !== null &&
+          bounds.x >= 0 &&
+          bounds.y >= 0 &&
+          bounds.x + bounds.width <= 391 &&
+          bounds.y + bounds.height <= 845
+        )
+      })
+      .toBe(true)
     await expect(page.getByTestId('product-tour-highlight')).toHaveAttribute(
       'data-tour-target',
       targets[index]
@@ -166,6 +176,9 @@ test('replays from an existing workspace without losing an unsent conversation d
   await page.getByRole('button', { name: 'Settings', exact: true }).first().click()
   const settingsPage = await settingsOpened
   await settingsPage.getByRole('button', { name: 'General', exact: true }).click()
+  await expect(
+    settingsPage.getByRole('button', { name: 'Restart new user guide', exact: true })
+  ).toBeEnabled()
   await settingsPage.getByRole('button', { name: 'Restart new user guide', exact: true }).click()
   await expect.poll(() => settingsPage.isClosed()).toBe(true)
   const guide = page.getByTestId('product-tour')

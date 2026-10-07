@@ -76,10 +76,15 @@ const logFailureCopy = (category: LogWriteFailureCategory | null, t: TFunction):
 
 // General app settings. Hosts the Diagnostics (log file) tools and the community/connect links. The log
 // file stays on this device and is never transmitted by the app.
-const GeneralPanel = ({ onStartTour }: { onStartTour?: () => void }): React.JSX.Element => {
+const GeneralPanel = ({
+  onStartTour,
+  startTourError
+}: {
+  onStartTour?: () => void
+  startTourError?: boolean
+}): React.JSX.Element => {
   const { t } = useTranslation()
   const isMac = window.api.platform === 'darwin'
-  const onboardingCompletedAt = useSettingsStore((state) => state.onboardingCompletedAt)
   const [logStatus, setLogStatus] = useState<LogFileStatus | null>(null)
   const [isCheckingLog, setIsCheckingLog] = useState(true)
   const [logStatusError, setLogStatusError] = useState<string>()
@@ -310,15 +315,15 @@ const GeneralPanel = ({ onStartTour }: { onStartTour?: () => void }): React.JSX.
           )}
           className="pt-0"
         >
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onStartTour}
-            disabled={!onStartTour || onboardingCompletedAt === undefined}
-          >
+          <Button type="button" variant="outline" onClick={onStartTour} disabled={!onStartTour}>
             {t('Restart new user guide')}
           </Button>
         </SettingsRow>
+        {startTourError ? (
+          <InlineNotice role="alert" tone="red">
+            {t('Could not start the new user guide. Try again.')}
+          </InlineNotice>
+        ) : null}
       </SettingsSection>
 
       {window.api.platform === 'win32' && window.api.window?.onCloseConfirmRequest ? (

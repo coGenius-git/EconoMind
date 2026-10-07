@@ -26,14 +26,16 @@ export function ProductTour({ ready }: { ready: boolean }): React.JSX.Element | 
     setStep,
     finishTour
   } = useProductTourStore()
-  const visible = ready && active && onboardingCompletedAt !== undefined
+  const visible = ready && active
   const step = steps[stepIndex]
 
   useEffect(() => {
-    if (!ready || view !== 'home' || onboardingCompletedAt === undefined || active) return
+    if (!ready || view !== 'home' || active) return
     if (
       requested ||
-      (dismissedFor !== onboardingCompletedAt && !hasSeenProductTour(onboardingCompletedAt))
+      (onboardingCompletedAt !== undefined &&
+        dismissedFor !== onboardingCompletedAt &&
+        !hasSeenProductTour(onboardingCompletedAt))
     ) {
       beginTour()
     }

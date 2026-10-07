@@ -154,6 +154,25 @@ afterEach(() => {
 })
 
 describe('GeneralPanel command line tool', () => {
+  it('enables manual guide replay even when this renderer has no setup timestamp', async () => {
+    useSettingsStore.setState({ onboardingCompletedAt: undefined })
+    const onStartTour = vi.fn()
+    await act(async () => root.render(<GeneralPanel onStartTour={onStartTour} />))
+    const button = findButton(/^Restart new user guide$/)
+    expect(button).toBeDefined()
+    expect(button?.disabled).toBe(false)
+    act(() => button?.click())
+    expect(onStartTour).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows a visible guide restart error beside the retryable button', async () => {
+    await act(async () => root.render(<GeneralPanel onStartTour={vi.fn()} startTourError />))
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      'Could not start the new user guide. Try again.'
+    )
+    expect(findButton(/^Restart new user guide$/)?.disabled).toBe(false)
+  })
+
   it('recovers when the initial command status check fails', async () => {
     cliApi.getStatus
       .mockRejectedValueOnce(new Error('command status unavailable'))

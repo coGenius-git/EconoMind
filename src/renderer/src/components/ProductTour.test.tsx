@@ -80,6 +80,21 @@ it('advances and goes back, and remembers skipping across renderer remounts', ()
   expect(screen.queryByRole('dialog')).toBeNull()
 })
 
+it('honors manual replay without a setup timestamp, while leaving automatic setup gating intact', () => {
+  const settings = useSettingsStore.getState()
+  const { rerender } = render(<ProductTour ready />)
+  expect(screen.queryByRole('dialog')).toBeNull()
+  rerender(<ProductTour ready={false} />)
+  act(() => useProductTourStore.getState().requestTour())
+  expect(screen.queryByRole('dialog')).toBeNull()
+  rerender(<ProductTour ready />)
+  expect(screen.getByRole('heading', { name: 'Your research home' })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Skip guide' }))
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(localStorage.getItem(PRODUCT_TOUR_STORAGE_KEY)).toBeNull()
+  expect(useSettingsStore.getState()).toBe(settings)
+})
+
 it('finishes the guide and replays from the first step without resetting configuration', () => {
   useSettingsStore.setState({ onboardingCompletedAt: 42, notificationsEnabled: false })
   const settings = useSettingsStore.getState()
