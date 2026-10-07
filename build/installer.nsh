@@ -12,8 +12,8 @@
     nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\windows-notebook-sandbox-uninstall.ps1" -SandboxRoot "$INSTDIR\resources\notebook-network-sandbox\windows"'
     Pop $0
     StrCmp $0 "0" notebookSandboxCleanupComplete
-    DetailPrint `Open-Science Notebook cleanup failure code=$0 sandboxRoot="$INSTDIR\resources\notebook-network-sandbox\windows"`
-    MessageBox MB_OK|MB_ICONSTOP "Open-Science could not safely remove its owned Notebook isolation resources. The uninstall was stopped so the cleanup can be retried."
+    DetailPrint `EconoMind Notebook cleanup failure code=$0 sandboxRoot="$INSTDIR\resources\notebook-network-sandbox\windows"`
+    MessageBox MB_OK|MB_ICONSTOP "EconoMind could not safely remove its owned Notebook isolation resources. The uninstall was stopped so the cleanup can be retried."
     Abort
     notebookSandboxCleanupComplete:
   ${endif}
@@ -84,26 +84,26 @@ FunctionEnd
       ${endif}
     ${endif}
     ${if} ${Errors}
-      DetailPrint `Open-Science data protection failure code=parent-path-unresolved path="${DIR}\${FOLDER}"`
+      DetailPrint `EconoMind data protection failure code=parent-path-unresolved path="${DIR}\${FOLDER}"`
       DetailPrint `Could not safely preserve "${DIR}\${FOLDER}"; its parent path could not be resolved.`
-      MessageBox MB_OK|MB_ICONSTOP "Open-Science could not safely protect its data folder before updating.$\r$\nThe existing data was left untouched."
+      MessageBox MB_OK|MB_ICONSTOP "EconoMind could not safely protect its data folder before updating.$\r$\nThe existing data was left untouched."
       StrCpy $dataProtectionFailed "1"
     ${else}
       StrCpy ${BACKUP} "$R2\.open-science-update-data-${SLOT}"
       ${if} ${FileExists} "${DIR}\${FOLDER}\*.*"
         ${if} ${FileExists} "${BACKUP}\*.*"
-          DetailPrint `Open-Science data protection failure code=backup-already-exists path="${DIR}\${FOLDER}" backup="${BACKUP}"`
+          DetailPrint `EconoMind data protection failure code=backup-already-exists path="${DIR}\${FOLDER}" backup="${BACKUP}"`
           DetailPrint `Could not safely preserve "${DIR}\${FOLDER}" because the backup path already exists: ${BACKUP}`
-          MessageBox MB_OK|MB_ICONSTOP "Open-Science found both the current data folder and an earlier update backup.$\r$\nNo data was changed. Please inspect:$\r$\n${BACKUP}"
+          MessageBox MB_OK|MB_ICONSTOP "EconoMind found both the current data folder and an earlier update backup.$\r$\nNo data was changed. Please inspect:$\r$\n${BACKUP}"
           StrCpy ${BACKUP} ""
           StrCpy $dataProtectionFailed "1"
         ${else}
           ClearErrors
           Rename "${DIR}\${FOLDER}" "${BACKUP}"
           ${if} ${Errors}
-            DetailPrint `Open-Science data protection failure code=preserve-rename-failed path="${DIR}\${FOLDER}" backup="${BACKUP}"`
+            DetailPrint `EconoMind data protection failure code=preserve-rename-failed path="${DIR}\${FOLDER}" backup="${BACKUP}"`
             DetailPrint `Could not safely preserve "${DIR}\${FOLDER}"; leaving the existing installation untouched.`
-            MessageBox MB_OK|MB_ICONSTOP "Open-Science could not safely protect its data folder before updating.$\r$\nThe existing data was left untouched."
+            MessageBox MB_OK|MB_ICONSTOP "EconoMind could not safely protect its data folder before updating.$\r$\nThe existing data was left untouched."
             StrCpy ${BACKUP} ""
             StrCpy $dataProtectionFailed "1"
           ${else}
@@ -126,18 +126,18 @@ FunctionEnd
   ${andIf} "${BACKUP}" != ""
     ${if} ${FileExists} "${BACKUP}\*.*"
       ${if} ${FileExists} "${DIR}\${FOLDER}\*.*"
-        DetailPrint `Open-Science data protection failure code=restore-destination-exists path="${DIR}\${FOLDER}" backup="${BACKUP}"`
+        DetailPrint `EconoMind data protection failure code=restore-destination-exists path="${DIR}\${FOLDER}" backup="${BACKUP}"`
         DetailPrint `The preserved data remains at: ${BACKUP}`
-        MessageBox MB_OK|MB_ICONSTOP "Open-Science could not restore its data folder because the destination already exists.$\r$\nThe preserved data remains at:$\r$\n${BACKUP}"
+        MessageBox MB_OK|MB_ICONSTOP "EconoMind could not restore its data folder because the destination already exists.$\r$\nThe preserved data remains at:$\r$\n${BACKUP}"
         StrCpy $dataRestoreFailed "1"
       ${else}
         CreateDirectory "${DIR}"
         ClearErrors
         Rename "${BACKUP}" "${DIR}\${FOLDER}"
         ${if} ${Errors}
-          DetailPrint `Open-Science data protection failure code=restore-rename-failed path="${DIR}\${FOLDER}" backup="${BACKUP}"`
+          DetailPrint `EconoMind data protection failure code=restore-rename-failed path="${DIR}\${FOLDER}" backup="${BACKUP}"`
           DetailPrint `The preserved data remains at: ${BACKUP}`
-          MessageBox MB_OK|MB_ICONSTOP "Open-Science could not restore its data folder after updating.$\r$\nThe preserved data remains at:$\r$\n${BACKUP}"
+          MessageBox MB_OK|MB_ICONSTOP "EconoMind could not restore its data folder after updating.$\r$\nThe preserved data remains at:$\r$\n${BACKUP}"
           StrCpy $dataRestoreFailed "1"
         ${else}
           DetailPrint `Restored the data folder to: ${DIR}\${FOLDER}`
@@ -154,13 +154,13 @@ FunctionEnd
 !macro preserveNestedDataRoot DIR BACKUP SLOT
   !insertmacro preserveNamedDataRoot ${DIR} ${BACKUP} ${SLOT} OpenScience
   ${if} $dataProtectionFailed == "0"
-    !insertmacro preserveNamedDataRoot ${DIR} ${BACKUP}Branded ${SLOT}-branded Open-Science
+    !insertmacro preserveNamedDataRoot ${DIR} ${BACKUP}Branded ${SLOT}-branded EconoMind
   ${endif}
 !macroend
 
 !macro restoreNestedDataRoot DIR BACKUP
   !insertmacro restoreNamedDataRoot ${DIR} ${BACKUP} OpenScience
-  !insertmacro restoreNamedDataRoot ${DIR} ${BACKUP}Branded Open-Science
+  !insertmacro restoreNamedDataRoot ${DIR} ${BACKUP}Branded EconoMind
 !macroend
 
 !macro restoreAllNestedDataRoots
@@ -325,12 +325,12 @@ FunctionEnd
         ${endif}
       ${endif}
       ${if} $R1 == 5
-        MessageBox MB_OK|MB_ICONEXCLAMATION|MB_SETFOREGROUND "Open-Science could not finish updating.$\r$\n$\r$\nWindows denied access to:$\r$\n$INSTDIR\${UNINSTALL_FILENAME}$\r$\n$\r$\nClose this notice, then run the official Open-Science installer as administrator to update this installation.$\r$\n$\r$\nWindows error: $R1"
+        MessageBox MB_OK|MB_ICONEXCLAMATION|MB_SETFOREGROUND "EconoMind could not finish updating.$\r$\n$\r$\nWindows denied access to:$\r$\n$INSTDIR\${UNINSTALL_FILENAME}$\r$\n$\r$\nClose this notice, then run the official EconoMind installer as administrator to update this installation.$\r$\n$\r$\nWindows error: $R1"
       ${elseif} $R1 == 32
       ${orIf} $R1 == 33
-        MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION|MB_SETFOREGROUND "Open-Science could not finish updating.$\r$\n$\r$\nAnother process is using:$\r$\n$INSTDIR\${UNINSTALL_FILENAME}$\r$\n$\r$\nClose the process using this file, then choose Retry. Choose Cancel to stop this update.$\r$\n$\r$\nWindows error: $R1" IDRETRY ensureExistingUninstallerIsWritable_retry
+        MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION|MB_SETFOREGROUND "EconoMind could not finish updating.$\r$\n$\r$\nAnother process is using:$\r$\n$INSTDIR\${UNINSTALL_FILENAME}$\r$\n$\r$\nClose the process using this file, then choose Retry. Choose Cancel to stop this update.$\r$\n$\r$\nWindows error: $R1" IDRETRY ensureExistingUninstallerIsWritable_retry
       ${else}
-        MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION|MB_SETFOREGROUND "Open-Science could not finish updating.$\r$\n$\r$\nWindows could not replace:$\r$\n$INSTDIR\${UNINSTALL_FILENAME}$\r$\n$\r$\nChoose Retry to try again, or Cancel to stop this update. If the problem continues, report the file path and Windows error below.$\r$\n$\r$\nWindows error: $R1" IDRETRY ensureExistingUninstallerIsWritable_retry
+        MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION|MB_SETFOREGROUND "EconoMind could not finish updating.$\r$\n$\r$\nWindows could not replace:$\r$\n$INSTDIR\${UNINSTALL_FILENAME}$\r$\n$\r$\nChoose Retry to try again, or Cancel to stop this update. If the problem continues, report the file path and Windows error below.$\r$\n$\r$\nWindows error: $R1" IDRETRY ensureExistingUninstallerIsWritable_retry
       ${endif}
 
     ensureExistingUninstallerIsWritable_cancel:
@@ -410,7 +410,7 @@ FunctionEnd
         # Do not overwrite either copy if the old process recreated data before it was killed;
         # retain that additional directory at its unique sibling path for manual reconciliation.
         DetailPrint `Additional data created during the update remains at: ${BACKUP}`
-        MessageBox MB_OK|MB_ICONEXCLAMATION "Open-Science found additional data created while closing the previous version.$\r$\nYour original data will be restored; the additional data remains at:$\r$\n${BACKUP}"
+        MessageBox MB_OK|MB_ICONEXCLAMATION "EconoMind found additional data created while closing the previous version.$\r$\nYour original data will be restored; the additional data remains at:$\r$\n${BACKUP}"
       ${else}
         # No registered backup exists (recovery can also be used independently). The retry may
         # have removed ${DIR}; recreate only the parent and put the retry-local data back before
@@ -420,7 +420,7 @@ FunctionEnd
         Rename "${BACKUP}" "${DIR}\${FOLDER}"
         ${if} ${Errors}
           DetailPrint `The preserved data remains at: ${BACKUP}`
-          MessageBox MB_OK|MB_ICONSTOP "Open-Science could not restore its data folder after updating.$\r$\nYour data remains at:$\r$\n${BACKUP}"
+          MessageBox MB_OK|MB_ICONSTOP "EconoMind could not restore its data folder after updating.$\r$\nYour data remains at:$\r$\n${BACKUP}"
           !insertmacro restoreAllNestedDataRoots
           SetErrorLevel 2
           Quit
@@ -467,7 +467,7 @@ FunctionEnd
     # on the same volume before retrying, then restore it regardless of the retry's exit code.
     # A failed preserve leaves the original directory in place and aborts before the retry.
     !insertmacro preserveRetryDataRoot ${DIR} $retryLegacyDataBackup OpenScience
-    !insertmacro preserveRetryDataRoot ${DIR} $retryBrandedDataBackup Open-Science
+    !insertmacro preserveRetryDataRoot ${DIR} $retryBrandedDataBackup EconoMind
 
     # During an update, electron-builder's old uninstaller moves every installed file into its
     # $PLUGINSDIR before deleting the old tree. Windows cannot atomically rename across volumes:
@@ -511,7 +511,7 @@ FunctionEnd
       ClearErrors
     ${endif}
     !insertmacro restoreRetryDataRoot ${DIR} $retryLegacyDataBackup ${REGISTERED_BACKUP} OpenScience
-    !insertmacro restoreRetryDataRoot ${DIR} $retryBrandedDataBackup ${REGISTERED_BRANDED_BACKUP} Open-Science
+    !insertmacro restoreRetryDataRoot ${DIR} $retryBrandedDataBackup ${REGISTERED_BRANDED_BACKUP} EconoMind
     ${if} $R0 != 0
       ${ifNot} ${FileExists} "${DIR}\${APP_EXECUTABLE_FILENAME}"
         DetailPrint `Retry exited with $R0 but the previous installation is already removed; continuing.`

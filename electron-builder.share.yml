@@ -2,6 +2,7 @@
 # Keep the upstream Open Science update feed out of this distribution.
 extends: ./electron-builder.yml
 publish: null
+afterPack: build/clean-share-resources.cjs
 # Use the already installed, version-locked Electron runtime instead of downloading it again.
 electronDist: node_modules/electron/dist
 directories:
