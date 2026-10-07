@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 
 import { useNavigationStore } from './navigation-store'
+import { useProjectStore } from './project-store'
 
 // Like language and theme, the guide is remembered per device/profile. Setup itself remains
 // owned by the durable Settings snapshot; replaying the guide never resets configuration.
@@ -19,23 +20,35 @@ type ProductTourState = {
   active: boolean
   stepIndex: number
   dismissedFor: number | undefined
+  workspaceProjectId: string | undefined
   requestTour: () => void
   beginTour: () => void
   setStep: (stepIndex: number) => void
   finishTour: (onboardingCompletedAt: number) => void
 }
 
-export const useProductTourStore = create<ProductTourState>((set) => ({
+const resolveTourProject = (): string | undefined =>
+  useNavigationStore.getState().activeProjectId ??
+  useProjectStore.getState().projects.find((project) => project.archivedAt === undefined)?.id
+
+export const useProductTourStore = create<ProductTourState>((set, get) => ({
   requested: false,
   active: false,
   stepIndex: 0,
   dismissedFor: undefined,
+  workspaceProjectId: undefined,
   requestTour: () => {
-    set({ requested: true, active: false, stepIndex: 0 })
+    set({ requested: true, active: false, stepIndex: 0, workspaceProjectId: resolveTourProject() })
     // Preserve the existing unsaved-preview leave guard and all conversation drafts.
     useNavigationStore.getState().goHome('user')
   },
-  beginTour: () => set({ requested: false, active: true, stepIndex: 0 }),
+  beginTour: () =>
+    set({
+      requested: false,
+      active: true,
+      stepIndex: 0,
+      workspaceProjectId: get().requested ? get().workspaceProjectId : resolveTourProject()
+    }),
   setStep: (stepIndex) => set({ stepIndex }),
   finishTour: (onboardingCompletedAt) => {
     try {

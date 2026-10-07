@@ -1,4 +1,6 @@
 import { ResearchWorkbenchHeader } from '@/components/ResearchWorkbenchHeader'
+import { PRODUCT_TOUR_STEPS } from '@/components/product-tour-steps'
+import { useProductTourStore } from '@/stores/product-tour-store'
 import { PanelLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizablePanel } from '@/components/ui/resizable'
@@ -159,6 +161,11 @@ const WorkspacePage = ({
   isPreviewPresentationActive = true
 }: WorkspacePageProps): React.JSX.Element => {
   const { t } = useTranslation()
+  const tourTarget = useProductTourStore((state) =>
+    state.active && PRODUCT_TOUR_STEPS[state.stepIndex].view === 'workspace'
+      ? PRODUCT_TOUR_STEPS[state.stepIndex].target
+      : undefined
+  )
   const conversationSubmissions = useConversationSubmissions()
   // The active project scopes which sessions are visible and stamps newly created ones. The workspace
   // is only reachable via openProject/openSession (which set it); '' is a defensive sentinel that
@@ -211,7 +218,10 @@ const WorkspacePage = ({
   const newConversationDraftKey = newConversationDraftKeyFor(scopedProjectId)
   const currentDraftKey = selectedSessionId ?? newConversationDraftKey
   const clearSelection = useSessionStore((state) => state.clearSelection)
-  const [isSpecialistsOpen, setIsSpecialistsOpen] = useState(false)
+  const [specialistsOpen, setIsSpecialistsOpen] = useState(false)
+  const isSpecialistsOpen = tourTarget
+    ? tourTarget === 'workspace-specialist-catalog'
+    : specialistsOpen
   const [specialistSummonRequest, setSpecialistSummonRequest] = useState<SpecialistSummonRequest>()
   const specialistSummonSequence = useRef(0)
   const [specialistScopeProjectId, setSpecialistScopeProjectId] = useState(scopedProjectId)
@@ -506,6 +516,7 @@ const WorkspacePage = ({
     : false
   const canEditDraft =
     isSessionPersistenceReady &&
+    !(tourTarget && !activeProjectId) &&
     !activeSession?.packageOrigin &&
     !activeSessionHasSendPreparation &&
     activeSession?.status !== 'waiting-plan-approval'
@@ -879,8 +890,8 @@ const WorkspacePage = ({
 
   // The workspace requires an active project; if none is set (e.g. after a project delete), go home.
   useEffect(() => {
-    if (!activeProjectId) goHome('automatic')
-  }, [activeProjectId, goHome])
+    if (!activeProjectId && !tourTarget) goHome('automatic')
+  }, [activeProjectId, goHome, tourTarget])
 
   useEffect(() => {
     if (
@@ -1442,6 +1453,13 @@ const WorkspacePage = ({
     usePreviewWorkbenchStore.getState().upsertAndActivateItem(createProjectFilesPreviewItem())
   }
 
+  useEffect(() => {
+    if (!tourTarget) return
+    if (tourTarget === 'workspace-file-preview' && isSessionPersistenceReady) {
+      usePreviewWorkbenchStore.getState().upsertAndActivateItem(createProjectFilesPreviewItem())
+    }
+  }, [isSessionPersistenceReady, tourTarget])
+
   // Preserve EconoMind's independent library page; the compact right-hand library is excluded.
   const openLibraryPreview = (): boolean =>
     useNavigationStore.getState().openProjectLiterature(scopedProjectId, 'user')
@@ -1548,6 +1566,7 @@ const WorkspacePage = ({
             writable={bookmarksWritable}
           >
             <WorkspacePanelLayout
+              tourTarget={tourTarget}
               showPreviewPanel={!isSpecialistsOpen}
               hasPreviewItems={previewItems.length > 0}
               isPreviewPresentationActive={isPreviewPresentationActive}

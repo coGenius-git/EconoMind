@@ -204,14 +204,16 @@ export function LiteratureLibraryHeader({
                 if (file) void previewRecordImport(file)
               }}
             />
-            <LiteratureAddMenu
-              onAddReference={() => beginManualImport(true)}
-              onImportPdf={() => importPdfInputRef.current?.click()}
-              onImportReferences={() => importRecordsInputRef.current?.click()}
-            />
+            <div data-product-tour="library-import">
+              <LiteratureAddMenu
+                onAddReference={() => beginManualImport(true)}
+                onImportPdf={() => importPdfInputRef.current?.click()}
+                onImportReferences={() => importRecordsInputRef.current?.click()}
+              />
+            </div>
           </div>
         ) : null}
-        <div className="w-full min-w-0 shrink-0 sm:w-60">
+        <div data-product-tour="library-search" className="w-full min-w-0 shrink-0 sm:w-60">
           <LiteratureSearchInput
             initialValue={query}
             resetRevision={searchResetRevision}

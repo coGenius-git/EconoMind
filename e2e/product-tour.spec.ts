@@ -22,8 +22,20 @@ test('starts after setup, walks the real entry points, persists completion, and 
     'new-project',
     'projects',
     'recent-sessions',
-    'library',
-    'workspace',
+    'library-content',
+    'library-sidebar',
+    'library-inbox',
+    'library-import',
+    'library-search',
+    'library-discovery',
+    'library-tools',
+    'library-content',
+    'workspace-conversation',
+    'workspace-sidebar',
+    'workspace-specialist-catalog',
+    'workspace-conversation',
+    'workspace-composer',
+    'workspace-file-preview',
     'search',
     'settings'
   ]
@@ -32,21 +44,48 @@ test('starts after setup, walks the real entry points, persists completion, and 
       'data-tour-target',
       targets[index]
     )
-    await expect(guide).toContainText(`第 ${index + 1} 步，共 8 步`)
-    const target = page.locator(`[data-product-tour="${targets[index]}"]`)
-    const highlighted = await target.evaluate((element) => {
-      const rect = element.getBoundingClientRect()
-      const highlight = document
-        .querySelector('[data-testid="product-tour-highlight"]')!
-        .getBoundingClientRect()
-      return (
-        rect.width > 0 &&
-        rect.height > 0 &&
-        Math.abs(rect.left - highlight.left) <= 8 &&
-        Math.abs(rect.top - highlight.top) <= 8
+    await expect(guide).toContainText(`第 ${index + 1} 步，共 20 步`)
+    const module = index < 4 || index >= 18 ? 'home' : index < 12 ? 'library' : 'workspace'
+    await expect(
+      page.locator(`[data-product-tour="${module}"][aria-current="page"]:visible`)
+    ).toBeVisible()
+    const target = page.locator(`[data-product-tour="${targets[index]}"]:visible`).first()
+    // Opening the actual Files panel animates its width. Check the settled spotlight.
+    await expect
+      .poll(
+        () =>
+          target.evaluate((element) => {
+            const rect = element.getBoundingClientRect()
+            const highlight = document
+              .querySelector('[data-testid="product-tour-highlight"]')!
+              .getBoundingClientRect()
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              Math.abs(rect.left - highlight.left) <= 8 &&
+              Math.abs(rect.top - highlight.top) <= 8 &&
+              Math.abs(
+                Math.min(rect.width + 10, innerWidth - highlight.left - 8) - highlight.width
+              ) <= 8
+            )
+          }),
+        { message: `Spotlight follows ${targets[index]} at step ${index + 1}` }
       )
-    })
-    expect(highlighted).toBe(true)
+      .toBe(true)
+    if (index === 6)
+      await expect(page.locator('[data-product-tour="library-inbox"]')).toHaveAttribute(
+        'aria-current',
+        'page'
+      )
+    if (index === 11) await page.screenshot({ path: testInfo.outputPath('tour-library.png') })
+    if (index === 14) {
+      await expect(page.getByTestId('specialist-browser')).toBeVisible()
+      await page.screenshot({ path: testInfo.outputPath('tour-specialists.png') })
+    }
+    if (index === 17) {
+      await expect(page.locator('[data-testid="preview-panel-top-bar"]:visible')).toBeVisible()
+      await page.screenshot({ path: testInfo.outputPath('tour-workspace.png') })
+    }
     if (index === 1) {
       await guide.getByRole('button', { name: '上一步' }).click()
       await expect(guide.getByRole('heading', { name: '你的研究首页' })).toBeVisible()
@@ -93,7 +132,19 @@ test('starts after setup, walks the real entry points, persists completion, and 
       'data-tour-target',
       targets[index]
     )
-    if (index === 5) await page.screenshot({ path: testInfo.outputPath('tour-mobile.png') })
+    await expect(
+      page.locator(`[data-product-tour="${targets[index]}"]:visible`).first()
+    ).toBeVisible()
+    if (index === 13) {
+      await expect(page.locator('[data-product-tour="workspace-sidebar"]:visible')).toHaveAttribute(
+        'data-mobile-open',
+        'true'
+      )
+    }
+    if (index === 17) {
+      await expect(page.getByTestId('mobile-preview-sheet')).toBeVisible()
+      await page.screenshot({ path: testInfo.outputPath('tour-mobile.png') })
+    }
     if (index < targets.length - 1)
       await mobileGuide.getByRole('button', { name: '下一步' }).click()
   }
@@ -119,11 +170,18 @@ test('replays from an existing workspace without losing an unsent conversation d
   await expect.poll(() => settingsPage.isClosed()).toBe(true)
   const guide = page.getByTestId('product-tour')
   await expect(guide.getByRole('heading', { name: 'Your research home' })).toBeVisible()
+  for (let index = 0; index < 17; index++) {
+    await guide.getByRole('button', { name: 'Next step' }).click()
+  }
+  await expect(
+    guide.getByRole('heading', { name: 'Inspect files and generated results' })
+  ).toBeVisible()
+  await expect(
+    page.locator('[data-product-tour="workspace"][aria-current="page"]:visible')
+  ).toBeVisible()
+  await expect(composer).toHaveText('My unsent research question')
   await guide.getByRole('button', { name: 'Skip guide' }).click()
-  await page
-    .getByRole('region', { name: 'Projects', exact: true })
-    .getByRole('button', { name: 'Guide draft preservation', exact: true })
-    .click()
+  await expect(guide).toBeHidden()
   await expect(composer).toHaveText('My unsent research question')
   expect(await page.evaluate(() => window.api.projects.list())).toHaveLength(1)
 })

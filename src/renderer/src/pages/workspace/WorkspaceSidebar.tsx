@@ -770,6 +770,7 @@ const WorkspaceSidebarView = (props: WorkspaceSidebarViewProps): React.JSX.Eleme
 
   return (
     <aside
+      data-product-tour="workspace-sidebar"
       aria-label={t('Workspace navigation')}
       aria-hidden={mobileMode && !isMobileOpen ? true : undefined}
       inert={mobileMode && !isMobileOpen ? true : undefined}

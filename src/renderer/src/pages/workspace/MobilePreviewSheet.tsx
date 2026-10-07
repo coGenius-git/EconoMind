@@ -11,6 +11,7 @@ import type { PreviewInteractionPort } from './previews/preview-types'
 
 type MobilePreviewSheetProps = PreviewInteractionPort & {
   isMobile?: boolean
+  guided?: boolean
   open: boolean
   onClose: () => void
   restoredPlanResponder?: RestoredPlanResponder
@@ -21,6 +22,7 @@ type MobilePreviewSheetProps = PreviewInteractionPort & {
 // but rise from the bottom so the conversation remains the primary screen.
 const MobilePreviewSheet = ({
   isMobile = true,
+  guided = false,
   open,
   onClose,
   restoredPlanResponder,
@@ -30,7 +32,7 @@ const MobilePreviewSheet = ({
   const { t } = useTranslation()
   const surfaceRef = useRef<HTMLDivElement>(null)
   const focusComposerAfterClose = useRef(false)
-  const modalOpen = isMobile && open
+  const modalOpen = isMobile && open && !guided
   const { setContentRef, onInteractOutside } = useChildLayerDismissalGuard(surfaceRef)
 
   useEffect(() => {

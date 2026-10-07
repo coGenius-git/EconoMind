@@ -1,63 +1,13 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { PRODUCT_TOUR_STEPS as steps } from './product-tour-steps'
 import { Button } from '@/components/ui/button'
 import * as Dialog from '@/components/ui/dialog'
+import { OverlayLayerProvider } from '@/components/ui/overlay-layer'
 import { useNavigationStore } from '@/stores/navigation-store'
 import { hasSeenProductTour, useProductTourStore } from '@/stores/product-tour-store'
 import { useSettingsStore } from '@/stores/settings-store'
-
-const steps = [
-  {
-    target: 'home',
-    title: 'Your research home',
-    description:
-      'This is your starting point. Switch between the literature library and research workspace here, and return home to see your projects and recent work.'
-  },
-  {
-    target: 'new-project',
-    title: 'Start with a project',
-    description:
-      'Create a project for each research topic. Choose its working folder to keep your data, code, conversations, and results together.'
-  },
-  {
-    target: 'projects',
-    title: 'Manage your projects',
-    description:
-      'Open a project to continue researching. Project menus let you rename, pin, archive, or export your work.'
-  },
-  {
-    target: 'recent-sessions',
-    title: 'Continue a conversation',
-    description:
-      'Recent conversations appear here. Reopen one to continue from its saved messages and results without starting over.'
-  },
-  {
-    target: 'library',
-    title: 'Explore your literature library',
-    description:
-      'Search for papers, import references and PDFs, and organize collections. Read and annotate papers, screen literature, and explore bibliometric analysis here.'
-  },
-  {
-    target: 'workspace',
-    title: 'Work with your research agents',
-    description:
-      'Inside a project, use the conversation area to describe a task and choose a Specialist from the sidebar. Agents can analyze data and run code in Notebooks; the files and preview area shows your documents, charts, and results.'
-  },
-  {
-    target: 'search',
-    title: 'Find your research quickly',
-    description:
-      'Search across projects, conversations, literature, and files. You can also open search with Cmd/Ctrl+K.'
-  },
-  {
-    target: 'settings',
-    title: 'Make the workspace yours',
-    description:
-      'Manage models, Specialists, skills, connectors, runtimes, and other preferences in Settings. To see this guide again, open Settings → General → Restart new user guide.'
-  }
-] as const
-
 type Spotlight = { left: number; top: number; width: number; height: number }
 
 // The whole tour uses existing entry points, even before the first project exists. It never
@@ -66,9 +16,18 @@ export function ProductTour({ ready }: { ready: boolean }): React.JSX.Element | 
   const { t } = useTranslation()
   const onboardingCompletedAt = useSettingsStore((state) => state.onboardingCompletedAt)
   const view = useNavigationStore((state) => state.view)
-  const { active, requested, stepIndex, dismissedFor, beginTour, setStep, finishTour } =
-    useProductTourStore()
-  const visible = ready && view === 'home' && active && onboardingCompletedAt !== undefined
+  const {
+    active,
+    requested,
+    stepIndex,
+    workspaceProjectId,
+    dismissedFor,
+    beginTour,
+    setStep,
+    finishTour
+  } = useProductTourStore()
+  const visible = ready && active && onboardingCompletedAt !== undefined
+  const step = steps[stepIndex]
 
   useEffect(() => {
     if (!ready || view !== 'home' || onboardingCompletedAt === undefined || active) return
@@ -80,24 +39,37 @@ export function ProductTour({ ready }: { ready: boolean }): React.JSX.Element | 
     }
   }, [active, beginTour, dismissedFor, onboardingCompletedAt, ready, requested, view])
 
+  useEffect(() => {
+    if (!visible || view === step.view) return
+    const navigation = useNavigationStore.getState()
+    if (step.view === 'library') navigation.openLibrary('automatic', { section: 'library' })
+    else if (step.view === 'workspace') navigation.openTourWorkspace(workspaceProjectId)
+    else navigation.goHome('automatic')
+  }, [step.view, view, visible, workspaceProjectId])
+
   if (!visible) return null
   return (
-    <TourDialog
-      stepIndex={stepIndex}
-      onStep={setStep}
-      onFinish={() => finishTour(onboardingCompletedAt)}
-      t={t}
-    />
+    <OverlayLayerProvider value={100}>
+      <TourDialog
+        stepIndex={stepIndex}
+        pageReady={view === step.view}
+        onStep={setStep}
+        onFinish={() => finishTour(onboardingCompletedAt)}
+        t={t}
+      />
+    </OverlayLayerProvider>
   )
 }
 
 function TourDialog({
   stepIndex,
+  pageReady,
   onStep,
   onFinish,
   t
 }: {
   stepIndex: number
+  pageReady: boolean
   onStep: (index: number) => void
   onFinish: () => void
   t: ReturnType<typeof useTranslation>['t']
@@ -110,10 +82,32 @@ function TourDialog({
   const [position, setPosition] = useState({ left: 16, top: 16 })
 
   useLayoutEffect(() => {
-    const target = document.querySelector<HTMLElement>(`[data-product-tour="${step.target}"]`)
-    target?.scrollIntoView?.({ block: 'center', inline: 'nearest', behavior: 'instant' })
+    // Pages are lazy-loaded and retained in Activity. Wait for a visible, mounted target.
+    let target: HTMLElement | undefined
     let frame = 0
+    const observer = new ResizeObserver(() => scheduleMeasure())
     const measure = (): void => {
+      const nextTarget = pageReady
+        ? Array.from(
+            document.querySelectorAll<HTMLElement>(`[data-product-tour="${step.target}"]`)
+          ).find((element) => {
+            const bounds = element.getBoundingClientRect()
+            return (
+              bounds.width > 0 &&
+              bounds.height > 0 &&
+              bounds.right > 0 &&
+              bounds.left < window.innerWidth
+            )
+          })
+        : undefined
+      if (target !== nextTarget) {
+        if (target) observer.unobserve(target)
+        target = nextTarget
+        if (target) {
+          observer.observe(target)
+          target.scrollIntoView?.({ block: 'nearest', inline: 'nearest', behavior: 'instant' })
+        }
+      }
       const bounds = target?.getBoundingClientRect()
       const rect =
         bounds && bounds.width > 0 && bounds.height > 0
@@ -157,19 +151,23 @@ function TourDialog({
       frame = requestAnimationFrame(measure)
     }
     measure()
-    const observer = new ResizeObserver(scheduleMeasure)
-    if (target) observer.observe(target)
+    const changes = new MutationObserver(scheduleMeasure)
+    changes.observe(document.body, { childList: true, subtree: true })
     if (content) observer.observe(content)
     window.addEventListener('resize', scheduleMeasure)
     window.addEventListener('scroll', scheduleMeasure, true)
+    // Mobile drawers move with a CSS transform, which does not trigger ResizeObserver.
+    window.addEventListener('transitionend', scheduleMeasure, true)
     nextButton.current?.focus({ preventScroll: true })
     return () => {
       cancelAnimationFrame(frame)
       observer.disconnect()
+      changes.disconnect()
       window.removeEventListener('resize', scheduleMeasure)
       window.removeEventListener('scroll', scheduleMeasure, true)
+      window.removeEventListener('transitionend', scheduleMeasure, true)
     }
-  }, [content, step.target, t])
+  }, [content, pageReady, step.target, t])
 
   return (
     <Dialog.Root open onOpenChange={(open) => !open && onFinish()}>
@@ -211,6 +209,7 @@ function TourDialog({
         <Dialog.Content
           ref={setContent}
           data-testid="product-tour"
+          data-tour-view={step.view}
           aria-describedby="product-tour-description"
           className="fixed flex max-h-[calc(100dvh-32px)] w-[min(400px,calc(100vw-32px))] flex-col overflow-y-auto rounded-2xl border border-border bg-card p-5 text-foreground shadow-xl"
           style={position}
@@ -254,6 +253,7 @@ function TourDialog({
               <Button
                 ref={nextButton}
                 type="button"
+                disabled={!spotlight}
                 onClick={() =>
                   stepIndex === steps.length - 1 ? onFinish() : onStep(stepIndex + 1)
                 }

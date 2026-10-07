@@ -1282,6 +1282,7 @@ const ConversationPanel = ({
         canAttach={canEditDraft && !isUploadingAttachments && !ordinaryComposerBlocked}
         onFiles={onStageAttachmentFiles}
         data-testid="workspace-file-drop-zone"
+        data-product-tour="workspace-conversation"
         className="research-conversation research-glass relative flex h-full min-w-0 flex-col overflow-hidden"
         data-session-id={activeSession?.id ?? ''}
         data-agent-running={activeSession?.status === 'running' ? 'true' : 'false'}
@@ -1415,7 +1416,10 @@ const ConversationPanel = ({
           </WorkspaceMessageEditStateProvider>
         )}
 
-        <div className="research-composer-dock relative shrink-0">
+        <div
+          data-product-tour="workspace-composer"
+          className="research-composer-dock relative shrink-0"
+        >
           <div
             aria-hidden="true"
             data-testid="composer-surface-fade"

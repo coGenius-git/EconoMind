@@ -949,6 +949,7 @@ const PreviewPanelSurface = ({
     >
       <aside
         id="right-panel"
+        data-product-tour="workspace-file-preview"
         className={cn(
           'research-preview-surface relative flex h-full min-w-0 w-full flex-col overflow-hidden',
           className

@@ -107,6 +107,7 @@ export function LiteratureLibrarySidebar({
         )
         return (
           <aside
+            data-product-tour="library-sidebar"
             className={cn(
               'research-library-sidebar research-glass flex shrink-0 flex-col py-4',
               sidebarCollapsed ? 'w-14 px-2' : 'w-60 px-3'
@@ -193,6 +194,7 @@ export function LiteratureLibrarySidebar({
                         : undefined
                     }
                     aria-label={t('Inbox')}
+                    data-product-tour="library-inbox"
                     onClick={() => selectSection('inbox')}
                   >
                     <Inbox className="size-4" aria-hidden="true" />
@@ -301,7 +303,12 @@ export function LiteratureLibrarySidebar({
                     className="mx-2 mb-2 mt-2 h-px bg-border-300/80"
                   />
                 ) : null}
-                <div role="group" aria-label={t('Research tools')} className="space-y-1">
+                <div
+                  data-product-tour="library-tools"
+                  role="group"
+                  aria-label={t('Research tools')}
+                  className="space-y-1"
+                >
                   {!sidebarCollapsed ? (
                     <h2 className="flex h-9 items-center px-3 text-xs font-medium text-muted-foreground">
                       {t('Research tools')}
@@ -330,6 +337,7 @@ export function LiteratureLibrarySidebar({
                       type="button"
                       className={navButtonClassName}
                       aria-label={t('Search external sources')}
+                      data-product-tour="library-discovery"
                       onClick={openDiscovery}
                     >
                       <Search className="size-4" aria-hidden="true" />
