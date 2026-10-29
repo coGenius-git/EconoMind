@@ -4,16 +4,23 @@
 
 ## 开发环境
 
-使用 Node.js 22（见 [.nvmrc](.nvmrc)）和 npm。Windows 本机模块编译需要 Python 与 Visual Studio C++ Build Tools。
+使用 Node.js 24.x（见 [.nvmrc](.nvmrc)）和 npm。Windows 本机模块编译需要 Python 与 Visual Studio C++ Build Tools；Notebook 沙箱宿主还需要 Rust MSVC 工具链与 Windows SDK。
 
 ```bash
 git clone https://github.com/coGenius-git/EconoMind.git
 cd EconoMind
 npm ci
+npm run build:notebook-host
 npm run dev:isolated
 ```
 
-`npm ci` 使用锁文件并执行 Prisma Client 生成、依赖补丁和 Electron 本机模块准备。团队分工、独立开发环境、任务分支与 PR 操作步骤见 [README](README.md)。
+以上启动命令面向 Windows；`build:notebook-host` 仅构建 Windows 沙箱宿主，macOS / Linux 的准备方法见 [运行指南](docs/DEPLOY.md)。
+
+`npm ci` 使用锁文件并执行 Prisma Client 生成、依赖补丁和 Electron 本机模块准备。日常开发数据保存在已忽略的 `.dev-isolate/`，更新源码时保留。完整环境要求见 [README](README.md#快速开始)，团队分工、任务分支与 PR 操作步骤见 [团队协作指南](docs/TEAM_GUIDE.md)。
+
+## 定位代码
+
+先按 [源码导航](docs/CODEBASE.md) 找到功能所属的界面、主进程和共享协议，再查看邻近测试。新模块沿用现有分层；业务测试与源码就近存放，跨进程操作测试放在 `e2e/`。
 
 ## 修改范围
 
@@ -36,7 +43,7 @@ npm run lint
 
 ## 提交与反馈
 
-提交说明写清问题、改动、验证和限制。Issue 与 PR 使用本仓库的入口，合并、发布和自动流程由仓库维护者决定。GitHub Actions 当前关闭，保留的上游工作流不是已启用的本项目发布服务。
+提交说明写清问题、改动、验证和限制。Issue 与 PR 使用本仓库的入口，合并、发布和自动流程由仓库维护者决定。是否启用 GitHub Actions 以仓库实时设置为准，保留的上游工作流本身不表示本项目的检查或发布已运行。
 
 提交前检查 `git status` 和暂存区，确认没有个人研究记录、模型凭据、日志或数据库。[.gitignore](.gitignore) 不会自动移除已经跟踪的敏感文件。
 
