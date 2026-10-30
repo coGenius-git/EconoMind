@@ -1,8 +1,10 @@
 # EconoMind · 经管智研工作台
 
+<!-- Modified by EconoMind contributors: project overview, setup instructions and documentation navigation. -->
+
 面向经济学、管理学、金融学与会计学研究的 AI 桌面工作台，把文献、研究会话、数据分析和成果文件组织在同一项目中。
 
-EconoMind 是华北五省智能体大赛团队基于 [AIPOCH Open Science](https://github.com/aipoch/open-science) 定制的项目。基础运行框架继承上游，经管领域的界面、技能与专家适配见 [来源与修改说明](UPSTREAM.md)。
+EconoMind 是华北五省智能体大赛团队的经管研究项目，围绕文献整理、研究设计、数据分析和成果核验提供统一的工作入口。
 
 [快速开始](#快速开始) · [源码导航](docs/CODEBASE.md) · [开发贡献](CONTRIBUTING.md) · [团队协作](docs/TEAM_GUIDE.md) · [文档索引](docs/README.md)
 
@@ -100,9 +102,9 @@ EconoMind/
 
 ## 项目状态
 
-- 当前源码版本为 **0.34.1**，以 [package.json](package.json) 为准；另有配置使用 `3.0.0` 安装包标签，见 [上游与版本说明](UPSTREAM.md)。
+- 当前源码版本为 **0.34.1**，以 [package.json](package.json) 为准；另有配置使用 `3.0.0` 安装包标签，见 [运行与打包指南](docs/DEPLOY.md)。
 - [协作准备检查记录](docs/COLLABORATION_CHECK.md) 保存既有安装、启动、构建结果及全量测试失败情况。这是历史证据，不代表当前提交或所有平台均已通过。
-- `.github/workflows/` 含继承的上游流程；工作流文件存在不代表检查或发布服务已经启用。合并与发布前核对仓库设置及对应提交的实际检查结果。
+- `.github/workflows/` 保存自动化流程配置；工作流文件存在不代表检查或发布服务已经启用。合并与发布前核对仓库设置及对应提交的实际检查结果。
 
 ## 参与开发
 
@@ -110,8 +112,6 @@ EconoMind/
 
 GitHub 保存源码，不会自动同步应用里的聊天、文献、数据库或模型配置。提交前检查暂存区，保留研究数据在本地；详见 [.gitignore](.gitignore) 和 [安全反馈](SECURITY.md)。
 
-## 开源来源与许可
+## 许可证
 
-采用 [Apache-2.0](LICENSE)。上游代码版权归 AIPOCH 及其贡献者，EconoMind 修改部分版权归相应贡献者。保留 [NOTICE](NOTICE)、[上游来源](UPSTREAM.md) 以及 [第三方说明](docs/OPEN_SOURCE.md) 中的署名与许可。
-
-`open-science` CLI、`@aipoch/*` 包名与 `OPEN_SCIENCE_*` 环境变量仍用于兼容，不因项目更名而批量替换。
+采用 [Apache License 2.0](LICENSE)，版权、来源及第三方声明见 [NOTICE](NOTICE)。

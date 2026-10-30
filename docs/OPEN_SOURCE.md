@@ -1,5 +1,7 @@
 # EconoMind 开源许可与二次开发说明
 
+<!-- Modified by EconoMind contributors: attribution, distribution and README presentation guidance. -->
+
 EconoMind 基于 **AIPOCH Open Science** 修改和扩展，面向经济学、管理学、金融学与会计学研究。项目采用 **Apache License 2.0（Apache-2.0）**；英文完整条款以随软件提供的 LICENSE 为准。本说明用于介绍来源与许可范围，不替代或修改许可证。
 
 ## 来源、版权与项目关系
@@ -17,6 +19,16 @@ EconoMind 独立维护，并非 AIPOCH 官方发行版。上游名称仅用于�
 ## 使用、修改和再分发
 
 Apache-2.0 允许在其条款下使用、修改及分发软件，包括商业使用。再分发时应保留完整许可证、适用的原始版权和署名，并使修改文件带有显著的修改说明；随本项目提供 NOTICE。完整义务、专利授权及限制、免责声明等均以 LICENSE 为准。
+
+### README 展示与许可声明
+
+2026-10-30 核对本项目适配基线的 [LICENSE](https://github.com/aipoch/open-science/blob/c87a5668d6d53d2752ffb46b9f36a307cfca8cb1/LICENSE) 与 [Apache-2.0 官方条款](https://www.apache.org/licenses/LICENSE-2.0)：许可证未要求在 README 的产品介绍中展示上游名称、标志或宣传链接。本项目 README 聚焦 EconoMind，提供 LICENSE 与 NOTICE 入口；来源、版权与修改说明保存在许可和来源文件中。
+
+这不免除第 4 条的再分发义务：向接收方提供许可证副本；使修改文件带有显著修改说明；在分发的源码中保留适用的版权、专利、商标及署名声明；如果所用上游分发包含 NOTICE，则按第 4(d) 条保留其中适用的声明。不能把“README 无需品牌展示”理解为可以删除源码中已有的适用声明。
+
+所核对基线的仓库根目录未包含 NOTICE；本项目现有 NOTICE 用于集中说明来源和修改。第 6 条不授予一般性的上游商标使用权，仅保留说明来源、复现 NOTICE 等合理惯常用途。这里核对的是 README 展示方式与许可条款，不构成对全部源码、依赖和发行包的合规审计。
+
+### 文件修改说明
 
 修改代码时可在文件开头使用适合该文件语法的注释，例如：
 
