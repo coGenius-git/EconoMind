@@ -1,6 +1,9 @@
 # EconoMind 文档索引
 
 - [项目介绍与源码启动](../README.md)
+- [源码导航：按功能定位代码与测试](CODEBASE.md)
+- [团队协作、分工与 Git / PR 流程](TEAM_GUIDE.md)
+- [开发命令速查](development-quick-reference.md)
 - [协作准备验证与清理记录](COLLABORATION_CHECK.md)
 - [桌面与本地 Web 运行](DEPLOY.md)
 - [产品需求与验收范围](PRD.md)
@@ -8,6 +11,7 @@
 - [路线图](../ROADMAP.md)
 - [安全模型](security.md)与[问题反馈](../SECURITY.md)
 - [文献检索与初筛](literature-discovery.md)
+- [经管研究专家与技能来源](econ-research-experts.md)
 - [界面设计规范](design.md)
 - [翻译术语表](i18n-glossary.md)
 - [CLI/SDK 兼容包](../packages/open-science/package.json)

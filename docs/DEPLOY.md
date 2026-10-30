@@ -8,10 +8,10 @@ EconoMind 的桌面与本地 Web 模式共享 Electron 主进程、数据存储�
 
 ```bash
 npm ci
-npm run dev
+npm run dev:isolated
 ```
 
-独立开发配置方法见 [README](../README.md#独立开发配置powershell)。首次启动通过向导配置数据位置和模型，默认开发配置与安装版配置使用不同目录。
+独立开发配置方法见 [README](../README.md#独立开发配置powershell)。`dev:isolated` 将开发配置和数据固定保存在仓库的 `.dev-isolate/`；首次启动通过向导配置模型。Windows Notebook 和命令行执行还需要下面的宿主构建步骤。
 
 ## Windows Notebook 开发准备
 
